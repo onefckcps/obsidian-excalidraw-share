@@ -1,6 +1,6 @@
-# Excalidraw Share - NixOS Module (Production Ready)
+# Excalidraw Share - NixOS Module (Service Only)
 #
-# Deklaratives Deployment für NixOS mit VPN-Zugriffskontrolle.
+# Deklaratives Deployment für NixOS - nur Service, kein Nginx!
 #
 # Usage:
 #   imports = [ /path/to/nixos/module.nix ];
@@ -13,6 +13,9 @@
 #     frontendSource = /path/to/obsidian-excalidraw-share/frontend/dist;
 #   };
 #
+# WICHTIG: Die nginx Configuration muss MANUELL in deiner configuration.nix
+# hinzugefügt werden (siehe unten).
+#
 
 {
   config,
@@ -23,27 +26,6 @@
 
 let
   cfg = config.services.excalidraw-share;
-
-  vpnOnly = ''
-    allow 100.64.0.0/10;
-    allow 127.0.0.1;
-    allow ::1;
-    deny all;
-  '';
-
-  vpnAndSelf = ''
-    allow 100.64.0.0/10;
-    allow 127.0.0.1;
-    allow ::1;
-    allow 172.17.0.0/16;
-    deny all;
-  '';
-
-  acmeLocation = {
-    extraConfig = ''
-      allow all;
-    '';
-  };
 in
 {
   options.services.excalidraw-share = {
@@ -86,16 +68,6 @@ in
       description = "Pfad zur API-Key Datei.";
     };
 
-    vpnAccess = lib.mkOption {
-      type = lib.types.enum [
-        "vpnOnly"
-        "vpnAndSelf"
-        "public"
-      ];
-      default = "vpnOnly";
-      description = "VPN Zugriffskontrolle.";
-    };
-
     frontendSource = lib.mkOption {
       type = lib.types.path;
       description = "Pfad zum gebauten Frontend (frontend/dist).";
@@ -135,7 +107,6 @@ in
         User = "root";
       };
       script = ''
-        # Frontend kopieren wenn frontendSource gesetzt ist
         ${lib.optionalString (cfg.frontendSource != null) ''
           if [ -d "${cfg.frontendSource}" ]; then
             rm -rf ${cfg.dataDir}/frontend
@@ -146,6 +117,9 @@ in
       '';
     };
 
+    # -------------------------------------------------------------------------
+    # 4. Systemd Service
+    # -------------------------------------------------------------------------
     systemd.services.excalidraw-share = {
       description = "Excalidraw Share Server";
       wantedBy = [ "multi-user.target" ];
@@ -174,9 +148,6 @@ in
           "API_KEY=${lib.readFile cfg.apiKeyFile}"
         ];
 
-        # Remove EnvironmentFile since we include API_KEY directly
-        # EnvironmentFile = cfg.apiKeyFile;
-
         NoNewPrivileges = true;
         PrivateTmp = true;
         ProtectSystem = "strict";
@@ -189,50 +160,5 @@ in
         StartLimitIntervalSec = 60;
       };
     };
-
-    # -------------------------------------------------------------------------
-    # 4. Nginx
-    # -------------------------------------------------------------------------
-    services.nginx = {
-      enable = true;
-      recommendedProxySettings = true;
-
-      virtualHosts.${cfg.domain} = {
-        enableACME = true;
-        forceSSL = true;
-
-        locations."/.well-known/acme-challenge" = acmeLocation;
-
-        locations."/" = {
-          proxyPass = "http://127.0.0.1:${toString cfg.port}";
-          proxyWebsockets = true;
-
-          extraConfig = ''
-            ${
-              if cfg.vpnAccess == "public" then
-                ""
-              else if cfg.vpnAccess == "vpnAndSelf" then
-                vpnAndSelf
-              else
-                vpnOnly
-            }
-
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection 'upgrade';
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_cache_bypass $http_upgrade;
-          '';
-        };
-      };
-    };
-
-    networking.firewall.allowedTCPPorts = [
-      80
-      443
-    ];
   };
 }
