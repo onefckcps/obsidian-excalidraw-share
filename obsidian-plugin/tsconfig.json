@@ -11,6 +11,6 @@
     "declaration": false,
     "moduleResolution": "node"
   },
-  "include": ["main.ts"],
+  "include": ["main.ts", "pdfUtils.ts"],
   "exclude": ["node_modules"]
 }

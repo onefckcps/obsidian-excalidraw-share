@@ -1,4 +1,64 @@
-import { Plugin, TFile, Menu, Notice, App, PluginSettingTab, Setting } from 'obsidian';
+import { Plugin, TFile, arrayBufferToBase64, Menu, Notice, App, PluginSettingTab, Setting, loadPdfJs } from 'obsidian';
+
+const blobToBase64 = async (blob: Blob): Promise<string> => {
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  let len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+};
+
+const pdfToPng = async (
+  app: App,
+  file: TFile,
+  pageNum: number = 1
+): Promise<string> => {
+  try {
+    await loadPdfJs();
+    const pdfjsLib = (window as any).pdfjsLib;
+    
+    if (!pdfjsLib) {
+      throw new Error('PDF.js not loaded');
+    }
+
+    const url = app.vault.getResourcePath(file);
+    const pdfDoc = await pdfjsLib.getDocument(url).promise;
+    const page = await pdfDoc.getPage(pageNum);
+    
+    const scale = 1.5;
+    const viewport = page.getViewport({ scale });
+    
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    canvas.height = Math.round(viewport.height);
+    canvas.width = Math.round(viewport.width);
+    
+    const renderContext = {
+      canvasContext: ctx,
+      viewport: viewport,
+    };
+    
+    await page.render(renderContext).promise;
+    
+    return new Promise<string>((resolve, reject) => {
+      canvas.toBlob(async (blob) => {
+        if (blob) {
+          const base64 = await blobToBase64(blob);
+          resolve(base64);
+        } else {
+          reject(new Error('Failed to create blob from canvas'));
+        }
+      }, 'image/png');
+    });
+  } catch (e) {
+    console.error('Excalidraw Share: PDF conversion failed', e);
+    throw e;
+  }
+};
 
 interface ExcalidrawShareSettings {
   apiKey: string;
@@ -183,11 +243,113 @@ export default class ExcalidrawSharePlugin extends Plugin {
         return;
       }
 
-      // Get embedded files if available
-      let files = {};
-      const excalidrawAPI = excalidrawPlugin.ea.getExcalidrawAPI();
-      if (excalidrawAPI?.getFiles) {
-        files = excalidrawAPI.getFiles();
+      // Get embedded files if available from active view
+      let files: Record<string, any> = {};
+      
+      try {
+        const excalidrawAPI = excalidrawPlugin.ea.getExcalidrawAPI();
+        if (excalidrawAPI && typeof excalidrawAPI.getFiles === 'function') {
+          const apiFiles = excalidrawAPI.getFiles() as Record<string, any>;
+          if (apiFiles && Object.keys(apiFiles).length > 0) {
+            for (const [fileId, fileData] of Object.entries(apiFiles)) {
+              if (fileData && fileData.dataURL) {
+                files[fileId] = {
+                  mimeType: fileData.mimeType,
+                  id: fileData.id,
+                  dataURL: fileData.dataURL,
+                  created: fileData.created,
+                };
+              }
+            }
+            console.log('Excalidraw Share: Fetched images from active Excalidraw view', Object.keys(files).length);
+          }
+        }
+      } catch (e) {
+        console.log('Excalidraw Share: Could not fetch files from active view, falling back to manual parse', e);
+      }
+
+      // If active view didn't have the files (e.g. published from file explorer), parse manually
+      if (Object.keys(files).length === 0) {
+        console.log('Excalidraw Share: Parsing embedded files manually from markdown');
+        const fileContent = await this.app.vault.read(file);
+        
+        // Look for the "Embedded Files" section
+        const embeddedFilesMatch = fileContent.match(/## Embedded Files\n([\s\S]*?)(?:# |$)/);
+        if (embeddedFilesMatch) {
+          const filesSection = embeddedFilesMatch[1];
+          const fileRegex = /([a-f0-9]+):\s*\[\[(.*?)\]\]/g;
+          let match;
+
+          while ((match = fileRegex.exec(filesSection)) !== null) {
+            const fileId = match[1];
+            let linkPath = match[2];
+
+            // Parse page number from link before stripping (e.g., [[Doc.pdf#page=3]])
+            let pageNum = 1;
+            if (linkPath.includes('#page=')) {
+              const pageMatch = linkPath.match(/#page=(\d+)/);
+              if (pageMatch) pageNum = parseInt(pageMatch[1]);
+            }
+
+            // Strip aliases and subpaths from link e.g. [[Image.png|Alias]] -> Image.png
+            if (linkPath.includes('|')) linkPath = linkPath.split('|')[0];
+            if (linkPath.includes('#')) linkPath = linkPath.split('#')[0];
+
+            // Try to find the file in the vault
+            const linkedFile = this.app.metadataCache.getFirstLinkpathDest(linkPath, file.path);
+            if (linkedFile && linkedFile instanceof TFile) {
+              const ext = linkedFile.extension.toLowerCase();
+
+              // Handle PDF files - convert to PNG
+              if (ext === 'pdf') {
+                try {
+                  const pngBase64 = await pdfToPng(this.app, linkedFile, pageNum);
+                  files[fileId] = {
+                    mimeType: 'image/png',
+                    id: fileId,
+                    dataURL: `data:image/png;base64,${pngBase64}`,
+                    created: linkedFile.stat.ctime,
+                  };
+                  console.log(`Excalidraw Share: Converted PDF ${linkPath} page ${pageNum} to PNG (${fileId})`);
+                } catch (e) {
+                  console.error(`Excalidraw Share: Failed to convert PDF ${linkPath}`, e);
+                }
+                continue;
+              }
+
+              // Only process image files for manual parsing
+              const supportedImageTypes = ['png', 'jpg', 'jpeg', 'svg', 'gif'];
+              if (!supportedImageTypes.includes(ext)) {
+                console.log(`Excalidraw Share: Skipping unsupported embedded file type ${ext} for ${linkPath}`);
+                continue;
+              }
+
+              try {
+                // Read file as binary
+                const arrayBuffer = await this.app.vault.readBinary(linkedFile);
+                
+                // Convert ArrayBuffer to base64 safely using Obsidian's built-in function
+                const base64 = arrayBufferToBase64(arrayBuffer);
+                
+                // Determine mime type
+                let mimeType = 'image/png';
+                if (ext === 'jpg' || ext === 'jpeg') mimeType = 'image/jpeg';
+                else if (ext === 'svg') mimeType = 'image/svg+xml';
+                else if (ext === 'gif') mimeType = 'image/gif';
+
+                files[fileId] = {
+                  mimeType,
+                  id: fileId,
+                  dataURL: `data:${mimeType};base64,${base64}`,
+                  created: linkedFile.stat.ctime,
+                };
+                console.log(`Excalidraw Share: Processed image ${linkPath} (${fileId})`);
+              } catch (e) {
+                console.error(`Excalidraw Share: Failed to read image ${linkPath}`, e);
+              }
+            }
+          }
+        }
       }
 
       // Build payload in Excalidraw format

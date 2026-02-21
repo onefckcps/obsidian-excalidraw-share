@@ -1,5 +1,7 @@
 # Build artifacts
 /target
+temp-excalidraw-plugin
+data/
 /dist
 /backend/target
 

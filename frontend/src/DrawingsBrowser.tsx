@@ -25,7 +25,16 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
   const [drawings, setDrawings] = useState<PublicDrawing[]>([])
   const [tree, setTree] = useState<TreeNode | null>(null)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set(['_root']))
-  const [selectedFolder, setSelectedFolder] = useState<string>('_root')
+  const [selectedFolder, setSelectedFolder] = useState<string>(() => {
+    if (mode === 'standalone') {
+      try {
+        return localStorage.getItem('drawingsBrowserFolder') || '_root'
+      } catch {
+        return '_root'
+      }
+    }
+    return '_root'
+  })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   
@@ -45,6 +54,16 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
       return () => mediaQuery.removeEventListener('change', listener)
     }
   }, [theme, mode])
+
+  useEffect(() => {
+    if (mode === 'standalone' && selectedFolder) {
+      try {
+        localStorage.setItem('drawingsBrowserFolder', selectedFolder)
+      } catch {
+        // localStorage not available
+      }
+    }
+  }, [selectedFolder, mode])
 
   const navigate = useNavigate()
 
@@ -92,6 +111,19 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
         })
         
         setTree(root)
+        
+        // Expand path to selected folder
+        if (selectedFolder && selectedFolder !== '_root') {
+          const parts = selectedFolder.split('/')
+          let path = ''
+          const pathsToExpand = new Set(expandedPaths)
+          parts.forEach((part: string) => {
+            path = path === '' ? part : `${path}/${part}`
+            pathsToExpand.add(path)
+          })
+          setExpandedPaths(pathsToExpand)
+        }
+        
         setLoading(false)
       })
       .catch((err) => {

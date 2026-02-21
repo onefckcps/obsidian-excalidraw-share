@@ -73,22 +73,20 @@ function Viewer() {
 
   if (!sceneData) return null
 
-  const initialData = {
-    elements: sceneData.elements || [],
-    appState: {
-      viewBackgroundColor: sceneData.appState?.viewBackgroundColor || '#ffffff',
-      theme: sceneData.appState?.theme || 'light',
-      ...sceneData.appState,
-    },
-    files: sceneData.files || {},
-  }
-
   const theme = sceneData.appState?.theme || 'light'
 
   return (
     <div style={styles.container}>
       <Excalidraw
-        initialData={initialData}
+        initialData={{
+          elements: sceneData.elements || [],
+          appState: {
+            viewBackgroundColor: sceneData.appState?.viewBackgroundColor || '#ffffff',
+            theme: theme,
+            ...sceneData.appState,
+          },
+          files: sceneData.files || {},
+        }}
         viewModeEnabled={true}
         zenModeEnabled={true}
         theme={theme}
@@ -117,7 +115,7 @@ function Viewer() {
       </button>
       
       {showOverlay && (
-        <DrawingsBrowser mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} />
+        <DrawingsBrowser key={Date.now()} mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} />
       )}
     </div>
   )
