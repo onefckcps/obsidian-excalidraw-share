@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Excalidraw } from '@excalidraw/excalidraw'
 import type { AppState, BinaryFiles } from '@excalidraw/excalidraw/types/types'
@@ -35,6 +35,10 @@ function Viewer() {
     }
     return 'view'
   })
+  const modeRef = useRef(mode)
+  useEffect(() => {
+    modeRef.current = mode
+  }, [mode])
   const [showEditWarning, setShowEditWarning] = useState(false)
   const [drawingsList, setDrawingsList] = useState<{id: string}[]>([])
   const [loadingDrawings, setLoadingDrawings] = useState(false)
@@ -74,34 +78,88 @@ function Viewer() {
         return
       }
       
+      const currentMode = modeRef.current
+      
       if (e.key === 'e' || e.key === 'E') {
         setShowOverlay(prev => !prev)
       } else if (e.key === 'w' || e.key === 'W') {
-        if (mode === 'edit') {
+        if (currentMode === 'edit') {
           setMode('view')
-        } else if (mode === 'present') {
+        } else if (currentMode === 'present') {
           setShowEditWarning(true)
-        } else if (mode === 'view') {
+        } else if (currentMode === 'view') {
           setShowEditWarning(true)
         }
-      } else if (e.key === 'p' || e.key === 'P') {
-        const willBePresent = mode !== 'present'
+      } else if (e.key === 'p' || e.key === 'P' || e.key === 'q' || e.key === 'Q') {
+        const willBePresent = currentMode !== 'present'
         setMode(prev => prev === 'present' ? 'view' : 'present')
-        if (willBePresent) loadDrawingsList()
+        if (willBePresent) {
+          if (!loadingDrawings) {
+            setLoadingDrawings(true)
+            fetch('/api/public/drawings')
+              .then(res => res.json())
+              .then(data => {
+                const drawings = data.drawings || []
+                setDrawingsList(drawings.map((d: {id: string}) => ({ id: d.id })))
+                setLoadingDrawings(false)
+              })
+              .catch(() => {
+                setLoadingDrawings(false)
+              })
+          }
+        }
       } else if (e.key === 'ArrowLeft') {
-        navigateToPrevDrawing()
+        if (drawingsList.length === 0) {
+          if (!loadingDrawings) {
+            setLoadingDrawings(true)
+            fetch('/api/public/drawings')
+              .then(res => res.json())
+              .then(data => {
+                const drawings = data.drawings || []
+                setDrawingsList(drawings.map((d: {id: string}) => ({ id: d.id })))
+                setLoadingDrawings(false)
+              })
+              .catch(() => {
+                setLoadingDrawings(false)
+              })
+          }
+          return
+        }
+        const currentIndex = drawingsList.findIndex(d => d.id === id)
+        if (currentIndex > 0) {
+          navigate(`/d/${drawingsList[currentIndex - 1].id}`)
+        }
       } else if (e.key === 'ArrowRight') {
-        navigateToNextDrawing()
+        if (drawingsList.length === 0) {
+          if (!loadingDrawings) {
+            setLoadingDrawings(true)
+            fetch('/api/public/drawings')
+              .then(res => res.json())
+              .then(data => {
+                const drawings = data.drawings || []
+                setDrawingsList(drawings.map((d: {id: string}) => ({ id: d.id })))
+                setLoadingDrawings(false)
+              })
+              .catch(() => {
+                setLoadingDrawings(false)
+              })
+          }
+          return
+        }
+        const currentIndex = drawingsList.findIndex(d => d.id === id)
+        if (currentIndex < drawingsList.length - 1) {
+          navigate(`/d/${drawingsList[currentIndex + 1].id}`)
+        }
       } else if (e.key === 'Escape') {
-        if (mode === 'present') {
+        if (currentMode === 'present') {
           setMode('view')
         }
       }
     }
 
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [mode])
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [drawingsList, id, loadingDrawings, navigate])
 
   const loadDrawingsList = useCallback(() => {
     if (loadingDrawings) return
@@ -117,7 +175,7 @@ function Viewer() {
       .catch(() => {
         setLoadingDrawings(false)
       })
-  }, [loadingDrawings])
+  }, []) // loadingDrawings entfernt
 
   const navigateToPrevDrawing = useCallback(() => {
     if (drawingsList.length === 0) {
@@ -129,7 +187,7 @@ function Viewer() {
       const prevId = drawingsList[currentIndex - 1].id
       navigate(`/d/${prevId}`)
     }
-  }, [drawingsList, id, loadDrawingsList, navigate])
+  }, [drawingsList, id, navigate, loadDrawingsList])
 
   const navigateToNextDrawing = useCallback(() => {
     if (drawingsList.length === 0) {
@@ -141,7 +199,7 @@ function Viewer() {
       const nextId = drawingsList[currentIndex + 1].id
       navigate(`/d/${nextId}`)
     }
-  }, [drawingsList, id, loadDrawingsList, navigate])
+  }, [drawingsList, id, navigate, loadDrawingsList])
 
   useEffect(() => {
     localStorage.setItem('viewerMode', mode)
@@ -159,8 +217,8 @@ function Viewer() {
       }
     }
 
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
   }, [showEditWarning])
 
   if (loading) {
@@ -238,7 +296,7 @@ function Viewer() {
               loadDrawingsList()
             }
           }}
-          title="Present mode (p)"
+          title="Present mode (p/q)"
         >
           <span style={{ filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none' }}>▶️</span>
         </button>
@@ -402,7 +460,7 @@ function Viewer() {
                   setShowEditWarning(false)
                 }}
               >
-                Edit anyway
+                Edit anyway (w)
               </button>
             </div>
           </div>
