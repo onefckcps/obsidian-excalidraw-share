@@ -1,0 +1,42 @@
+[Unit]
+Description=Excalidraw Share - Self-hosted Excalidraw drawing sharing server
+After=network.target
+PartOf=network.target
+
+[Service]
+Type=simple
+User=excalidraw-share
+Group=excalidraw-share
+Restart=on-failure
+RestartSec=10s
+
+# Environment (API_KEY should be set via EnvironmentFile in production)
+Environment="BASE_URL=https://notes.leyk.me"
+Environment="DATA_DIR=/var/lib/excalidraw-share/drawings"
+Environment="FRONTEND_DIR=/var/lib/excalidraw-share/frontend"
+Environment="LISTEN_ADDR=127.0.0.1:3030"
+Environment="MAX_UPLOAD_MB=50"
+
+# Read API key from file (more secure)
+EnvironmentFile=/etc/excalidraw-share-api-key
+
+# Paths
+ExecStart=/root/excalidraw-share/backend/target/release/excalidraw-share
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/excalidraw-share
+
+# Runtime
+RuntimeDirectory=excalidraw-share
+RuntimeDirectoryMode=0755
+
+# Create user on first install
+ExecStartPre=/bin/sh -c 'id excalidraw-share &>/dev/null || useradd -r -s /bin/false -d /var/empty excalidraw-share'
+ExecStartPre=/bin/chown -R excalidraw-share:excalidraw-share /var/lib/excalidraw-share
+
+[Install]
+WantedBy=multi-user.target

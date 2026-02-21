@@ -1,0 +1,24 @@
+# Build artifacts
+/target
+/dist
+/backend/target
+
+# Secrets
+.env
+*.key
+*.pem
+secrets/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Nix
+result
+result-*
