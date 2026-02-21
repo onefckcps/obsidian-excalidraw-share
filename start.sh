@@ -12,10 +12,10 @@ PROJECT_ROOT="$SCRIPT_DIR"
 # Default values
 MODE="${1:-development}"
 API_KEY="${API_KEY:-change-me-in-production}"
-BASE_URL="${BASE_URL:-http://localhost:3030}"
+BASE_URL="${BASE_URL:-http://localhost:8184}"
 DATA_DIR="${DATA_DIR:-$PROJECT_ROOT/data/drawings}"
 FRONTEND_DIR="${FRONTEND_DIR:-$PROJECT_ROOT/frontend/dist}"
-LISTEN_ADDR="${LISTEN_ADDR:-127.0.0.1:3030}"
+LISTEN_ADDR="${LISTEN_ADDR:-127.0.0.1:8184}"
 
 # Colors
 RED='\033[0;31m'

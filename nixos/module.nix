@@ -71,7 +71,7 @@ in
 
     port = lib.mkOption {
       type = lib.types.port;
-      default = 3030;
+      default = 8184;
       description = "Port für Backend.";
     };
 

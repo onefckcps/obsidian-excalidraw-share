@@ -27,7 +27,7 @@ use storage::FileSystemStorage;
 #[command(name = "excalidraw-share", about = "Self-hosted Excalidraw sharing server")]
 struct Config {
     /// Address to listen on
-    #[arg(long, env = "LISTEN_ADDR", default_value = "127.0.0.1:3030")]
+    #[arg(long, env = "LISTEN_ADDR", default_value = "127.0.0.1:8184")]
     listen_addr: String,
 
     /// Directory to store drawing JSON files
@@ -39,7 +39,7 @@ struct Config {
     api_key: String,
 
     /// Public base URL (used to construct share links)
-    #[arg(long, env = "BASE_URL", default_value = "http://localhost:3030")]
+    #[arg(long, env = "BASE_URL", default_value = "http://localhost:8184")]
     base_url: String,
 
     /// Maximum upload size in megabytes

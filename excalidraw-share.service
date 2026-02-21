@@ -14,7 +14,7 @@ RestartSec=10s
 Environment="BASE_URL=https://notes.leyk.me"
 Environment="DATA_DIR=/var/lib/excalidraw-share/drawings"
 Environment="FRONTEND_DIR=/var/lib/excalidraw-share/frontend"
-Environment="LISTEN_ADDR=127.0.0.1:3030"
+Environment="LISTEN_ADDR=127.0.0.1:8184"
 Environment="MAX_UPLOAD_MB=50"
 
 # Read API key from file (more secure)
