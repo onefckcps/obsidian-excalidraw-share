@@ -11,10 +11,37 @@ const blobToBase64 = async (blob: Blob): Promise<string> => {
   return btoa(binary);
 };
 
+const cropCanvas = (
+  canvas: HTMLCanvasElement,
+  crop: { left: number; top: number; width: number; height: number }
+): string => {
+  const croppedCanvas = document.createElement('canvas');
+  croppedCanvas.width = Math.round(crop.width);
+  croppedCanvas.height = Math.round(crop.height);
+  const croppedCtx = croppedCanvas.getContext('2d');
+  if (croppedCtx) {
+    croppedCtx.drawImage(
+      canvas,
+      crop.left,
+      crop.top,
+      crop.width,
+      crop.height,
+      0,
+      0,
+      crop.width,
+      crop.height
+    );
+  }
+  
+  return croppedCanvas.toDataURL('image/png').split(',')[1];
+};
+
 const pdfToPng = async (
   app: App,
   file: TFile,
-  pageNum: number = 1
+  pageNum: number = 1,
+  cropRect?: number[],
+  scale: number = 1.5
 ): Promise<string> => {
   try {
     await loadPdfJs();
@@ -28,7 +55,6 @@ const pdfToPng = async (
     const pdfDoc = await pdfjsLib.getDocument(url).promise;
     const page = await pdfDoc.getPage(pageNum);
     
-    const scale = 1.5;
     const viewport = page.getViewport({ scale });
     
     const canvas = document.createElement('canvas');
@@ -44,16 +70,37 @@ const pdfToPng = async (
     
     await page.render(renderContext).promise;
     
-    return new Promise<string>((resolve, reject) => {
-      canvas.toBlob(async (blob) => {
-        if (blob) {
-          const base64 = await blobToBase64(blob);
-          resolve(base64);
-        } else {
-          reject(new Error('Failed to create blob from canvas'));
-        }
-      }, 'image/png');
-    });
+    const validRect = cropRect && cropRect.length === 4 && cropRect.every(x => !isNaN(x));
+    
+    let resultBase64: string;
+    
+    if (validRect) {
+      const [pageLeft, pageBottom, pageRight, pageTop] = page.view;
+      const pageHeight = pageTop - pageBottom;
+      const pageWidth = pageRight - pageLeft;
+      
+      const crop = {
+        left: (cropRect[0] - pageLeft) * scale,
+        top: (pageBottom + pageHeight - cropRect[3]) * scale,
+        width: (cropRect[2] - cropRect[0]) * scale,
+        height: (cropRect[3] - cropRect[1]) * scale,
+      };
+      
+      resultBase64 = cropCanvas(canvas, crop);
+    } else {
+      resultBase64 = await new Promise<string>((resolve, reject) => {
+        canvas.toBlob(async (blob) => {
+          if (blob) {
+            const base64 = await blobToBase64(blob);
+            resolve(base64);
+          } else {
+            reject(new Error('Failed to create blob from canvas'));
+          }
+        }, 'image/png');
+      });
+    }
+    
+    return resultBase64;
   } catch (e) {
     console.error('Excalidraw Share: PDF conversion failed', e);
     throw e;
@@ -63,11 +110,13 @@ const pdfToPng = async (
 interface ExcalidrawShareSettings {
   apiKey: string;
   baseUrl: string;
+  pdfScale: number;
 }
 
 const DEFAULT_SETTINGS: ExcalidrawShareSettings = {
   apiKey: '',
   baseUrl: 'http://localhost:8184',
+  pdfScale: 1.5,
 };
 
 interface DrawingMeta {
@@ -246,6 +295,25 @@ export default class ExcalidrawSharePlugin extends Plugin {
       // Get embedded files if available from active view
       let files: Record<string, any> = {};
       
+      // Extract rect info from elements for PDF cropping
+      const elementCropRects: Record<string, number[]> = {};
+      
+      if (scene.elements) {
+        for (const el of scene.elements) {
+          if (el && typeof el === 'object') {
+            const element = el as any;
+            if (element.type === 'image' && element.fileId && element.link) {
+              const link = element.link as string;
+              const rectMatch = link.match(/[&#]rect=(\d+),(\d+),(\d+),(\d+)/);
+              if (rectMatch) {
+                const rect = [rectMatch[1], rectMatch[2], rectMatch[3], rectMatch[4]].map(Number);
+                elementCropRects[element.fileId] = rect;
+              }
+            }
+          }
+        }
+      }
+      
       try {
         const excalidrawAPI = excalidrawPlugin.ea.getExcalidrawAPI();
         if (excalidrawAPI && typeof excalidrawAPI.getFiles === 'function') {
@@ -291,6 +359,17 @@ export default class ExcalidrawSharePlugin extends Plugin {
               if (pageMatch) pageNum = parseInt(pageMatch[1]);
             }
 
+            // Parse rect parameter for PDF cropping (e.g., &rect=17,23,437,226 or #rect=...)
+            // First check if rect is in the embedded files link
+            let cropRect: number[] | undefined;
+            const rectMatch = linkPath.match(/[&#]rect=(\d+),(\d+),(\d+),(\d+)/);
+            if (rectMatch) {
+              cropRect = [rectMatch[1], rectMatch[2], rectMatch[3], rectMatch[4]].map(Number);
+            } else if (elementCropRects[fileId]) {
+              // Fallback: get rect from element data
+              cropRect = elementCropRects[fileId];
+            }
+
             // Strip aliases and subpaths from link e.g. [[Image.png|Alias]] -> Image.png
             if (linkPath.includes('|')) linkPath = linkPath.split('|')[0];
             if (linkPath.includes('#')) linkPath = linkPath.split('#')[0];
@@ -303,7 +382,7 @@ export default class ExcalidrawSharePlugin extends Plugin {
               // Handle PDF files - convert to PNG
               if (ext === 'pdf') {
                 try {
-                  const pngBase64 = await pdfToPng(this.app, linkedFile, pageNum);
+                  const pngBase64 = await pdfToPng(this.app, linkedFile, pageNum, cropRect, this.settings.pdfScale);
                   files[fileId] = {
                     mimeType: 'image/png',
                     id: fileId,
@@ -486,6 +565,19 @@ class ExcalidrawShareSettingTab extends PluginSettingTab {
         text.setPlaceholder('http://localhost:8184').setValue(this.pluginRef.settings.baseUrl)
           .onChange(value => {
             this.pluginRef.settings.baseUrl = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('PDF Scale')
+      .setDesc('Scale factor for PDF to PNG conversion (0.5 - 5.0). Higher values = better quality but larger file size.')
+      .addSlider(slider => {
+        slider.setValue(this.pluginRef.settings.pdfScale)
+          .setLimits(0.5, 5.0, 0.1)
+          .setDynamicTooltip()
+          .onChange(value => {
+            this.pluginRef.settings.pdfScale = value;
             this.pluginRef.saveSettings();
           });
       });

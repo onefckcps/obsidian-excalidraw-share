@@ -11,7 +11,17 @@ const blobToBase64 = async (blob) => {
     }
     return btoa(binary);
 };
-const pdfToPng = async (app, file, pageNum = 1) => {
+const cropCanvas = (canvas, crop) => {
+    const croppedCanvas = document.createElement('canvas');
+    croppedCanvas.width = Math.round(crop.width);
+    croppedCanvas.height = Math.round(crop.height);
+    const croppedCtx = croppedCanvas.getContext('2d');
+    if (croppedCtx) {
+        croppedCtx.drawImage(canvas, crop.left, crop.top, crop.width, crop.height, 0, 0, crop.width, crop.height);
+    }
+    return croppedCanvas.toDataURL('image/png').split(',')[1];
+};
+const pdfToPng = async (app, file, pageNum = 1, cropRect, scale = 1.5) => {
     try {
         await (0, obsidian_1.loadPdfJs)();
         const pdfjsLib = window.pdfjsLib;
@@ -21,7 +31,6 @@ const pdfToPng = async (app, file, pageNum = 1) => {
         const url = app.vault.getResourcePath(file);
         const pdfDoc = await pdfjsLib.getDocument(url).promise;
         const page = await pdfDoc.getPage(pageNum);
-        const scale = 1.5;
         const viewport = page.getViewport({ scale });
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
@@ -32,17 +41,34 @@ const pdfToPng = async (app, file, pageNum = 1) => {
             viewport: viewport,
         };
         await page.render(renderContext).promise;
-        return new Promise((resolve, reject) => {
-            canvas.toBlob(async (blob) => {
-                if (blob) {
-                    const base64 = await blobToBase64(blob);
-                    resolve(base64);
-                }
-                else {
-                    reject(new Error('Failed to create blob from canvas'));
-                }
-            }, 'image/png');
-        });
+        const validRect = cropRect && cropRect.length === 4 && cropRect.every(x => !isNaN(x));
+        let resultBase64;
+        if (validRect) {
+            const [pageLeft, pageBottom, pageRight, pageTop] = page.view;
+            const pageHeight = pageTop - pageBottom;
+            const pageWidth = pageRight - pageLeft;
+            const crop = {
+                left: (cropRect[0] - pageLeft) * scale,
+                top: (pageBottom + pageHeight - cropRect[3]) * scale,
+                width: (cropRect[2] - cropRect[0]) * scale,
+                height: (cropRect[3] - cropRect[1]) * scale,
+            };
+            resultBase64 = cropCanvas(canvas, crop);
+        }
+        else {
+            resultBase64 = await new Promise((resolve, reject) => {
+                canvas.toBlob(async (blob) => {
+                    if (blob) {
+                        const base64 = await blobToBase64(blob);
+                        resolve(base64);
+                    }
+                    else {
+                        reject(new Error('Failed to create blob from canvas'));
+                    }
+                }, 'image/png');
+            });
+        }
+        return resultBase64;
     }
     catch (e) {
         console.error('Excalidraw Share: PDF conversion failed', e);
@@ -52,6 +78,7 @@ const pdfToPng = async (app, file, pageNum = 1) => {
 const DEFAULT_SETTINGS = {
     apiKey: '',
     baseUrl: 'http://localhost:8184',
+    pdfScale: 1.5,
 };
 class ExcalidrawSharePlugin extends obsidian_1.Plugin {
     constructor() {
@@ -198,6 +225,23 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
             }
             // Get embedded files if available from active view
             let files = {};
+            // Extract rect info from elements for PDF cropping
+            const elementCropRects = {};
+            if (scene.elements) {
+                for (const el of scene.elements) {
+                    if (el && typeof el === 'object') {
+                        const element = el;
+                        if (element.type === 'image' && element.fileId && element.link) {
+                            const link = element.link;
+                            const rectMatch = link.match(/[&#]rect=(\d+),(\d+),(\d+),(\d+)/);
+                            if (rectMatch) {
+                                const rect = [rectMatch[1], rectMatch[2], rectMatch[3], rectMatch[4]].map(Number);
+                                elementCropRects[element.fileId] = rect;
+                            }
+                        }
+                    }
+                }
+            }
             try {
                 const excalidrawAPI = excalidrawPlugin.ea.getExcalidrawAPI();
                 if (excalidrawAPI && typeof excalidrawAPI.getFiles === 'function') {
@@ -240,6 +284,17 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
                             if (pageMatch)
                                 pageNum = parseInt(pageMatch[1]);
                         }
+                        // Parse rect parameter for PDF cropping (e.g., &rect=17,23,437,226 or #rect=...)
+                        // First check if rect is in the embedded files link
+                        let cropRect;
+                        const rectMatch = linkPath.match(/[&#]rect=(\d+),(\d+),(\d+),(\d+)/);
+                        if (rectMatch) {
+                            cropRect = [rectMatch[1], rectMatch[2], rectMatch[3], rectMatch[4]].map(Number);
+                        }
+                        else if (elementCropRects[fileId]) {
+                            // Fallback: get rect from element data
+                            cropRect = elementCropRects[fileId];
+                        }
                         // Strip aliases and subpaths from link e.g. [[Image.png|Alias]] -> Image.png
                         if (linkPath.includes('|'))
                             linkPath = linkPath.split('|')[0];
@@ -252,7 +307,7 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
                             // Handle PDF files - convert to PNG
                             if (ext === 'pdf') {
                                 try {
-                                    const pngBase64 = await pdfToPng(this.app, linkedFile, pageNum);
+                                    const pngBase64 = await pdfToPng(this.app, linkedFile, pageNum, cropRect, this.settings.pdfScale);
                                     files[fileId] = {
                                         mimeType: 'image/png',
                                         id: fileId,
@@ -415,6 +470,18 @@ class ExcalidrawShareSettingTab extends obsidian_1.PluginSettingTab {
             text.setPlaceholder('http://localhost:8184').setValue(this.pluginRef.settings.baseUrl)
                 .onChange(value => {
                 this.pluginRef.settings.baseUrl = value;
+                this.pluginRef.saveSettings();
+            });
+        });
+        new obsidian_1.Setting(containerEl)
+            .setName('PDF Scale')
+            .setDesc('Scale factor for PDF to PNG conversion (0.5 - 5.0). Higher values = better quality but larger file size.')
+            .addSlider(slider => {
+            slider.setValue(this.pluginRef.settings.pdfScale)
+                .setLimits(0.5, 5.0, 0.1)
+                .setDynamicTooltip()
+                .onChange(value => {
+                this.pluginRef.settings.pdfScale = value;
                 this.pluginRef.saveSettings();
             });
         });
