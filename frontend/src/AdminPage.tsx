@@ -18,7 +18,7 @@ function AdminPage() {
 
   const fetchDrawings = () => {
     if (!apiKey) return
-    
+
     fetch('/api/drawings', {
       headers: { 'Authorization': `Bearer ${apiKey}` }
     })
@@ -67,9 +67,9 @@ function AdminPage() {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${apiKey}` }
       })
-      
+
       if (!res.ok) throw new Error('Failed to delete')
-      
+
       setDrawings(drawings.filter(d => d.id !== id))
     } catch (err) {
       alert('Failed to delete drawing')
@@ -80,9 +80,9 @@ function AdminPage() {
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr)
-    return date.toLocaleDateString(undefined, { 
-      year: 'numeric', 
-      month: 'short', 
+    return date.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit'
@@ -128,7 +128,7 @@ function AdminPage() {
               Continue
             </button>
           </form>
-          <Link to="/drawings" style={styles.backLink}>← Back to drawings</Link>
+          <Link to="/" style={styles.backLink}>← Back to drawings</Link>
         </div>
       </div>
     )
@@ -146,7 +146,7 @@ function AdminPage() {
       <main style={styles.main}>
         <div style={styles.titleRow}>
           <h1 style={styles.title}>Manage Drawings</h1>
-          <button 
+          <button
             onClick={() => { localStorage.removeItem('excalidraw-api-key'); setApiKey(''); setShowApiInput(true); }}
             style={styles.logoutBtn}
           >

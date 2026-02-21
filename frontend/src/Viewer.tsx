@@ -1,9 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { Excalidraw } from '@excalidraw/excalidraw'
 import type { AppState, BinaryFiles } from '@excalidraw/excalidraw/types/types'
-import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types'
+import type { ExcalidrawElement, Theme } from '@excalidraw/excalidraw/types/element/types'
 import DrawingsBrowser from './DrawingsBrowser'
+
+const spinKeyframes = `
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+`
 
 interface ExcalidrawData {
   type: string
@@ -19,6 +26,8 @@ function Viewer() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [showOverlay, setShowOverlay] = useState(false)
+  const [theme, setTheme] = useState<Theme>('light')
+  const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -33,6 +42,7 @@ function Viewer() {
       })
       .then((data) => {
         setSceneData(data)
+        setTheme(data.appState?.theme || 'light')
         setLoading(false)
       })
       .catch((err) => {
@@ -40,6 +50,53 @@ function Viewer() {
         setLoading(false)
       })
   }, [id])
+
+  const handleExcalidrawChange = (_elements: unknown, appState: { theme?: Theme }) => {
+    if (appState.theme && appState.theme !== theme) {
+      setTheme(appState.theme)
+    }
+  }
+
+  const refreshDrawing = useCallback(() => {
+    if (!id || refreshing) return
+    
+    setRefreshing(true)
+    fetch(`/api/drawings/${id}`)
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(res.status === 404 ? 'Drawing not found' : 'Failed to load drawing')
+        }
+        return res.json()
+      })
+      .then((data) => {
+        setSceneData(data)
+        setTheme(data.appState?.theme || 'light')
+        setError(null)
+        setRefreshing(false)
+      })
+      .catch((err) => {
+        setError(err.message)
+        setRefreshing(false)
+      })
+  }, [id, refreshing])
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return
+      }
+      
+      if (e.key === 'e' || e.key === 'E') {
+        setShowOverlay(prev => !prev)
+      } else if (e.key === 'r' || e.key === 'R') {
+        refreshDrawing()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [refreshDrawing])
 
   if (loading) {
     return (
@@ -65,7 +122,7 @@ function Viewer() {
           </button>
         </div>
         {showOverlay && (
-          <DrawingsBrowser mode="overlay" onClose={() => setShowOverlay(false)} />
+          <DrawingsBrowser mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} currentDrawingId={id} />
         )}
       </div>
     )
@@ -73,10 +130,9 @@ function Viewer() {
 
   if (!sceneData) return null
 
-  const theme = sceneData.appState?.theme || 'light'
-
   return (
     <div style={styles.container}>
+      <style>{spinKeyframes}</style>
       <Excalidraw
         initialData={{
           elements: sceneData.elements || [],
@@ -87,6 +143,7 @@ function Viewer() {
           },
           files: sceneData.files || {},
         }}
+        onChange={handleExcalidrawChange}
         viewModeEnabled={true}
         zenModeEnabled={true}
         theme={theme}
@@ -100,22 +157,41 @@ function Viewer() {
         }}
       />
       
-      {/* Floating Action Button for Browser */}
-      <button 
-        style={{
-          ...styles.floatingButton,
-          backgroundColor: theme === 'dark' ? '#2b2b2b' : '#fff',
-          borderColor: theme === 'dark' ? '#444' : '#ddd',
-          boxShadow: theme === 'dark' ? '0 4px 12px rgba(0,0,0,0.5)' : '0 4px 12px rgba(0,0,0,0.15)',
-        }}
-        onClick={() => setShowOverlay(true)}
-        title="Browse all drawings"
-      >
-        <span style={{ filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none' }}>📂</span>
-      </button>
+      {/* Floating Action Buttons */}
+      <div style={styles.floatingButtons}>
+        <button 
+          style={{
+            ...styles.floatingButton,
+            backgroundColor: theme === 'dark' ? '#2b2b2b' : '#fff',
+            borderColor: theme === 'dark' ? '#444' : '#ddd',
+            boxShadow: theme === 'dark' ? '0 4px 12px rgba(0,0,0,0.5)' : '0 4px 12px rgba(0,0,0,0.15)',
+          }}
+          onClick={refreshDrawing}
+          disabled={refreshing}
+          title="Refresh drawing (r)"
+        >
+          <span style={{ 
+            filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none',
+            animation: refreshing ? 'spin 1s linear infinite' : 'none'
+          }}>🔄</span>
+        </button>
+        
+        <button 
+          style={{
+            ...styles.floatingButton,
+            backgroundColor: theme === 'dark' ? '#2b2b2b' : '#fff',
+            borderColor: theme === 'dark' ? '#444' : '#ddd',
+            boxShadow: theme === 'dark' ? '0 4px 12px rgba(0,0,0,0.5)' : '0 4px 12px rgba(0,0,0,0.15)',
+          }}
+          onClick={() => setShowOverlay(true)}
+          title="Browse all drawings (e)"
+        >
+          <span style={{ filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none' }}>📂</span>
+        </button>
+      </div>
       
       {showOverlay && (
-        <DrawingsBrowser key={Date.now()} mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} />
+        <DrawingsBrowser key={Date.now()} mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} currentDrawingId={id} />
       )}
     </div>
   )
@@ -127,10 +203,15 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100vh',
     position: 'relative',
   },
-  floatingButton: {
+  floatingButtons: {
     position: 'absolute',
     bottom: '24px',
     right: '24px',
+    display: 'flex',
+    gap: '12px',
+    zIndex: 100,
+  },
+  floatingButton: {
     width: '48px',
     height: '48px',
     borderRadius: '24px',
@@ -139,7 +220,7 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     fontSize: '24px',
     cursor: 'pointer',
-    zIndex: 100, // Above Excalidraw UI
+    border: 'none',
     transition: 'all 0.2s ease',
   },
   center: {

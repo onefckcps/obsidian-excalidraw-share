@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
+const spinKeyframes = `
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+`
+
 interface PublicDrawing {
   id: string
   created_at: string
@@ -19,9 +26,10 @@ interface DrawingsBrowserProps {
   mode?: 'standalone' | 'overlay'
   theme?: string
   onClose?: () => void
+  currentDrawingId?: string
 }
 
-function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowserProps) {
+function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId }: DrawingsBrowserProps) {
   const [drawings, setDrawings] = useState<PublicDrawing[]>([])
   const [tree, setTree] = useState<TreeNode | null>(null)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set(['_root']))
@@ -37,17 +45,18 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
   })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  
+  const [refreshing, setRefreshing] = useState(false)
+
   // Use provided theme, or check system preference for standalone mode
   const [currentTheme, setCurrentTheme] = useState(theme || 'light')
-  
+
   useEffect(() => {
     if (theme) {
       setCurrentTheme(theme)
     } else if (mode === 'standalone') {
       const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
       setCurrentTheme(isDark ? 'dark' : 'light')
-      
+
       const listener = (e: MediaQueryListEvent) => setCurrentTheme(e.matches ? 'dark' : 'light')
       const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
       mediaQuery.addEventListener('change', listener)
@@ -65,6 +74,23 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
     }
   }, [selectedFolder, mode])
 
+  useEffect(() => {
+    if (mode !== 'overlay' || !onClose) return
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        const target = e.target as HTMLElement
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+          return
+        }
+        onClose()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [mode, onClose])
+
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -76,10 +102,10 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
       .then((data) => {
         const fetchedDrawings = data.drawings || []
         setDrawings(fetchedDrawings)
-        
+
         // Build tree structure
         const root: TreeNode = { name: 'Root', path: '_root', children: {}, drawings: [] }
-        
+
         fetchedDrawings.forEach((d: PublicDrawing) => {
           if (!d.source_path) {
             root.drawings.push(d)
@@ -88,7 +114,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
 
           const parts = d.source_path.split('/')
           parts.pop() // Remove filename
-          
+
           let currentNode = root
           let currentPath = '_root'
 
@@ -109,11 +135,27 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
           // Add drawing to leaf folder
           currentNode.drawings.push(d)
         })
-        
+
         setTree(root)
-        
-        // Expand path to selected folder
-        if (selectedFolder && selectedFolder !== '_root') {
+
+        if (currentDrawingId) {
+          const currentDrawing = fetchedDrawings.find((d: PublicDrawing) => d.id === currentDrawingId)
+          if (currentDrawing && currentDrawing.source_path) {
+            const parts = currentDrawing.source_path.split('/')
+            parts.pop()
+            if (parts.length > 0) {
+              const folderPath = parts.join('/')
+              setSelectedFolder(folderPath)
+              let path = ''
+              parts.forEach((part: string) => {
+                path = path === '' ? part : `${path}/${part}`
+                expandedPaths.add(path)
+              })
+              setExpandedPaths(new Set(expandedPaths))
+            }
+          }
+        } else if (selectedFolder && selectedFolder !== '_root') {
+          // Expand path to selected folder
           const parts = selectedFolder.split('/')
           let path = ''
           const pathsToExpand = new Set(expandedPaths)
@@ -123,7 +165,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
           })
           setExpandedPaths(pathsToExpand)
         }
-        
+
         setLoading(false)
       })
       .catch((err) => {
@@ -131,6 +173,89 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
         setLoading(false)
       })
   }, [])
+
+  const refreshDrawings = () => {
+    if (refreshing) return
+
+    setRefreshing(true)
+    setError(null)
+
+    fetch('/api/public/drawings')
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed to load drawings')
+        return res.json()
+      })
+      .then((data) => {
+        const fetchedDrawings = data.drawings || []
+        setDrawings(fetchedDrawings)
+
+        const root: TreeNode = { name: 'Root', path: '_root', children: {}, drawings: [] }
+
+        fetchedDrawings.forEach((d: PublicDrawing) => {
+          if (!d.source_path) {
+            root.drawings.push(d)
+            return
+          }
+
+          const parts = d.source_path.split('/')
+          parts.pop()
+
+          let currentNode = root
+          let currentPath = '_root'
+
+          parts.forEach((part: string) => {
+            currentPath = currentPath === '_root' ? part : `${currentPath}/${part}`
+            if (!currentNode.children[part]) {
+              currentNode.children[part] = {
+                name: part,
+                path: currentPath,
+                children: {},
+                drawings: []
+              }
+            }
+            currentNode = currentNode.children[part]
+          })
+
+          currentNode.drawings.push(d)
+        })
+
+        setTree(root)
+
+        if (currentDrawingId) {
+          const currentDrawing = fetchedDrawings.find((d: PublicDrawing) => d.id === currentDrawingId)
+          if (currentDrawing && currentDrawing.source_path) {
+            const parts = currentDrawing.source_path.split('/')
+            parts.pop()
+            if (parts.length > 0) {
+              const folderPath = parts.join('/')
+              setSelectedFolder(folderPath)
+              let path = ''
+              const pathsToExpand = new Set<string>(['_root'])
+              parts.forEach((part: string) => {
+                path = path === '' ? part : `${path}/${part}`
+                pathsToExpand.add(path)
+              })
+              setExpandedPaths(pathsToExpand)
+            }
+          }
+        } else if (selectedFolder && selectedFolder !== '_root') {
+          const parts = selectedFolder.split('/')
+          let path = ''
+          const pathsToExpand = new Set<string>(['_root'])
+          parts.forEach((part: string) => {
+            path = path === '' ? part : `${path}/${part}`
+            pathsToExpand.add(path)
+          })
+          setExpandedPaths(pathsToExpand)
+        }
+
+        setRefreshing(false)
+      })
+      .catch((err) => {
+        setError(err.message)
+        setRefreshing(false)
+      })
+  }
 
   const toggleFolder = (path: string) => {
     setExpandedPaths(prev => {
@@ -185,14 +310,14 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
     const isRoot = node.path === '_root'
     const isExpanded = expandedPaths.has(node.path)
     const isSelected = selectedFolder === node.path
-    
+
     const folderKeys = Object.keys(node.children).sort((a, b) => a.localeCompare(b, undefined, {sensitivity: 'base'}))
     const hasChildren = folderKeys.length > 0
     const totalCount = countAllDrawings(node)
 
     return (
       <div key={node.path} style={{ marginLeft: isRoot ? 0 : '16px' }}>
-        <div 
+        <div
           style={{
             ...styles.treeItem,
             ...(isSelected ? styles.treeItemActive : {})
@@ -213,7 +338,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
             ({totalCount})
           </span>
         </div>
-        
+
         {isExpanded && folderKeys.length > 0 && (
           <div style={styles.treeChildren}>
             {folderKeys.map(key => renderTree(node.children[key], level + 1))}
@@ -233,10 +358,10 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr)
-    return date.toLocaleDateString(undefined, { 
-      year: 'numeric', 
-      month: 'short', 
-      day: 'numeric' 
+    return date.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
     })
   }
 
@@ -247,23 +372,32 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
 
   const content = (
     <div style={mode === 'overlay' ? styles.overlayContainer : styles.container}>
+      <style>{spinKeyframes}</style>
       {mode === 'overlay' && (
         <div style={styles.overlayBackdrop} onClick={onClose} />
       )}
-      
+
       <div style={mode === 'overlay' ? styles.overlayModal : styles.mainWrapper}>
         <header style={styles.header}>
           <div style={styles.headerLeft}>
+            <button
+              style={styles.refreshIcon as React.CSSProperties}
+              onClick={refreshDrawings}
+              disabled={refreshing}
+              title="Refresh drawings (r)"
+            >
+              <span style={refreshing ? { animation: 'spin 1s linear infinite' } : {}}>🔄</span>
+            </button>
             {mode === 'standalone' ? (
               <Link to="/" style={styles.logo}>Excalidraw Share</Link>
             ) : (
               <h2 style={styles.overlayTitle}>Browse Drawings</h2>
             )}
           </div>
-          
+
           <div style={styles.headerRight}>
             {mode === 'standalone' ? (
-              <Link to="/admin" style={styles.adminLink}>Admin</Link>
+              <Link to="/admin" style={styles.adminIcon} title="Admin">⚙️</Link>
             ) : (
               <button style={styles.closeBtn} onClick={onClose} title="Close">
                 ✕
@@ -316,8 +450,8 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
                 ) : (
                   <div style={styles.grid}>
                     {getSelectedDrawings().map(drawing => (
-                      <Link 
-                        key={drawing.id} 
+                      <Link
+                        key={drawing.id}
                         to={`/d/${drawing.id}`}
                         onClick={(e) => handleDrawingClick(e, drawing.id)}
                         style={styles.card}
@@ -346,7 +480,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose }: DrawingsBrowse
 
 const getStyles = (theme: string): Record<string, React.CSSProperties> => {
   const isDark = theme === 'dark';
-  
+
   // Color palette
   const colors = {
     bgApp: isDark ? '#121212' : '#f5f5f5',
@@ -356,17 +490,17 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
     bgActive: isDark ? '#1a2e3f' : '#e3f2fd', // Muted blue for dark mode
     bgPreview: isDark ? '#252525' : '#f8f9fa',
     bgBadge: isDark ? '#333' : '#e0e0e0',
-    
+
     textMain: isDark ? '#e0e0e0' : '#333',
     textMuted: isDark ? '#aaaaaa' : '#666',
     textDim: isDark ? '#888888' : '#888',
     textActive: isDark ? '#64b5f6' : '#1976d2', // Lighter blue for dark mode
     textLink: isDark ? '#64b5f6' : '#1976d2',
     textError: isDark ? '#ef5350' : '#d32f2f',
-    
+
     border: isDark ? '#333333' : '#eaeaea',
     borderLight: isDark ? '#2a2a2a' : '#eee',
-    
+
     shadow: isDark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.1)',
     shadowModal: isDark ? 'rgba(0,0,0,0.5)' : 'rgba(0, 0, 0, 0.2)',
   };
@@ -384,7 +518,7 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       flexDirection: 'column',
       flex: 1,
     },
-    
+
     // Overlay mode styles
     overlayContainer: {
       position: 'fixed',
@@ -438,7 +572,7 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       justifyContent: 'center',
       lineHeight: 1,
     },
-    
+
     // Shared styles
     header: {
       display: 'flex',
@@ -462,6 +596,29 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       fontWeight: 'bold',
       color: colors.textMain,
       textDecoration: 'none',
+    },
+    refreshIcon: {
+      fontSize: '16px',
+      textDecoration: 'none',
+      color: colors.textMuted,
+      padding: '4px 8px',
+      borderRadius: '4px',
+      transition: 'background-color 0.2s, color 0.2s',
+      cursor: 'pointer',
+      background: 'none',
+      border: 'none',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: '12px',
+    },
+    adminIcon: {
+      fontSize: '18px',
+      textDecoration: 'none',
+      color: colors.textMuted,
+      padding: '4px 8px',
+      borderRadius: '4px',
+      transition: 'background-color 0.2s, color 0.2s',
     },
     adminLink: {
       color: colors.textLink,
