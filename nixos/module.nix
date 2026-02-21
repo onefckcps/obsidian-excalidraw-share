@@ -171,9 +171,11 @@ in
           "BASE_URL=https://${cfg.domain}"
           "MAX_UPLOAD_MB=${toString cfg.maxUploadMb}"
           "FRONTEND_DIR=${cfg.dataDir}/frontend"
+          "API_KEY=${lib.readFile cfg.apiKeyFile}"
         ];
 
-        EnvironmentFile = cfg.apiKeyFile;
+        # Remove EnvironmentFile since we include API_KEY directly
+        # EnvironmentFile = cfg.apiKeyFile;
 
         NoNewPrivileges = true;
         PrivateTmp = true;
