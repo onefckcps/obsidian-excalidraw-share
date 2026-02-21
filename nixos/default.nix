@@ -9,7 +9,9 @@
 }:
 
 let
-  src = lib.cleanSource ../..;
+  # Project root is two levels up from nixos/
+  projectRoot = ../..;
+  src = lib.cleanSource projectRoot;
 in
 
 rustPlatform.buildRustPackage rec {
@@ -17,17 +19,14 @@ rustPlatform.buildRustPackage rec {
   version = "0.1.0";
   inherit src;
 
-  cargoLock.lockFile = null;
+  # Explicit path to Cargo.lock
+  cargoLock.lockFile = projectRoot + /backend/Cargo.lock;
 
   nativeBuildInputs = [ pkg-config ];
   buildInputs = [
     openssl
     zstd
   ];
-
-  postBuild = ''
-    echo "Excalidraw Share built successfully"
-  '';
 
   meta = with lib; {
     description = "Self-hosted Excalidraw drawing sharing server";
