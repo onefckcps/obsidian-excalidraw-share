@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/upload", post(routes::upload_drawing))
         .route("/api/drawings/{id}", delete(routes::delete_drawing))
         .route("/api/drawings", get(routes::list_drawings))
-        .layer(RequestBodyLimitLayer::new(body_limit))
+        .layer(axum::extract::DefaultBodyLimit::max(body_limit))
         .route_layer(middleware::from_fn_with_state(
             api_key.clone(),
             auth::api_key_middleware,
