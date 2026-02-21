@@ -266,9 +266,9 @@ You can also add a button to the Excalidraw toolbar by editing the script's conf
 ## NixOS Deployment (Recommended)
 
 This is the recommended way to deploy in production on NixOS. The module handles:
-- Building the backend
 - Creating a dedicated user
 - Setting up the data directory
+- Copying the frontend
 - Configuring the systemd service
 - Nginx reverse proxy with VPN access control
 - SSL certificates via ACME
@@ -282,12 +282,15 @@ sudo openssl rand -base64 32 | sudo tee /etc/secrets/excalidraw-share-api-key
 sudo chmod 600 /etc/secrets/excalidraw-share-api-key
 ```
 
-### Step 2: Build Frontend
-
-The frontend needs to be built first:
+### Step 2: Build Backend and Frontend
 
 ```bash
-cd /path/to/obsidian-excalidraw-share/frontend
+# Build backend
+cd /path/to/obsidian-excalidraw-share/backend
+cargo build --release
+
+# Build frontend
+cd ../frontend
 npm install
 npm run build
 ```
@@ -303,6 +306,9 @@ services.excalidraw-share = {
   enable = true;
   domain = "notes.leyk.me";
   apiKeyFile = "/etc/secrets/excalidraw-share-api-key";
+  
+  # Path to built binary (REQUIRED)
+  package = /path/to/obsidian-excalidraw-share/backend/target/release/excalidraw-share;
   
   # Path to built frontend (REQUIRED)
   frontendSource = /path/to/obsidian-excalidraw-share/frontend/dist;

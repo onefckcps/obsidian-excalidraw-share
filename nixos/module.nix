@@ -9,11 +9,9 @@
 #     enable = true;
 #     domain = "notes.leyk.me";
 #     apiKeyFile = "/etc/secrets/excalidraw-share-api-key";
+#     package = /path/to/obsidian-excalidraw-share/backend/target/release/excalidraw-share;
+#     frontendSource = /path/to/obsidian-excalidraw-share/frontend/dist;
 #   };
-#
-# WICHTIG: Du musst zuerst das Frontend bauen:
-#   cd frontend && npm install && npm run build
-#   Das frontend/dist Verzeichnis wird dann automatisch kopiert.
 #
 
 {
@@ -26,7 +24,6 @@
 let
   cfg = config.services.excalidraw-share;
 
-  # Hilfsfunktionen für VPN-Zugriff
   vpnOnly = ''
     allow 100.64.0.0/10;
     allow 127.0.0.1;
@@ -55,9 +52,9 @@ in
     '';
 
     package = lib.mkOption {
-      type = lib.types.package;
-      default = pkgs.callPackage ./default.nix { };
-      description = "Das excalidraw-share Backend-Paket.";
+      type = lib.types.path;
+      example = "/root/obsidian-excalidraw-share/backend/target/release/excalidraw-share";
+      description = "Pfad zum gebauten excalidraw-share Binary.";
     };
 
     domain = lib.mkOption {
@@ -101,7 +98,6 @@ in
 
     frontendSource = lib.mkOption {
       type = lib.types.path;
-      default = null;
       description = "Pfad zum gebauten Frontend (frontend/dist).";
     };
   };
@@ -119,26 +115,45 @@ in
     users.groups.excalidraw-share = { };
 
     # -------------------------------------------------------------------------
-    # 2. Frontend kopieren (wenn angegeben)
+    # 2. Verzeichnisse und Frontend
     # -------------------------------------------------------------------------
-    systemd.tmpfiles.rules =
-      lib.mkIf (cfg.frontendSource != null) [
-        "d ${cfg.dataDir} 0755 excalidraw-share excalidraw-share - -"
-        "d ${cfg.dataDir}/drawings 0755 excalidraw-share excalidraw-share - -"
-        "L+ ${cfg.dataDir}/frontend - - - ${cfg.frontendSource}"
-      ]
-      ++ lib.mkIf (cfg.frontendSource == null) [
-        "d ${cfg.dataDir} 0755 excalidraw-share excalidraw-share - -"
-        "d ${cfg.dataDir}/drawings 0755 excalidraw-share excalidraw-share - -"
-      ];
+    systemd.tmpfiles.rules = [
+      "d ${cfg.dataDir} 0755 excalidraw-share excalidraw-share - -"
+      "d ${cfg.dataDir}/drawings 0755 excalidraw-share excalidraw-share - -"
+    ];
 
     # -------------------------------------------------------------------------
-    # 3. Systemd Service
+    # 3. Frontend kopieren (einmalig bei Aktivierung)
     # -------------------------------------------------------------------------
+    systemd.services.excalidraw-share-setup = {
+      description = "Excalidraw Share - Setup (copy frontend)";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = "root";
+      };
+      script = ''
+        # Frontend kopieren wenn frontendSource gesetzt ist
+        ${lib.optionalString (cfg.frontendSource != null) ''
+          if [ -d "${cfg.frontendSource}" ]; then
+            rm -rf ${cfg.dataDir}/frontend
+            cp -r ${cfg.frontendSource} ${cfg.dataDir}/frontend
+            chown -R excalidraw-share:excalidraw-share ${cfg.dataDir}/frontend
+          fi
+        ''}
+      '';
+    };
+
     systemd.services.excalidraw-share = {
       description = "Excalidraw Share Server";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
+      after = [
+        "network.target"
+        "excalidraw-share-setup.service"
+      ];
+      requires = [ "excalidraw-share-setup.service" ];
 
       serviceConfig = {
         Type = "simple";
@@ -166,7 +181,7 @@ in
         ProtectHome = true;
         ReadWritePaths = [ cfg.dataDir ];
 
-        ExecStart = "${cfg.package}/bin/excalidraw-share";
+        ExecStart = "${cfg.package}";
 
         StartLimitBurst = 5;
         StartLimitIntervalSec = 60;
