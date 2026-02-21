@@ -25,7 +25,17 @@ sudo bash -c 'openssl rand -base64 32 > /etc/secrets/excalidraw-share-api-key'
 sudo chmod 600 /etc/secrets/excalidraw-share-api-key
 ```
 
-### Schritt 2: NixOS Config anpassen
+### Schritt 2: Frontend bauen
+
+Das Frontend muss zuerst gebaut werden (einmalig):
+
+```bash
+cd /root/obsidian-excalidraw-share/frontend
+npm install
+npm run build
+```
+
+### Schritt 3: NixOS Config anpassen
 
 Füge dies zu deiner `configuration.nix` hinzu:
 
@@ -40,6 +50,9 @@ services.excalidraw-share = {
   enable = true;
   domain = "notes.leyk.me";
   apiKeyFile = "/etc/secrets/excalidraw-share-api-key";
+  
+  # WICHTIG: Pfad zum gebauten Frontend
+  frontendSource = /root/obsidian-excalidraw-share/frontend/dist;
   
   # Optional: VPN-Zugriffskontrolle (Standard: vpnOnly)
   # vpnAccess = "vpnOnly";    # Nur VPN-Clients

@@ -265,7 +265,7 @@ You can also add a button to the Excalidraw toolbar by editing the script's conf
 
 ## NixOS Deployment (Recommended)
 
-This is the recommended way to deploy in production on NixOS. The module handles everything:
+This is the recommended way to deploy in production on NixOS. The module handles:
 - Building the backend
 - Creating a dedicated user
 - Setting up the data directory
@@ -282,7 +282,17 @@ sudo openssl rand -base64 32 | sudo tee /etc/secrets/excalidraw-share-api-key
 sudo chmod 600 /etc/secrets/excalidraw-share-api-key
 ```
 
-### Step 2: Add to NixOS Configuration
+### Step 2: Build Frontend
+
+The frontend needs to be built first:
+
+```bash
+cd /path/to/obsidian-excalidraw-share/frontend
+npm install
+npm run build
+```
+
+### Step 3: Add to NixOS Configuration
 
 Add to your `configuration.nix`:
 
@@ -294,13 +304,16 @@ services.excalidraw-share = {
   domain = "notes.leyk.me";
   apiKeyFile = "/etc/secrets/excalidraw-share-api-key";
   
+  # Path to built frontend (REQUIRED)
+  frontendSource = /path/to/obsidian-excalidraw-share/frontend/dist;
+  
   # Access control (default: vpnOnly)
   # Options: vpnOnly | vpnAndSelf | public
   vpnAccess = "vpnOnly";
 };
 ```
 
-### Step 3: Rebuild
+### Step 4: Rebuild
 
 ```bash
 sudo nixos-rebuild switch
@@ -308,11 +321,11 @@ sudo nixos-rebuild switch
 
 ### VPN Access Options
 
-| Option | Beschreibung |
+| Option | Description |
 |--------|-------------|
-| `vpnOnly` | Nur VPN-Clients (100.64.0.0/10) + localhost |
-| `vpnAndSelf` | Wie vpnOnly + deine externe IP |
-| `public` | Jeder darf zugreifen (nicht empfohlen!) |
+| `vpnOnly` | Only VPN clients (100.64.0.0/10) + localhost |
+| `vpnAndSelf` | Like vpnOnly + your external IP |
+| `public` | Anyone can access (not recommended!) |
 
 ---
 
