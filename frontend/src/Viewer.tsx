@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import { Excalidraw } from '@excalidraw/excalidraw'
 import type { AppState, BinaryFiles } from '@excalidraw/excalidraw/types/types'
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types'
+import DrawingsBrowser from './DrawingsBrowser'
 
 interface ExcalidrawData {
   type: string
@@ -17,6 +18,7 @@ function Viewer() {
   const [sceneData, setSceneData] = useState<ExcalidrawData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [showOverlay, setShowOverlay] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -55,7 +57,16 @@ function Viewer() {
           <h2 style={styles.errorTitle}>Error</h2>
           <p style={styles.errorText}>{error}</p>
           <Link to="/" style={styles.link}>Go to homepage</Link>
+          <button 
+            style={{...styles.link, background: 'none', border: 'none', cursor: 'pointer', display: 'block', margin: '16px auto 0'}} 
+            onClick={() => setShowOverlay(true)}
+          >
+            Browse other drawings
+          </button>
         </div>
+        {showOverlay && (
+          <DrawingsBrowser mode="overlay" onClose={() => setShowOverlay(false)} />
+        )}
       </div>
     )
   }
@@ -72,13 +83,15 @@ function Viewer() {
     files: sceneData.files || {},
   }
 
+  const theme = sceneData.appState?.theme || 'light'
+
   return (
     <div style={styles.container}>
       <Excalidraw
         initialData={initialData}
         viewModeEnabled={true}
         zenModeEnabled={true}
-        theme={sceneData.appState?.theme || 'light'}
+        theme={theme}
         UIOptions={{
           canvasActions: {
             loadScene: false,
@@ -88,6 +101,24 @@ function Viewer() {
           },
         }}
       />
+      
+      {/* Floating Action Button for Browser */}
+      <button 
+        style={{
+          ...styles.floatingButton,
+          backgroundColor: theme === 'dark' ? '#2b2b2b' : '#fff',
+          borderColor: theme === 'dark' ? '#444' : '#ddd',
+          boxShadow: theme === 'dark' ? '0 4px 12px rgba(0,0,0,0.5)' : '0 4px 12px rgba(0,0,0,0.15)',
+        }}
+        onClick={() => setShowOverlay(true)}
+        title="Browse all drawings"
+      >
+        <span style={{ filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none' }}>📂</span>
+      </button>
+      
+      {showOverlay && (
+        <DrawingsBrowser mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} />
+      )}
     </div>
   )
 }
@@ -96,6 +127,22 @@ const styles: Record<string, React.CSSProperties> = {
   container: {
     width: '100vw',
     height: '100vh',
+    position: 'relative',
+  },
+  floatingButton: {
+    position: 'absolute',
+    bottom: '24px',
+    right: '24px',
+    width: '48px',
+    height: '48px',
+    borderRadius: '24px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '24px',
+    cursor: 'pointer',
+    zIndex: 100, // Above Excalidraw UI
+    transition: 'all 0.2s ease',
   },
   center: {
     display: 'flex',

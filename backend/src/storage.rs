@@ -10,13 +10,14 @@ pub struct DrawingMeta {
     pub id: String,
     pub created_at: DateTime<Utc>,
     pub size_bytes: u64,
+    pub source_path: Option<String>,
 }
 
 /// Trait abstracting drawing storage – implement this for different backends
 /// (filesystem, S3, SQLite, etc.).
 #[allow(async_fn_in_trait)]
 pub trait DrawingStorage: Send + Sync + 'static {
-    async fn save(&self, id: &str, data: &serde_json::Value) -> Result<DrawingMeta, AppError>;
+    async fn save(&self, id: &str, data: &serde_json::Value, source_path: Option<&str>) -> Result<DrawingMeta, AppError>;
     async fn load(&self, id: &str) -> Result<serde_json::Value, AppError>;
     async fn delete(&self, id: &str) -> Result<(), AppError>;
     async fn list(&self) -> Result<Vec<DrawingMeta>, AppError>;
@@ -47,9 +48,17 @@ impl FileSystemStorage {
 }
 
 impl DrawingStorage for FileSystemStorage {
-    async fn save(&self, id: &str, data: &serde_json::Value) -> Result<DrawingMeta, AppError> {
+    async fn save(&self, id: &str, data: &serde_json::Value, source_path: Option<&str>) -> Result<DrawingMeta, AppError> {
         let path = self.drawing_path(id);
-        let json_bytes = serde_json::to_vec(data)?;
+        
+        let mut data_with_meta = data.clone();
+        if let Some(sp) = source_path {
+            if let Some(obj) = data_with_meta.as_object_mut() {
+                obj.insert("_source_path".to_string(), serde_json::Value::String(sp.to_string()));
+            }
+        }
+        
+        let json_bytes = serde_json::to_vec(&data_with_meta)?;
         let size_bytes = json_bytes.len() as u64;
 
         fs::write(&path, &json_bytes).await?;
@@ -58,6 +67,7 @@ impl DrawingStorage for FileSystemStorage {
             id: id.to_string(),
             created_at: Utc::now(),
             size_bytes,
+            source_path: source_path.map(String::from),
         })
     }
 
@@ -98,10 +108,27 @@ impl DrawingStorage for FileSystemStorage {
                     .created()
                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
+                let source_path = if path.exists() {
+                    match fs::read_to_string(&path).await {
+                        Ok(content) => {
+                            match serde_json::from_str::<serde_json::Value>(&content) {
+                                Ok(json) => json.get("_source_path")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from),
+                                Err(_) => None,
+                            }
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                };
+
                 drawings.push(DrawingMeta {
                     id,
                     created_at: DateTime::from(created_at),
                     size_bytes: metadata.len(),
+                    source_path,
                 });
             }
         }

@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom'
+
 function Landing() {
   return (
     <div style={styles.container}>
@@ -14,6 +16,10 @@ function Landing() {
             To share a drawing from Obsidian, use the "Share Drawing" 
             script in the Excalidraw plugin.
           </p>
+          <div style={styles.links}>
+            <Link to="/drawings" style={styles.link}>Browse Drawings</Link>
+            <Link to="/admin" style={styles.link}>Admin</Link>
+          </div>
         </div>
       </div>
     </div>
@@ -56,6 +62,20 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#666',
     fontSize: '0.95rem',
     lineHeight: '1.6',
+  },
+  links: {
+    display: 'flex',
+    gap: '16px',
+    marginTop: '24px',
+  },
+  link: {
+    padding: '10px 20px',
+    backgroundColor: '#1976d2',
+    color: '#fff',
+    borderRadius: '6px',
+    textDecoration: 'none',
+    fontSize: '14px',
+    fontWeight: '500',
   },
 }
 

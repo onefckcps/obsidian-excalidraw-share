@@ -1,0 +1,10 @@
+{
+  "id": "excalidraw-share",
+  "name": "Excalidraw Share",
+  "version": "1.0.0",
+  "description": "Publish and manage Excalidraw drawings to a self-hosted share server",
+  "author": "Excalidraw Share",
+  "authorUrl": "",
+  "isDesktopOnly": false,
+  "minAppVersion": "0.15.0"
+}

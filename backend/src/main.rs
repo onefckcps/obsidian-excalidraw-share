@@ -81,10 +81,17 @@ async fn main() -> anyhow::Result<()> {
     let api_key = ApiKey(config.api_key.clone());
     let body_limit = config.max_upload_mb * 1024 * 1024;
 
-    let public_api = Router::new()
-        .route("/api/drawings/{id}", get(routes::get_drawing))
-        .route("/api/health", get(routes::health));
+    let index_file = config.frontend_dir.join("index.html");
+    let frontend_service = ServeDir::new(&config.frontend_dir)
+        .not_found_service(ServeFile::new(&index_file));
 
+    // Public API routes (no auth required)
+    let public_api = Router::new()
+        .route("/api/health", get(routes::health))
+        .route("/api/public/drawings", get(routes::list_drawings_public))
+        .route("/api/drawings/{id}", get(routes::get_drawing));
+
+    // Protected API routes (auth required)
     let protected_api = Router::new()
         .route("/api/upload", post(routes::upload_drawing))
         .route("/api/drawings/{id}", delete(routes::delete_drawing))
@@ -95,15 +102,11 @@ async fn main() -> anyhow::Result<()> {
             auth::api_key_middleware,
         ));
 
-    let index_file = config.frontend_dir.join("index.html");
-    let frontend_service = ServeDir::new(&config.frontend_dir)
-        .not_found_service(ServeFile::new(&index_file));
-
     let app = Router::new()
         .merge(public_api)
         .merge(protected_api)
-        .with_state(app_state)
         .fallback_service(frontend_service)
+        .with_state(app_state)
         .layer(CompressionLayer::new())
         .layer(
             CorsLayer::new()
