@@ -79,13 +79,49 @@ function Viewer() {
       }
       
       const currentMode = modeRef.current
-      
+
+      // These work even when overlay is open
       if (e.key === 'e' || e.key === 'E') {
         setShowOverlay(prev => !prev)
-      } else if (e.key === 'w' || e.key === 'W') {
-        if (currentMode === 'edit') {
+        return
+      }
+
+      // These only work when overlay is closed
+      if (showOverlay) return
+
+      // r - refresh current drawing
+      if (e.key === 'r' || e.key === 'R') {
+        if (!id || loading) return
+        setLoading(true)
+        fetch(`/api/drawings/${id}`)
+          .then((res) => {
+            if (!res.ok) throw new Error(res.status === 404 ? 'Drawing not found' : 'Failed to load drawing')
+            return res.json()
+          })
+          .then((data) => {
+            setSceneData(data)
+            setTheme(data.appState?.theme || 'light')
+            setError(null)
+            setLoading(false)
+          })
+          .catch((err) => {
+            setError(err.message)
+            setLoading(false)
+          })
+        return
+      }
+
+      // Don't allow these in edit mode (except w to exit edit mode)
+      if (currentMode === 'edit') {
+        if (e.key === 'w' || e.key === 'W') {
           setMode('view')
-        } else if (currentMode === 'present') {
+        }
+        return
+      }
+
+      // w - toggle edit mode
+      if (e.key === 'w' || e.key === 'W') {
+        if (currentMode === 'present') {
           setShowEditWarning(true)
         } else if (currentMode === 'view') {
           setShowEditWarning(true)
@@ -159,7 +195,7 @@ function Viewer() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [drawingsList, id, loadingDrawings, navigate])
+  }, [showOverlay, drawingsList, id, loadingDrawings, navigate, loading])
 
   const loadDrawingsList = useCallback(() => {
     if (loadingDrawings) return
@@ -234,14 +270,45 @@ function Viewer() {
     return (
       <div style={styles.center}>
         <div style={styles.errorBox}>
-          <h2 style={styles.errorTitle}>Error</h2>
+          <h2 style={styles.errorTitle}>⚠️ Error</h2>
           <p style={styles.errorText}>{error}</p>
-          <Link to="/" style={styles.link}>Go to homepage</Link>
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '16px' }}>
+            <button 
+              style={{
+                padding: '10px 16px',
+                borderRadius: '4px',
+                border: '1px solid',
+                background: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                color: theme === 'dark' ? '#e0e0e0' : '#333',
+                borderColor: theme === 'dark' ? '#555' : '#ccc',
+              }}
+              onClick={() => window.history.back()}
+            >
+              ← Go Back
+            </button>
+            <Link 
+              to="/"
+              style={{
+                padding: '10px 16px',
+                borderRadius: '4px',
+                border: '1px solid',
+                background: 'none',
+                textDecoration: 'none',
+                fontSize: '14px',
+                color: theme === 'dark' ? '#e0e0e0' : '#333',
+                borderColor: theme === 'dark' ? '#555' : '#ccc',
+              }}
+            >
+              🏠 Home
+            </Link>
+          </div>
           <button 
             style={{...styles.link, background: 'none', border: 'none', cursor: 'pointer', display: 'block', margin: '16px auto 0'}} 
             onClick={() => setShowOverlay(true)}
           >
-            Browse other drawings
+            📂 Browse drawings
           </button>
         </div>
         {showOverlay && (

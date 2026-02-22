@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 const spinKeyframes = `
@@ -43,9 +43,15 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
     }
     return '_root'
   })
+  const [lastSelectedTreeIndex, setLastSelectedTreeIndex] = useState<number>(0)
+  const [selectedTreeIndex, setSelectedTreeIndex] = useState<number>(0)
+  const [selectedDrawingIndex, setSelectedDrawingIndex] = useState<number>(-1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+
+  const treeItemRefs = useRef<Map<number, HTMLDivElement>>(new Map())
+  const drawingCardRefs = useRef<Map<number, HTMLAnchorElement>>(new Map())
 
   // Use provided theme, or check system preference for standalone mode
   const [currentTheme, setCurrentTheme] = useState(theme || 'light')
@@ -75,21 +81,168 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
   }, [selectedFolder, mode])
 
   useEffect(() => {
-    if (mode !== 'overlay' || !onClose) return
+    if (selectedTreeIndex >= 0) {
+      const itemRef = treeItemRefs.current.get(selectedTreeIndex)
+      itemRef?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest'
+      })
+    }
+  }, [selectedTreeIndex])
+
+  useEffect(() => {
+    if (selectedDrawingIndex >= 0) {
+      const cardRef = drawingCardRefs.current.get(selectedDrawingIndex)
+      cardRef?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest'
+      })
+    }
+  }, [selectedDrawingIndex])
+
+  useEffect(() => {
+    if (!onClose && mode !== 'overlay') return
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return
+      }
+
       if (e.key === 'Escape') {
-        const target = e.target as HTMLElement
-        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-          return
+        onClose?.()
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        const items = flattenTreeItems()
+        if (items.length > 0) {
+          const newIndex = Math.max(0, selectedTreeIndex - 1)
+          setSelectedTreeIndex(newIndex)
+          setSelectedFolder(items[newIndex].path)
         }
-        onClose()
+        setSelectedDrawingIndex(-1)
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        const items = flattenTreeItems()
+        if (items.length > 0) {
+          const newIndex = Math.min(items.length - 1, selectedTreeIndex + 1)
+          setSelectedTreeIndex(newIndex)
+          setSelectedFolder(items[newIndex].path)
+        }
+        setSelectedDrawingIndex(-1)
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        if (selectedDrawingIndex >= 0) {
+          // Navigate to next drawing
+          const drawings = getSelectedDrawings()
+          if (selectedDrawingIndex < drawings.length - 1) {
+            setSelectedDrawingIndex(prev => prev + 1)
+          }
+        } else {
+          // From tree: expand folder or go to drawings
+          const items = flattenTreeItems()
+          if (items.length > 0 && selectedTreeIndex >= 0) {
+            const currentItem = items[selectedTreeIndex]
+            if (currentItem.hasChildren && !expandedPaths.has(currentItem.path)) {
+              setExpandedPaths(prev => new Set([...prev, currentItem.path]))
+              return
+            }
+          }
+          // Switch to drawings grid
+          setSelectedDrawingIndex(0)
+          setSelectedTreeIndex(-1)
+          setLastSelectedTreeIndex(selectedTreeIndex >= 0 ? selectedTreeIndex : 0)
+        }
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        if (selectedDrawingIndex >= 0) {
+          // Navigate to previous drawing
+          if (selectedDrawingIndex > 0) {
+            setSelectedDrawingIndex(prev => prev - 1)
+          } else {
+            // Go back to tree - restore last selected tree index
+            setSelectedDrawingIndex(-1)
+            setSelectedTreeIndex(lastSelectedTreeIndex)
+            const items = flattenTreeItems()
+            if (items.length > 0 && items[lastSelectedTreeIndex]) {
+              setSelectedFolder(items[lastSelectedTreeIndex].path)
+            }
+          }
+        } else if (selectedTreeIndex >= 0) {
+          // In tree: collapse folder
+          const items = flattenTreeItems()
+          if (items.length > 0) {
+            const currentItem = items[selectedTreeIndex]
+            if (expandedPaths.has(currentItem.path)) {
+              setExpandedPaths(prev => {
+                const next = new Set(prev)
+                next.delete(currentItem.path)
+                return next
+              })
+            }
+          }
+        }
+      } else if (e.key === 'Tab') {
+        e.preventDefault()
+        if (e.shiftKey) {
+          // Shift+Tab: previous drawing or back to tree
+          if (selectedDrawingIndex > 0) {
+            setSelectedDrawingIndex(prev => prev - 1)
+          } else if (selectedDrawingIndex === 0) {
+            setSelectedDrawingIndex(-1)
+            setSelectedTreeIndex(lastSelectedTreeIndex)
+            const items = flattenTreeItems()
+            if (items.length > 0 && items[lastSelectedTreeIndex]) {
+              setSelectedFolder(items[lastSelectedTreeIndex].path)
+            }
+          } else if (selectedTreeIndex >= 0) {
+            const items = flattenTreeItems()
+            setSelectedTreeIndex(prev => {
+              const newIndex = prev > 0 ? prev - 1 : items.length - 1
+              setSelectedFolder(items[newIndex]?.path || '_root')
+              return newIndex
+            })
+          } else {
+            // No selection yet, go to last tree item
+            const items = flattenTreeItems()
+            setSelectedTreeIndex(Math.max(0, items.length - 1))
+            setSelectedDrawingIndex(-1)
+          }
+        } else {
+          // Tab: next drawing or from tree to drawings
+          if (selectedDrawingIndex >= 0) {
+            const drawings = getSelectedDrawings()
+            setSelectedDrawingIndex(prev => Math.min(drawings.length - 1, prev + 1))
+          } else {
+            setSelectedDrawingIndex(0)
+            setSelectedTreeIndex(-1)
+            setLastSelectedTreeIndex(selectedTreeIndex >= 0 ? selectedTreeIndex : 0)
+          }
+        }
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        const drawings = getSelectedDrawings()
+        if (selectedDrawingIndex >= 0 && drawings[selectedDrawingIndex]) {
+          const drawing = drawings[selectedDrawingIndex]
+          if (mode === 'overlay' && onClose) {
+            onClose()
+            navigate(`/d/${drawing.id}`)
+          } else {
+            navigate(`/d/${drawing.id}`)
+          }
+        } else if (selectedTreeIndex >= 0) {
+          const items = flattenTreeItems()
+          const currentItem = items[selectedTreeIndex]
+          if (currentItem.hasChildren) {
+            setExpandedPaths(prev => new Set([...prev, currentItem.path]))
+          }
+          setSelectedFolder(currentItem.path)
+        }
       }
     }
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [mode, onClose])
+  }, [mode, onClose, selectedTreeIndex, selectedDrawingIndex, expandedPaths, selectedFolder])
 
   const navigate = useNavigate()
 
@@ -295,6 +448,25 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
     return node.drawings
   }
 
+  // Flatten tree for navigation (only expanded items)
+  const flattenTreeItems = (node: TreeNode | null = tree, items: {name: string, path: string, hasChildren: boolean}[] = []): {name: string, path: string, hasChildren: boolean}[] => {
+    if (!node) return items
+    items.push({ name: node.name, path: node.path, hasChildren: Object.keys(node.children).length > 0 })
+    if (node.path !== '_root' && !expandedPaths.has(node.path)) {
+      return items // Don't traverse into collapsed folders
+    }
+    const sortedChildren = Object.keys(node.children).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+    for (const key of sortedChildren) {
+      flattenTreeItems(node.children[key], items)
+    }
+    return items
+  }
+
+  const getTreeIndexForPath = (path: string): number => {
+    const items = flattenTreeItems()
+    return items.findIndex(item => item.path === path)
+  }
+
   // Count all drawings recursively
   const countAllDrawings = (node: TreeNode): number => {
     let count = node.drawings.length
@@ -310,6 +482,8 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
     const isRoot = node.path === '_root'
     const isExpanded = expandedPaths.has(node.path)
     const isSelected = selectedFolder === node.path
+    const treeIndex = getTreeIndexForPath(node.path)
+    const isKeyboardSelected = selectedTreeIndex >= 0 && treeIndex === selectedTreeIndex
 
     const folderKeys = Object.keys(node.children).sort((a, b) => a.localeCompare(b, undefined, {sensitivity: 'base'}))
     const hasChildren = folderKeys.length > 0
@@ -318,14 +492,21 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
     return (
       <div key={node.path} style={{ marginLeft: isRoot ? 0 : '16px' }}>
         <div
+          ref={(el) => {
+            if (el && treeIndex >= 0) {
+              treeItemRefs.current.set(treeIndex, el)
+            }
+          }}
           style={{
             ...styles.treeItem,
-            ...(isSelected ? styles.treeItemActive : {})
+            ...(isSelected || isKeyboardSelected ? styles.treeItemActive : {}),
+            ...(isKeyboardSelected ? { outline: currentTheme === 'dark' ? '2px solid #64b5f6' : '2px solid #1976d2' } : {})
           }}
           onClick={(e) => {
             e.stopPropagation()
             if (hasChildren) toggleFolder(node.path)
             selectFolder(node.path)
+            setSelectedTreeIndex(treeIndex >= 0 ? treeIndex : 0)
           }}
         >
           <span style={styles.treeIcon}>
@@ -449,12 +630,23 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
                   </div>
                 ) : (
                   <div style={styles.grid}>
-                    {getSelectedDrawings().map(drawing => (
+                    {getSelectedDrawings().map((drawing, index) => (
                       <Link
                         key={drawing.id}
                         to={`/d/${drawing.id}`}
+                        ref={(el) => {
+                          if (el) {
+                            drawingCardRefs.current.set(index, el)
+                          }
+                        }}
                         onClick={(e) => handleDrawingClick(e, drawing.id)}
-                        style={styles.card}
+                        style={{
+                          ...styles.card,
+                          ...(selectedDrawingIndex === index ? { 
+                            outline: currentTheme === 'dark' ? '2px solid #64b5f6' : '2px solid #1976d2',
+                            margin: '2px'
+                          } : {})
+                        }}
                       >
                         <div style={styles.cardPreview}>
                           <span style={styles.cardIcon}>🎨</span>
@@ -509,6 +701,7 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
     // Standalone mode styles
     container: {
       minHeight: '100vh',
+      height: '100vh',
       backgroundColor: colors.bgApp,
       display: 'flex',
       flexDirection: 'column',
@@ -517,6 +710,7 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       display: 'flex',
       flexDirection: 'column',
       flex: 1,
+      minHeight: 0,
     },
 
     // Overlay mode styles
@@ -631,6 +825,7 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden',
+      minHeight: 0,
     },
     layout: {
       display: 'flex',
@@ -638,6 +833,7 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       alignItems: 'flex-start',
       flex: 1,
       overflow: 'hidden',
+      minHeight: 0,
     },
     sidebar: {
       width: '300px',
@@ -653,9 +849,11 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
     content: {
       flex: 1,
       minWidth: 0,
+      minHeight: 0,
       height: '100%',
       display: 'flex',
       flexDirection: 'column',
+      overflowY: 'auto',
     },
     contentHeader: {
       display: 'flex',
@@ -722,7 +920,6 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       display: 'grid',
       gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
       gap: '16px',
-      overflowY: 'auto',
       paddingBottom: '24px',
       paddingRight: '8px',
     },
