@@ -61,13 +61,6 @@ function Viewer() {
 
   const isMobile = useMediaQuery('(max-width: 730px)')
 
-  // Load drawings list when entering present mode
-  useEffect(() => {
-    if (mode === 'present' && drawingsList.length === 0 && !loadingDrawings) {
-      loadDrawingsList()
-    }
-  }, [mode, drawingsList.length, loadingDrawings])
-
   useEffect(() => {
     if (!id) return
 
@@ -422,7 +415,18 @@ function Viewer() {
           setMode('view')
         } else {
           setMode('present')
-          loadDrawingsList()
+          // Load drawings list immediately when entering present mode
+          setLoadingDrawings(true)
+          fetch('/api/public/drawings')
+            .then(res => res.json())
+            .then(data => {
+              const drawings = data.drawings || []
+              setDrawingsList(drawings.map((d: {id: string}) => ({ id: d.id })))
+              setLoadingDrawings(false)
+            })
+            .catch(() => {
+              setLoadingDrawings(false)
+            })
         }
       }
 
