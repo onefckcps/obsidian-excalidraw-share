@@ -47,7 +47,7 @@ function Viewer() {
     if (!id) return
 
     setLoading(true)
-    fetch(`/api/drawings/${id}`)
+    fetch(`/api/view/${id}`)
       .then((res) => {
         if (!res.ok) {
           throw new Error(res.status === 404 ? 'Drawing not found' : 'Failed to load drawing')
@@ -93,7 +93,7 @@ function Viewer() {
       if (e.key === 'r' || e.key === 'R') {
         if (!id || loading) return
         setLoading(true)
-        fetch(`/api/drawings/${id}`)
+        fetch(`/api/view/${id}`)
           .then((res) => {
             if (!res.ok) throw new Error(res.status === 404 ? 'Drawing not found' : 'Failed to load drawing')
             return res.json()

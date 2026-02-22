@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
     let public_api = Router::new()
         .route("/api/health", get(routes::health))
         .route("/api/public/drawings", get(routes::list_drawings_public))
-        .route("/api/drawings/{id}", get(routes::get_drawing));
+        .route("/api/view/{id}", get(routes::get_drawing));
 
     // Protected API routes (auth required)
     let protected_api = Router::new()
