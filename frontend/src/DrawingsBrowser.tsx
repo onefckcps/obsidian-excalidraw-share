@@ -1,6 +1,22 @@
 import { useEffect, useState, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(false)
+
+  useEffect(() => {
+    const media = window.matchMedia(query)
+    if (media.matches !== matches) {
+      setMatches(media.matches)
+    }
+    const listener = (e: MediaQueryListEvent) => setMatches(e.matches)
+    media.addEventListener('change', listener)
+    return () => media.removeEventListener('change', listener)
+  }, [matches, query])
+
+  return matches
+}
+
 const spinKeyframes = `
   @keyframes spin {
     from { transform: rotate(0deg); }
@@ -49,6 +65,11 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [mobileView, setMobileView] = useState<'drawings' | 'tree'>('drawings')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [showSearch, setShowSearch] = useState(false)
+
+  const isMobile = useMediaQuery('(max-width: 730px)')
 
   const treeItemRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const drawingCardRefs = useRef<Map<number, HTMLAnchorElement>>(new Map())
@@ -133,7 +154,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
         e.preventDefault()
         if (selectedDrawingIndex >= 0) {
           // Navigate to next drawing
-          const drawings = getSelectedDrawings()
+          const drawings = getFilteredDrawings()
           if (selectedDrawingIndex < drawings.length - 1) {
             setSelectedDrawingIndex(prev => prev + 1)
           }
@@ -210,7 +231,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
         } else {
           // Tab: next drawing or from tree to drawings
           if (selectedDrawingIndex >= 0) {
-            const drawings = getSelectedDrawings()
+            const drawings = getFilteredDrawings()
             setSelectedDrawingIndex(prev => Math.min(drawings.length - 1, prev + 1))
           } else {
             setSelectedDrawingIndex(0)
@@ -220,7 +241,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
         }
       } else if (e.key === 'Enter') {
         e.preventDefault()
-        const drawings = getSelectedDrawings()
+        const drawings = getFilteredDrawings()
         if (selectedDrawingIndex >= 0 && drawings[selectedDrawingIndex]) {
           const drawing = drawings[selectedDrawingIndex]
           if (mode === 'overlay' && onClose) {
@@ -422,14 +443,38 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
     })
   }
 
+  const collectAllPaths = (node: TreeNode | null, paths: Set<string>): Set<string> => {
+    if (!node) return paths
+    if (node.path !== '_root') {
+      paths.add(node.path)
+    }
+    for (const child of Object.values(node.children)) {
+      collectAllPaths(child, paths)
+    }
+    return paths
+  }
+
+  const openAllFolders = () => {
+    if (tree) {
+      setExpandedPaths(collectAllPaths(tree, new Set(['_root'])))
+    }
+  }
+
+  const openMobileTree = () => {
+    openAllFolders()
+    setMobileView('tree')
+  }
+
   const selectFolder = (path: string) => {
     setSelectedFolder(path)
-    // Also expand it if not already
     setExpandedPaths(prev => {
       const next = new Set(prev)
       next.add(path)
       return next
     })
+    if (isMobile) {
+      setMobileView('drawings')
+    }
   }
 
   // Get drawings for currently selected folder
@@ -446,6 +491,19 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
       node = node.children[part]
     }
     return node.drawings
+  }
+
+  // Get filtered drawings based on search query
+  const getFilteredDrawings = () => {
+    const folderDrawings = getSelectedDrawings()
+    if (!searchQuery.trim()) return folderDrawings
+
+    const query = searchQuery.toLowerCase()
+    return folderDrawings.filter(d => {
+      const name = getFileName(d.source_path).toLowerCase()
+      const date = formatDate(d.created_at).toLowerCase()
+      return name.includes(query) || date.includes(query)
+    })
   }
 
   // Flatten tree for navigation (only expanded items)
@@ -558,23 +616,60 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
         <div style={styles.overlayBackdrop} onClick={onClose} />
       )}
 
-      <div style={mode === 'overlay' ? styles.overlayModal : styles.mainWrapper}>
-        <header style={styles.header}>
+      <div style={mode === 'overlay' ? (isMobile ? styles.overlayModalMobile : styles.overlayModal) : styles.mainWrapper}>
+        <header style={isMobile ? styles.headerMobile : styles.header}>
           <div style={styles.headerLeft}>
-            <button
-              style={styles.refreshIcon as React.CSSProperties}
-              onClick={refreshDrawings}
-              disabled={refreshing}
-              title="Refresh drawings (r)"
-            >
-              <span style={refreshing ? { animation: 'spin 1s linear infinite' } : {}}>🔄</span>
-            </button>
-            {mode === 'standalone' ? (
-              <Link to="/" style={styles.logo}>Excalidraw Share</Link>
+            {isMobile && mobileView === 'tree' ? (
+              <button style={styles.mobileBackBtn} onClick={() => setMobileView('drawings')}>
+                ← Back
+              </button>
             ) : (
-              <h2 style={styles.overlayTitle}>Browse Drawings</h2>
+              <>
+                <button
+                  style={styles.refreshIcon as React.CSSProperties}
+                  onClick={refreshDrawings}
+                  disabled={refreshing}
+                  title="Refresh drawings (r)"
+                >
+                  <span style={refreshing ? { animation: 'spin 1s linear infinite' } : {}}>🔄</span>
+                </button>
+                {isMobile && (
+                  <button
+                    style={{
+                      ...styles.searchBtn,
+                      ...(showSearch ? { backgroundColor: currentTheme === 'dark' ? '#1a2e3f' : '#e3f2fd', color: currentTheme === 'dark' ? '#64b5f6' : '#1976d2' } : {})
+                    }}
+                    onClick={() => setShowSearch(!showSearch)}
+                    title="Search"
+                  >
+                    🔍
+                  </button>
+                )}
+                {mode === 'standalone' && !isMobile && (
+                  <Link to="/" style={styles.logo}>Excalidraw Share</Link>
+                )}
+                {!isMobile && (
+                  <input
+                    type="text"
+                    placeholder="Search..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    style={styles.searchInput}
+                  />
+                )}
+              </>
             )}
           </div>
+
+          {isMobile && mobileView === 'drawings' && (
+            <div style={{ flex: 1, display: 'flex', justifyContent: 'center', padding: '0 8px' }}>
+              <button style={styles.mobileFolderBtn} onClick={openMobileTree}>
+                <span style={{ filter: currentTheme === 'dark' ? 'brightness(1.3)' : 'none' }}>📁</span>
+                <span style={{ flex: 1 }}>{selectedFolder === '_root' ? 'All Drawings' : selectedFolder.split('/').pop()}</span>
+                <span style={{ fontSize: '12px', marginLeft: '8px', color: currentTheme === 'dark' ? '#aaaaaa' : '#666' }}>▼</span>
+              </button>
+            </div>
+          )}
 
           <div style={styles.headerRight}>
             {mode === 'standalone' ? (
@@ -587,7 +682,20 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
           </div>
         </header>
 
-        <main style={styles.main}>
+        {isMobile && showSearch && (
+          <div style={styles.mobileSearchContainer}>
+            <input
+              type="text"
+              placeholder="Search by name or date..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              autoFocus
+              style={styles.mobileSearchInput}
+            />
+          </div>
+        )}
+
+        <main style={isMobile ? styles.mainMobile : styles.main}>
           {loading ? (
             <div style={styles.center}>
               <div style={styles.spinner} />
@@ -606,61 +714,83 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
               <p>Use the Obsidian plugin to publish drawings.</p>
             </div>
           ) : (
-            <div style={styles.layout}>
-              {/* Left Sidebar - Tree View */}
-              <div style={styles.sidebar}>
-                <div style={styles.treeContainer}>
-                  {tree && renderTree(tree)}
-                </div>
-              </div>
-
-              {/* Right Content - Drawings Grid */}
-              <div style={styles.content}>
-                <div style={styles.contentHeader}>
-                  <h2 style={styles.folderTitle}>
-                    {selectedFolder === '_root' ? 'Root' : selectedFolder.split('/').pop()}
-                  </h2>
-                  <span style={styles.folderCount}>{getSelectedDrawings().length} items</span>
-                </div>
-
-                {getSelectedDrawings().length === 0 ? (
-                  <div style={styles.emptyFolder}>
-                    <p>This folder has no direct drawings.</p>
-                    <p style={{fontSize: '13px', marginTop: '8px', color: currentTheme === 'dark' ? '#888' : '#666'}}>Select a subfolder to view its contents.</p>
+            <>
+              {/* Mobile Tree View (fullscreen) */}
+              {isMobile && mobileView === 'tree' && (
+                <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+                  <div style={styles.treeContainer}>
+                    {tree && renderTree(tree)}
                   </div>
-                ) : (
-                  <div style={styles.grid}>
-                    {getSelectedDrawings().map((drawing, index) => (
-                      <Link
-                        key={drawing.id}
-                        to={`/d/${drawing.id}`}
-                        ref={(el) => {
-                          if (el) {
-                            drawingCardRefs.current.set(index, el)
-                          }
-                        }}
-                        onClick={(e) => handleDrawingClick(e, drawing.id)}
-                        style={{
-                          ...styles.card,
-                          ...(selectedDrawingIndex === index ? { 
-                            outline: currentTheme === 'dark' ? '2px solid #64b5f6' : '2px solid #1976d2',
-                            margin: '2px'
-                          } : {})
-                        }}
-                      >
-                        <div style={styles.cardPreview}>
-                          <span style={styles.cardIcon}>🎨</span>
-                        </div>
-                        <div style={styles.cardContent}>
-                          <h3 style={styles.cardTitle}>{getFileName(drawing.source_path)}</h3>
-                          <p style={styles.cardDate}>{formatDate(drawing.created_at)}</p>
-                        </div>
-                      </Link>
-                    ))}
+                </div>
+              )}
+
+              {/* Desktop Layout or Mobile Drawings View */}
+              {(!isMobile || mobileView === 'drawings') && (
+                <div style={isMobile ? { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' } : styles.layout}>
+                  {!isMobile && (
+                    <div style={styles.sidebar}>
+                      <div style={styles.treeContainer}>
+                        {tree && renderTree(tree)}
+                      </div>
+                    </div>
+                  )}
+
+                  <div style={isMobile ? { flex: 1, overflowY: 'auto', padding: '0 4px' } : styles.content}>
+                    {getFilteredDrawings().length === 0 ? (
+                      <div style={styles.emptyFolder}>
+                        {searchQuery ? (
+                          <p>No drawings match "{searchQuery}"</p>
+                        ) : (
+                          <>
+                            <p>This folder has no direct drawings.</p>
+                            <p style={{fontSize: '13px', marginTop: '8px', color: currentTheme === 'dark' ? '#888' : '#666'}}>Select a subfolder to view its contents.</p>
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={isMobile ? styles.mobileGrid : styles.grid}>
+                        {getFilteredDrawings().map((drawing, index) => (
+                          <Link
+                            key={drawing.id}
+                            to={`/d/${drawing.id}`}
+                            ref={(el) => {
+                              if (el) {
+                                drawingCardRefs.current.set(index, el)
+                              }
+                            }}
+                            onClick={(e) => handleDrawingClick(e, drawing.id)}
+                            style={{
+                              ...styles.card,
+                              ...(selectedDrawingIndex === index ? {
+                                outline: currentTheme === 'dark' ? '2px solid #64b5f6' : '2px solid #1976d2',
+                                margin: '2px'
+                              } : {})
+                            }}
+                          >
+                            <div style={{
+                              ...styles.cardPreview,
+                              ...(isMobile ? { height: '80px' } : {})
+                            }}>
+                              <span style={styles.cardIcon}>🎨</span>
+                            </div>
+                            <div style={styles.cardContent}>
+                              <h3 style={{
+                                ...styles.cardTitle,
+                                ...(isMobile ? { fontSize: '12px' } : {})
+                              }}>{getFileName(drawing.source_path)}</h3>
+                              <p style={{
+                                ...styles.cardDate,
+                                ...(isMobile ? { fontSize: '10px' } : {})
+                              }}>{formatDate(drawing.created_at)}</p>
+                            </div>
+                          </Link>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            </div>
+                </div>
+              )}
+            </>
           )}
         </main>
       </div>
@@ -747,6 +877,19 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       flexDirection: 'column',
       overflow: 'hidden',
     },
+    overlayModalMobile: {
+      position: 'relative',
+      width: '100vw',
+      height: '100vh',
+      maxWidth: '100vw',
+      maxHeight: '100vh',
+      borderRadius: 0,
+      backgroundColor: colors.bgApp,
+      boxShadow: 'none',
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden',
+    },
     overlayTitle: {
       fontSize: '20px',
       fontWeight: '600',
@@ -776,6 +919,41 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       backgroundColor: colors.bgHeader,
       borderBottom: `1px solid ${colors.border}`,
       zIndex: 10,
+    },
+    headerMobile: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      padding: '12px 16px',
+      backgroundColor: colors.bgHeader,
+      borderBottom: `1px solid ${colors.border}`,
+      zIndex: 10,
+    },
+    mobileFolderBtn: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'flex-start',
+      gap: '8px',
+      padding: '8px 12px',
+      backgroundColor: colors.bgPanel,
+      border: `1px solid ${colors.border}`,
+      borderRadius: '8px',
+      cursor: 'pointer',
+      fontSize: '15px',
+      fontWeight: '500',
+      color: colors.textMain,
+      flex: 1,
+    },
+    mobileBackBtn: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '4px',
+      padding: '8px 12px',
+      backgroundColor: 'transparent',
+      border: 'none',
+      cursor: 'pointer',
+      fontSize: '15px',
+      color: colors.textLink,
     },
     headerLeft: {
       display: 'flex',
@@ -822,6 +1000,14 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
     main: {
       flex: 1,
       padding: '24px',
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden',
+      minHeight: 0,
+    },
+    mainMobile: {
+      flex: 1,
+      padding: '16px',
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden',
@@ -1028,6 +1214,109 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       alignItems: 'center',
       justifyContent: 'center',
       flex: 1,
+    },
+
+    // Mobile styles
+    mobileTreeToggle: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: '12px 16px',
+      backgroundColor: colors.bgPanel,
+      borderRadius: '8px',
+      border: `1px solid ${colors.border}`,
+      cursor: 'pointer',
+      marginBottom: '16px',
+    },
+    mobileTreeContainer: {
+      display: 'block',
+      marginBottom: '16px',
+      backgroundColor: colors.bgPanel,
+      borderRadius: '8px',
+      padding: '12px',
+      border: `1px solid ${colors.border}`,
+    },
+    mobileTreeToggleLabel: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      fontSize: '15px',
+      fontWeight: '500',
+      color: colors.textMain,
+    },
+    mobileTreeToggleIcon: {
+      fontSize: '14px',
+      color: colors.textMuted,
+      transition: 'transform 0.2s',
+    },
+    mobileContent: {
+      display: 'none',
+    },
+
+    // Mobile-specific card and grid styles
+    mobileGrid: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))',
+      gap: '12px',
+      paddingBottom: '24px',
+      paddingRight: '4px',
+    },
+    mobileCardPreview: {
+      height: '80px',
+      backgroundColor: colors.bgPreview,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderBottom: `1px solid ${colors.border}`,
+    },
+    mobileCardTitle: {
+      fontSize: '12px',
+      color: colors.textMain,
+    },
+    mobileCardDate: {
+      fontSize: '10px',
+      color: colors.textDim,
+    },
+
+    // Search styles
+    searchInput: {
+      padding: '8px 12px',
+      borderRadius: '8px',
+      border: `1px solid ${colors.border}`,
+      backgroundColor: colors.bgPanel,
+      color: colors.textMain,
+      fontSize: '14px',
+      width: '200px',
+      marginRight: '12px',
+      outline: 'none',
+    },
+    searchBtn: {
+      background: 'none',
+      border: 'none',
+      fontSize: '18px',
+      cursor: 'pointer',
+      color: colors.textMuted,
+      padding: '4px 8px',
+      borderRadius: '4px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    mobileSearchContainer: {
+      padding: '12px 16px',
+      backgroundColor: colors.bgApp,
+      borderBottom: `1px solid ${colors.border}`,
+    },
+    mobileSearchInput: {
+      width: '100%',
+      padding: '12px 16px',
+      borderRadius: '8px',
+      border: `1px solid ${colors.border}`,
+      backgroundColor: colors.bgPanel,
+      color: colors.textMain,
+      fontSize: '16px',
+      outline: 'none',
+      boxSizing: 'border-box',
     },
   };
 }

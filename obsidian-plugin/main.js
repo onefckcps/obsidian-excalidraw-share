@@ -88,7 +88,7 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
     async onload() {
         await this.loadSettings();
         console.log('Excalidraw Share: Plugin loaded');
-        // Add ribbon icon in sidebar
+        // Add ribbon icons in sidebar
         this.addRibbonIcon('upload', 'Publish Drawing', async () => {
             const file = this.app.workspace.getActiveFile();
             if (file && this.isExcalidrawFile(file)) {
@@ -98,7 +98,19 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
                 new obsidian_1.Notice('No Excalidraw file open. Open a .excalidraw file first.');
             }
         });
-        // Add command
+        // Add second ribbon icon for viewing shared drawings
+        this.addRibbonIcon('book-open', 'Browse Shared Drawings', async () => {
+            // Open the share viewer in a new pane or popup
+            const url = this.settings.baseUrl;
+            // @ts-ignore - openUrlInPane may not be available in all Obsidian versions
+            if (this.app.openUrlInPane) {
+                this.app.openUrlInPane(url);
+            }
+            else {
+                window.open(url, '_blank');
+            }
+        });
+        // Add command for publishing
         this.addCommand({
             id: 'publish-drawing',
             name: 'Publish to Excalidraw Share',
@@ -111,6 +123,59 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
                     return true;
                 }
                 return false;
+            },
+        });
+        // Add command for syncing
+        this.addCommand({
+            id: 'sync-drawing',
+            name: 'Sync to Excalidraw Share',
+            checkCallback: (checking) => {
+                const file = this.app.workspace.getActiveFile();
+                if (file && this.isExcalidrawFile(file)) {
+                    const publishedId = this.getPublishedId(file);
+                    if (publishedId) {
+                        if (!checking) {
+                            this.publishDrawing(file, publishedId);
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            },
+        });
+        // Add command for copying share link
+        this.addCommand({
+            id: 'copy-share-link',
+            name: 'Copy Share Link',
+            checkCallback: (checking) => {
+                const file = this.app.workspace.getActiveFile();
+                if (file && this.isExcalidrawFile(file)) {
+                    const publishedId = this.getPublishedId(file);
+                    if (publishedId) {
+                        if (!checking) {
+                            const url = `${this.settings.baseUrl}/d/${publishedId}`;
+                            navigator.clipboard.writeText(url);
+                            new obsidian_1.Notice('Share link copied to clipboard!');
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            },
+        });
+        // Add command for browsing shared drawings
+        this.addCommand({
+            id: 'browse-shared-drawings',
+            name: 'Browse Shared Drawings',
+            callback: () => {
+                const url = this.settings.baseUrl;
+                // @ts-ignore - openUrlInPane may not be available in all Obsidian versions
+                if (this.app.openUrlInPane) {
+                    this.app.openUrlInPane(url);
+                }
+                else {
+                    window.open(url, '_blank');
+                }
             },
         });
         // File context menu

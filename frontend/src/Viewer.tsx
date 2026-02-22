@@ -3,6 +3,22 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Excalidraw } from '@excalidraw/excalidraw'
 import type { AppState, BinaryFiles } from '@excalidraw/excalidraw/types/types'
 import type { ExcalidrawElement, Theme } from '@excalidraw/excalidraw/types/element/types'
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(false)
+
+  useEffect(() => {
+    const media = window.matchMedia(query)
+    if (media.matches !== matches) {
+      setMatches(media.matches)
+    }
+    const listener = (e: MediaQueryListEvent) => setMatches(e.matches)
+    media.addEventListener('change', listener)
+    return () => media.removeEventListener('change', listener)
+  }, [matches, query])
+
+  return matches
+}
 import DrawingsBrowser from './DrawingsBrowser'
 
 const spinKeyframes = `
@@ -42,6 +58,8 @@ function Viewer() {
   const [showEditWarning, setShowEditWarning] = useState(false)
   const [drawingsList, setDrawingsList] = useState<{id: string}[]>([])
   const [loadingDrawings, setLoadingDrawings] = useState(false)
+
+  const isMobile = useMediaQuery('(max-width: 730px)')
 
   useEffect(() => {
     if (!id) return
@@ -257,6 +275,216 @@ function Viewer() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [showEditWarning])
 
+  // Inject buttons into Excalidraw toolbar on mobile
+  useEffect(() => {
+    if (!isMobile) return
+
+    const currentMode = mode as string
+    const containerClass = 'excalidraw-share-mobile-buttons'
+    let observer: MutationObserver | null = null
+
+    const injectButtons = () => {
+      // Remove existing containers first
+      document.querySelectorAll(`.${containerClass}`).forEach(el => el.remove())
+
+      // Find the toolbar
+      const toolbar = document.querySelector('.App-toolbar-content')
+      if (!toolbar) return
+
+      // Check if buttons already injected
+      if (toolbar.querySelector(`.${containerClass}`)) return
+
+      // Common button styles
+      const getButtonStyle = (isActive: boolean, activeColor: string) => `
+        background: ${isActive ? activeColor : (theme === 'dark' ? '#333' : '#fff')};
+        border: 1px solid ${isActive ? activeColor : (theme === 'dark' ? '#555' : '#ccc')};
+        border-radius: 4px;
+        padding: 4px 10px;
+        cursor: pointer;
+        font-size: 16px;
+        color: ${theme === 'dark' ? '#fff' : '#000'};
+        opacity: 1;
+      `
+
+      const getSmallButtonStyle = () => `
+        background: ${theme === 'dark' ? '#333' : '#fff'};
+        border: 1px solid ${theme === 'dark' ? '#555' : '#ccc'};
+        border-radius: 4px;
+        padding: 4px 10px;
+        cursor: pointer;
+        font-size: 16px;
+        color: ${theme === 'dark' ? '#fff' : '#000'};
+        opacity: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 32px;
+      `
+
+      // PRESENT MODE - inject navigation and exit button
+      if (currentMode === 'present') {
+        const container = document.createElement('div')
+        container.className = containerClass
+        container.style.cssText = `
+          display: flex;
+          gap: 8px;
+          margin-left: auto;
+          margin-right: 8px;
+          padding: 4px 0;
+          align-items: center;
+        `
+
+        // Previous button
+        const prevBtn = document.createElement('button')
+        prevBtn.textContent = '◀'
+        prevBtn.title = 'Previous (←)'
+        prevBtn.style.cssText = getSmallButtonStyle()
+        prevBtn.onclick = () => {
+          if (drawingsList.length === 0) {
+            loadDrawingsList()
+            return
+          }
+          const currentIndex = drawingsList.findIndex(d => d.id === id)
+          if (currentIndex > 0) {
+            const prevId = drawingsList[currentIndex - 1].id
+            navigate(`/d/${prevId}`)
+          }
+        }
+
+        // Counter
+        const counter = document.createElement('span')
+        const currentIndex = drawingsList.findIndex(d => d.id === id)
+        counter.textContent = drawingsList.length > 0 
+          ? `${currentIndex + 1} / ${drawingsList.length}` 
+          : '...'
+        counter.style.cssText = `
+          color: ${theme === 'dark' ? '#e0e0e0' : '#333'};
+          font-size: 16px;
+          padding: 4px 8px;
+          font-family: system-ui, -apple-system, sans-serif;
+        `
+
+        // Next button
+        const nextBtn = document.createElement('button')
+        nextBtn.textContent = '▶'
+        nextBtn.title = 'Next (→)'
+        nextBtn.style.cssText = getSmallButtonStyle()
+        nextBtn.onclick = () => {
+          if (drawingsList.length === 0) {
+            loadDrawingsList()
+            return
+          }
+          const currentIndex = drawingsList.findIndex(d => d.id === id)
+          if (currentIndex < drawingsList.length - 1) {
+            const nextId = drawingsList[currentIndex + 1].id
+            navigate(`/d/${nextId}`)
+          }
+        }
+
+        // Exit present button
+        const exitBtn = document.createElement('button')
+        exitBtn.textContent = '✕'
+        exitBtn.title = 'Exit present mode'
+        exitBtn.style.cssText = getSmallButtonStyle()
+        exitBtn.onclick = () => setMode('view')
+
+        container.append(prevBtn, counter, nextBtn, exitBtn)
+        toolbar.appendChild(container)
+        return
+      }
+
+      // NON-PRESENT MODE - inject normal buttons
+      const container = document.createElement('div')
+      container.className = containerClass
+      container.style.cssText = `
+        display: flex;
+        gap: 8px;
+        margin-left: 12px;
+        padding: 4px 0;
+        align-items: center;
+      `
+
+      // Present button
+      const presentBtn = document.createElement('button')
+      presentBtn.textContent = '▶️'
+      presentBtn.title = 'Present mode (p/q)'
+      const isPresent = currentMode === 'present'
+      presentBtn.style.cssText = getButtonStyle(isPresent, '#2196F3')
+      presentBtn.onclick = () => {
+        if (isPresent) {
+          setMode('view')
+        } else {
+          setMode('present')
+          loadDrawingsList()
+        }
+      }
+
+      // Edit button
+      const editBtn = document.createElement('button')
+      const isEdit = currentMode === 'edit'
+      editBtn.textContent = isEdit ? '✏️' : '🔒'
+      editBtn.title = isEdit ? 'Exit edit mode' : 'Edit mode (w)'
+      editBtn.style.cssText = getButtonStyle(isEdit, '#ff9800')
+      editBtn.onclick = () => {
+        if (isEdit) {
+          setMode('view')
+        } else {
+          setShowEditWarning(true)
+        }
+      }
+
+      // Browse button
+      const browseBtn = document.createElement('button')
+      browseBtn.textContent = '📂'
+      browseBtn.title = 'Browse all drawings (e)'
+      browseBtn.style.cssText = getButtonStyle(false, '')
+      browseBtn.onclick = () => setShowOverlay(true)
+
+      container.append(presentBtn, editBtn, browseBtn)
+      toolbar.appendChild(container)
+    }
+
+    // Try immediate injection first - use rAF for faster execution after paint
+    const tryInject = () => {
+      if (document.querySelector('.App-toolbar-content')) {
+        injectButtons()
+      }
+    }
+    
+    // Schedule multiple rapid attempts
+    requestAnimationFrame(tryInject)
+    setTimeout(tryInject, 50)
+    setTimeout(tryInject, 100)
+    setTimeout(tryInject, 200)
+
+    // Set up MutationObserver to detect when toolbar is added
+    const toolbarContainer = document.querySelector('.excalidraw')
+    if (toolbarContainer) {
+      observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (node instanceof HTMLElement) {
+              if (node.classList.contains('App-toolbar-content') || 
+                  node.querySelector?.('.App-toolbar-content')) {
+                injectButtons()
+              }
+            }
+          }
+        }
+      })
+      observer.observe(toolbarContainer, { childList: true, subtree: true })
+    }
+
+    // Fallback: short timeout if toolbar not found yet
+    const timer = setTimeout(injectButtons, 300)
+    
+    return () => {
+      clearTimeout(timer)
+      if (observer) observer.disconnect()
+      document.querySelectorAll('.excalidraw-share-mobile-buttons').forEach(el => el.remove())
+    }
+  }, [isMobile, mode, theme, showOverlay, id, loadDrawingsList])
+
   if (loading) {
     return (
       <div style={styles.center}>
@@ -304,12 +532,14 @@ function Viewer() {
               🏠 Home
             </Link>
           </div>
+          {!isMobile && (
           <button 
             style={{...styles.link, background: 'none', border: 'none', cursor: 'pointer', display: 'block', margin: '16px auto 0'}} 
             onClick={() => setShowOverlay(true)}
           >
             📂 Browse drawings
           </button>
+          )}
         </div>
         {showOverlay && (
           <DrawingsBrowser mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} currentDrawingId={id} />
@@ -347,7 +577,8 @@ function Viewer() {
         }}
       />
       
-      {/* Floating Action Buttons */}
+      {/* Floating Action Buttons - hidden on mobile, use Obsidian ribbon instead */}
+      {!isMobile && (
       <div style={styles.floatingButtons}>
         <button 
           style={{
@@ -402,9 +633,10 @@ function Viewer() {
           <span style={{ filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none' }}>📂</span>
         </button>
       </div>
+      )}
 
-      {/* Presentation Mode Navigation - Bottom Center */}
-      {mode === 'present' && (
+      {/* Presentation Mode Navigation - Bottom Center - Desktop only */}
+      {mode === 'present' && !isMobile && (
         <div style={{
           position: 'absolute',
           bottom: '24px',
