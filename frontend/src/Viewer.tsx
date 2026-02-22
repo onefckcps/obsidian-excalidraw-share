@@ -61,6 +61,13 @@ function Viewer() {
 
   const isMobile = useMediaQuery('(max-width: 730px)')
 
+  // Load drawings list when entering present mode
+  useEffect(() => {
+    if (mode === 'present' && drawingsList.length === 0 && !loadingDrawings) {
+      loadDrawingsList()
+    }
+  }, [mode, drawingsList.length, loadingDrawings])
+
   useEffect(() => {
     if (!id) return
 

@@ -525,15 +525,6 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
     return items.findIndex(item => item.path === path)
   }
 
-  // Count all drawings recursively
-  const countAllDrawings = (node: TreeNode): number => {
-    let count = node.drawings.length
-    for (const child of Object.values(node.children)) {
-      count += countAllDrawings(child)
-    }
-    return count
-  }
-
   const styles = getStyles(currentTheme)
 
   const renderTree = (node: TreeNode, level = 0) => {
@@ -545,7 +536,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
 
     const folderKeys = Object.keys(node.children).sort((a, b) => a.localeCompare(b, undefined, {sensitivity: 'base'}))
     const hasChildren = folderKeys.length > 0
-    const totalCount = countAllDrawings(node)
+    const totalCount = node.drawings.length
 
     return (
       <div key={node.path} style={{ marginLeft: isRoot ? 0 : '16px' }}>
