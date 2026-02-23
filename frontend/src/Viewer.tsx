@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Excalidraw } from '@excalidraw/excalidraw'
 import type { AppState, BinaryFiles } from '@excalidraw/excalidraw/types/types'
 import type { ExcalidrawElement, Theme } from '@excalidraw/excalidraw/types/element/types'
+import { drawingCache } from './utils/cache'
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => {
@@ -45,6 +46,7 @@ function Viewer() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [sceneData, setSceneData] = useState<ExcalidrawData | null>(null)
+  const [currentDataId, setCurrentDataId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [showOverlay, setShowOverlay] = useState(false)
@@ -84,8 +86,22 @@ function Viewer() {
   useEffect(() => {
     if (!id) return
 
+    // Wenn sich die ID ändert, wollen wir vorherige noch laufende Fetches abbrechen
+    const abortController = new AbortController()
+
+    // Versuche zuerst, das Drawing aus dem Cache zu laden
+    const cachedData = drawingCache.get(id)
+    if (cachedData) {
+      setSceneData(cachedData)
+      setCurrentDataId(id)
+      setTheme(cachedData.appState?.theme || 'light')
+      setError(null)
+      setLoading(false)
+      return
+    }
+
     setLoading(true)
-    fetch(`/api/view/${id}`)
+    fetch(`/api/view/${id}`, { signal: abortController.signal })
       .then((res) => {
         if (!res.ok) {
           throw new Error(res.status === 404 ? 'Drawing not found' : 'Failed to load drawing')
@@ -93,21 +109,39 @@ function Viewer() {
         return res.json()
       })
       .then((data) => {
+        // Im Cache speichern für später
+        drawingCache.set(id, data)
+        
         setSceneData(data)
+        setCurrentDataId(id)
         setTheme(data.appState?.theme || 'light')
         setLoading(false)
       })
       .catch((err) => {
+        // Ignoriere Abort-Errors, die wir selbst ausgelöst haben
+        if (err.name === 'AbortError') return
+        
         setError(err.message)
         setLoading(false)
       })
+
+    // Cleanup-Funktion: Bricht den Fetch ab, wenn die Komponente unmounted
+    // oder sich die ID ändert (z.B. weil der User schnell auf "Next" geklickt hat)
+    return () => {
+      abortController.abort()
+    }
   }, [id])
 
-  const handleExcalidrawChange = (_elements: unknown, appState: { theme?: Theme }) => {
-    if (appState.theme && appState.theme !== theme) {
-      setTheme(appState.theme)
-    }
-  }
+  const handleExcalidrawChange = useCallback((_elements: unknown, appState: { theme?: Theme }) => {
+    setTheme(currentTheme => {
+      // Nur updaten wenn sich das Theme wirklich geändert hat, 
+      // um endlose Re-Renders zu verhindern
+      if (appState.theme && currentTheme !== appState.theme) {
+        return appState.theme
+      }
+      return currentTheme
+    })
+  }, [])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -137,7 +171,10 @@ function Viewer() {
             return res.json()
           })
           .then((data) => {
+            // Beim manuellen Refresh überschreiben wir explizit den Cache
+            drawingCache.set(id, data)
             setSceneData(data)
+            setCurrentDataId(id)
             setTheme(data.appState?.theme || 'light')
             setError(null)
             setLoading(false)
@@ -515,7 +552,8 @@ function Viewer() {
     }
   }, [isMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData])
 
-  if (loading) {
+  // Zeige Loader, wenn explizit loading==true ODER wenn die sceneData noch zu einem alten Drawing gehören
+  if (loading || currentDataId !== id) {
     return (
       <div style={styles.center}>
         <div style={styles.spinner} />
@@ -584,6 +622,7 @@ function Viewer() {
     <div style={styles.container}>
       <style>{spinKeyframes}</style>
       <Excalidraw
+        key={id}
         initialData={{
           elements: sceneData.elements || [],
           appState: {
