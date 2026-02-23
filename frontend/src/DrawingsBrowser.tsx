@@ -43,10 +43,12 @@ interface DrawingsBrowserProps {
   theme?: string
   onClose?: () => void
   currentDrawingId?: string
+  initialDrawings?: PublicDrawing[]
+  onRefresh?: () => void
 }
 
-function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId }: DrawingsBrowserProps) {
-  const [drawings, setDrawings] = useState<PublicDrawing[]>([])
+function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId, initialDrawings, onRefresh }: DrawingsBrowserProps) {
+  const [drawings, setDrawings] = useState<PublicDrawing[]>(initialDrawings || [])
   const [tree, setTree] = useState<TreeNode | null>(null)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set(['_root']))
   const [selectedFolder, setSelectedFolder] = useState<string>(() => {
@@ -62,7 +64,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
   const [lastSelectedTreeIndex, setLastSelectedTreeIndex] = useState<number>(0)
   const [selectedTreeIndex, setSelectedTreeIndex] = useState<number>(0)
   const [selectedDrawingIndex, setSelectedDrawingIndex] = useState<number>(-1)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!initialDrawings)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [mobileView, setMobileView] = useState<'drawings' | 'tree'>('drawings')
@@ -267,7 +269,78 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
 
   const navigate = useNavigate()
 
+  const buildTree = (fetchedDrawings: PublicDrawing[]) => {
+    // Build tree structure
+    const root: TreeNode = { name: 'Root', path: '_root', children: {}, drawings: [] }
+
+    fetchedDrawings.forEach((d: PublicDrawing) => {
+      if (!d.source_path) {
+        root.drawings.push(d)
+        return
+      }
+
+      const parts = d.source_path.split('/')
+      parts.pop() // Remove filename
+
+      let currentNode = root
+      let currentPath = '_root'
+
+      // Create folder structure
+      parts.forEach((part: string) => {
+        currentPath = currentPath === '_root' ? part : `${currentPath}/${part}`
+        if (!currentNode.children[part]) {
+          currentNode.children[part] = {
+            name: part,
+            path: currentPath,
+            children: {},
+            drawings: []
+          }
+        }
+        currentNode = currentNode.children[part]
+      })
+
+      // Add drawing to leaf folder
+      currentNode.drawings.push(d)
+    })
+
+    setTree(root)
+
+    if (currentDrawingId) {
+      const currentDrawing = fetchedDrawings.find((d: PublicDrawing) => d.id === currentDrawingId)
+      if (currentDrawing && currentDrawing.source_path) {
+        const parts = currentDrawing.source_path.split('/')
+        parts.pop()
+        if (parts.length > 0) {
+          const folderPath = parts.join('/')
+          setSelectedFolder(folderPath)
+          let path = ''
+          const pathsToExpand = new Set<string>(['_root'])
+          parts.forEach((part: string) => {
+            path = path === '' ? part : `${path}/${part}`
+            pathsToExpand.add(path)
+          })
+          setExpandedPaths(pathsToExpand)
+        }
+      }
+    } else if (selectedFolder && selectedFolder !== '_root') {
+      // Expand path to selected folder
+      const parts = selectedFolder.split('/')
+      let path = ''
+      const pathsToExpand = new Set(expandedPaths)
+      parts.forEach((part: string) => {
+        path = path === '' ? part : `${path}/${part}`
+        pathsToExpand.add(path)
+      })
+      setExpandedPaths(pathsToExpand)
+    }
+  }
+
   useEffect(() => {
+    if (initialDrawings) {
+      buildTree(initialDrawings)
+      return
+    }
+
     fetch('/api/public/drawings')
       .then((res) => {
         if (!res.ok) throw new Error('Failed to load drawings')
@@ -276,77 +349,14 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
       .then((data) => {
         const fetchedDrawings = data.drawings || []
         setDrawings(fetchedDrawings)
-
-        // Build tree structure
-        const root: TreeNode = { name: 'Root', path: '_root', children: {}, drawings: [] }
-
-        fetchedDrawings.forEach((d: PublicDrawing) => {
-          if (!d.source_path) {
-            root.drawings.push(d)
-            return
-          }
-
-          const parts = d.source_path.split('/')
-          parts.pop() // Remove filename
-
-          let currentNode = root
-          let currentPath = '_root'
-
-          // Create folder structure
-          parts.forEach((part: string) => {
-            currentPath = currentPath === '_root' ? part : `${currentPath}/${part}`
-            if (!currentNode.children[part]) {
-              currentNode.children[part] = {
-                name: part,
-                path: currentPath,
-                children: {},
-                drawings: []
-              }
-            }
-            currentNode = currentNode.children[part]
-          })
-
-          // Add drawing to leaf folder
-          currentNode.drawings.push(d)
-        })
-
-        setTree(root)
-
-        if (currentDrawingId) {
-          const currentDrawing = fetchedDrawings.find((d: PublicDrawing) => d.id === currentDrawingId)
-          if (currentDrawing && currentDrawing.source_path) {
-            const parts = currentDrawing.source_path.split('/')
-            parts.pop()
-            if (parts.length > 0) {
-              const folderPath = parts.join('/')
-              setSelectedFolder(folderPath)
-              let path = ''
-              parts.forEach((part: string) => {
-                path = path === '' ? part : `${path}/${part}`
-                expandedPaths.add(path)
-              })
-              setExpandedPaths(new Set(expandedPaths))
-            }
-          }
-        } else if (selectedFolder && selectedFolder !== '_root') {
-          // Expand path to selected folder
-          const parts = selectedFolder.split('/')
-          let path = ''
-          const pathsToExpand = new Set(expandedPaths)
-          parts.forEach((part: string) => {
-            path = path === '' ? part : `${path}/${part}`
-            pathsToExpand.add(path)
-          })
-          setExpandedPaths(pathsToExpand)
-        }
-
+        buildTree(fetchedDrawings)
         setLoading(false)
       })
       .catch((err) => {
         setError(err.message)
         setLoading(false)
       })
-  }, [])
+  }, [initialDrawings])
 
   const refreshDrawings = () => {
     if (refreshing) return
@@ -423,6 +433,9 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
           setExpandedPaths(pathsToExpand)
         }
 
+        if (onRefresh) {
+          onRefresh()
+        }
         setRefreshing(false)
       })
       .catch((err) => {

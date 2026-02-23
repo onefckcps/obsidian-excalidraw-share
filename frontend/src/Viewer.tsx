@@ -56,10 +56,25 @@ function Viewer() {
     modeRef.current = mode
   }, [mode])
   const [showEditWarning, setShowEditWarning] = useState(false)
-  const [drawingsList, setDrawingsList] = useState<{id: string}[]>([])
+  const [drawingsList, setDrawingsList] = useState<{id: string, created_at: string, source_path: string | null}[]>([])
   const [loadingDrawings, setLoadingDrawings] = useState(false)
 
   const isMobile = useMediaQuery('(max-width: 730px)')
+
+  // Preload drawings list on mount
+  useEffect(() => {
+    setLoadingDrawings(true)
+    fetch('/api/public/drawings')
+      .then(res => res.json())
+      .then(data => {
+        const drawings = data.drawings || []
+        setDrawingsList(drawings)
+        setLoadingDrawings(false)
+      })
+      .catch(() => {
+        setLoadingDrawings(false)
+      })
+  }, [])
 
   useEffect(() => {
     if (!id) return
@@ -154,7 +169,7 @@ function Viewer() {
               .then(res => res.json())
               .then(data => {
                 const drawings = data.drawings || []
-                setDrawingsList(drawings.map((d: {id: string}) => ({ id: d.id })))
+                setDrawingsList(drawings)
                 setLoadingDrawings(false)
               })
               .catch(() => {
@@ -170,7 +185,7 @@ function Viewer() {
               .then(res => res.json())
               .then(data => {
                 const drawings = data.drawings || []
-                setDrawingsList(drawings.map((d: {id: string}) => ({ id: d.id })))
+                setDrawingsList(drawings)
                 setLoadingDrawings(false)
               })
               .catch(() => {
@@ -191,7 +206,7 @@ function Viewer() {
               .then(res => res.json())
               .then(data => {
                 const drawings = data.drawings || []
-                setDrawingsList(drawings.map((d: {id: string}) => ({ id: d.id })))
+                setDrawingsList(drawings)
                 setLoadingDrawings(false)
               })
               .catch(() => {
@@ -222,8 +237,7 @@ function Viewer() {
       .then(res => res.json())
       .then(data => {
         const drawings = data.drawings || []
-        const flatList: {id: string}[] = drawings.map((d: {id: string}) => ({ id: d.id }))
-        setDrawingsList(flatList)
+        setDrawingsList(drawings)
         setLoadingDrawings(false)
       })
       .catch(() => {
@@ -422,7 +436,7 @@ function Viewer() {
             .then(res => res.json())
             .then(data => {
               const drawings = data.drawings || []
-              setDrawingsList(drawings.map((d: {id: string}) => ({ id: d.id })))
+              setDrawingsList(drawings)
               setLoadingDrawings(false)
             })
             .catch(() => {
@@ -463,11 +477,14 @@ function Viewer() {
       }
     }
     
-    // Schedule multiple rapid attempts
-    requestAnimationFrame(tryInject)
-    setTimeout(tryInject, 50)
-    setTimeout(tryInject, 100)
-    setTimeout(tryInject, 200)
+    // Track all timers for proper cleanup
+    const rAfId = requestAnimationFrame(tryInject)
+    const timers = [
+      setTimeout(tryInject, 50),
+      setTimeout(tryInject, 100),
+      setTimeout(tryInject, 200),
+      setTimeout(injectButtons, 300)
+    ]
 
     // Set up MutationObserver to detect when toolbar is added
     // Observe document.body since .excalidraw may not exist yet
@@ -484,12 +501,10 @@ function Viewer() {
       }
     })
     observer.observe(document.body, { childList: true, subtree: true })
-
-    // Fallback: short timeout if toolbar not found yet
-    const timer = setTimeout(injectButtons, 300)
     
     return () => {
-      clearTimeout(timer)
+      cancelAnimationFrame(rAfId)
+      timers.forEach(clearTimeout)
       if (observer) observer.disconnect()
       document.querySelectorAll('.excalidraw-share-mobile-buttons').forEach(el => el.remove())
     }
@@ -552,7 +567,7 @@ function Viewer() {
           )}
         </div>
         {showOverlay && (
-          <DrawingsBrowser mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} currentDrawingId={id} />
+          <DrawingsBrowser mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} currentDrawingId={id} initialDrawings={drawingsList.length > 0 ? drawingsList as any : undefined} onRefresh={loadDrawingsList} />
         )}
       </div>
     )
@@ -777,7 +792,7 @@ function Viewer() {
       )}
       
       {showOverlay && (
-        <DrawingsBrowser key={Date.now()} mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} currentDrawingId={id} />
+        <DrawingsBrowser mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} currentDrawingId={id} initialDrawings={drawingsList.length > 0 ? drawingsList as any : undefined} />
       )}
     </div>
   )
