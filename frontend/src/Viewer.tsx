@@ -469,22 +469,20 @@ function Viewer() {
     setTimeout(tryInject, 200)
 
     // Set up MutationObserver to detect when toolbar is added
-    const toolbarContainer = document.querySelector('.excalidraw')
-    if (toolbarContainer) {
-      observer = new MutationObserver((mutations) => {
-        for (const mutation of mutations) {
-          for (const node of mutation.addedNodes) {
-            if (node instanceof HTMLElement) {
-              if (node.classList.contains('App-toolbar-content') || 
-                  node.querySelector?.('.App-toolbar-content')) {
-                injectButtons()
-              }
+    // Observe document.body since .excalidraw may not exist yet
+    observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node instanceof HTMLElement) {
+            if (node.classList.contains('App-toolbar-content') || 
+                node.querySelector?.('.App-toolbar-content')) {
+              injectButtons()
             }
           }
         }
-      })
-      observer.observe(toolbarContainer, { childList: true, subtree: true })
-    }
+      }
+    })
+    observer.observe(document.body, { childList: true, subtree: true })
 
     // Fallback: short timeout if toolbar not found yet
     const timer = setTimeout(injectButtons, 300)
@@ -494,7 +492,7 @@ function Viewer() {
       if (observer) observer.disconnect()
       document.querySelectorAll('.excalidraw-share-mobile-buttons').forEach(el => el.remove())
     }
-  }, [isMobile, mode, theme, showOverlay, id, loadDrawingsList])
+  }, [isMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData])
 
   if (loading) {
     return (
