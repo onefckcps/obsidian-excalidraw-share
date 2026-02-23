@@ -2,7 +2,12 @@ import { useEffect, useState, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(false)
+  const [matches, setMatches] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.matchMedia(query).matches
+    }
+    return false
+  })
 
   useEffect(() => {
     const media = window.matchMedia(query)
@@ -76,22 +81,22 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
   const treeItemRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const drawingCardRefs = useRef<Map<number, HTMLAnchorElement>>(new Map())
 
-  // Use provided theme, or check system preference for standalone mode
-  const [currentTheme, setCurrentTheme] = useState(theme || 'light')
+  // In standalone mode we track system preference, in overlay we strictly follow the theme prop
+  const [systemTheme, setSystemTheme] = useState('light')
 
   useEffect(() => {
-    if (theme) {
-      setCurrentTheme(theme)
-    } else if (mode === 'standalone') {
+    if (mode === 'standalone') {
       const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
-      setCurrentTheme(isDark ? 'dark' : 'light')
+      setSystemTheme(isDark ? 'dark' : 'light')
 
-      const listener = (e: MediaQueryListEvent) => setCurrentTheme(e.matches ? 'dark' : 'light')
+      const listener = (e: MediaQueryListEvent) => setSystemTheme(e.matches ? 'dark' : 'light')
       const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
       mediaQuery.addEventListener('change', listener)
       return () => mediaQuery.removeEventListener('change', listener)
     }
-  }, [theme, mode])
+  }, [mode])
+
+  const currentTheme = mode === 'overlay' ? (theme || 'light') : systemTheme
 
   useEffect(() => {
     if (mode === 'standalone' && selectedFolder) {
@@ -882,17 +887,20 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       overflow: 'auto',
     },
     overlayModalMobile: {
-      position: 'relative',
-      width: '100vw',
-      height: '100dvh',
-      maxWidth: '100vw',
-      maxHeight: '100dvh',
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      width: '100%',
+      height: '100%',
       borderRadius: 0,
       backgroundColor: colors.bgApp,
       boxShadow: 'none',
       display: 'flex',
       flexDirection: 'column',
-      overflow: 'auto',
+      overflow: 'hidden',
+      zIndex: 10,
     },
     overlayTitle: {
       fontSize: '20px',

@@ -5,7 +5,12 @@ import type { AppState, BinaryFiles } from '@excalidraw/excalidraw/types/types'
 import type { ExcalidrawElement, Theme } from '@excalidraw/excalidraw/types/element/types'
 
 function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(false)
+  const [matches, setMatches] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.matchMedia(query).matches
+    }
+    return false
+  })
 
   useEffect(() => {
     const media = window.matchMedia(query)
