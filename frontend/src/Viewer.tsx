@@ -277,6 +277,7 @@ function Viewer() {
 
   // Inject buttons into Excalidraw toolbar on mobile
   useEffect(() => {
+    // Skip on desktop
     if (!isMobile) return
 
     const currentMode = mode as string
