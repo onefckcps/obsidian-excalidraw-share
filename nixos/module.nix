@@ -152,8 +152,8 @@ in
           "BASE_URL=https://${cfg.domain}"
           "MAX_UPLOAD_MB=${toString cfg.maxUploadMb}"
           "FRONTEND_DIR=${cfg.dataDir}/frontend"
-          "API_KEY=${if cfg.apiKeyFile != null then lib.readFile cfg.apiKeyFile else cfg.apiKey}"
-        ];
+        ]
+        ++ lib.optional (cfg.apiKeyFile == null) "API_KEY=${cfg.apiKey}";
 
         NoNewPrivileges = true;
         PrivateTmp = true;
@@ -161,7 +161,14 @@ in
         ProtectHome = true;
         ReadWritePaths = [ cfg.dataDir ];
 
-        ExecStart = "${cfg.package}";
+        ExecStart =
+          if cfg.apiKeyFile != null then
+            "${pkgs.writeShellScript "start-excalidraw-share" ''
+              export API_KEY="$(cat ${cfg.apiKeyFile})"
+              exec ${cfg.package}/bin/excalidraw-share
+            ''}"
+          else
+            "${cfg.package}/bin/excalidraw-share";
 
         StartLimitBurst = 5;
         StartLimitIntervalSec = 60;
