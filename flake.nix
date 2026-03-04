@@ -18,14 +18,8 @@
           backend = pkgs.rustPlatform.buildRustPackage {
             pname = "excalidraw-share";
             version = "0.1.0";
-            src = self;
+            src = ./backend;
             cargoLock.lockFile = ./backend/Cargo.lock;
-            buildPhase = ''
-              cargo build --release --package excalidraw-share
-            '';
-            installPhase = ''
-              install -Dm755 target/release/excalidraw-share $out/bin/excalidraw-share
-            '';
           };
 
           frontend = pkgs.buildNpmPackage {
