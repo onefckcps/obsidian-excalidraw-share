@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import AboutModal from './AboutModal'
 
 interface Drawing {
   id: string
@@ -15,6 +16,7 @@ function AdminPage() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('excalidraw-api-key') || '')
   const [showApiInput, setShowApiInput] = useState(!apiKey)
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [showAbout, setShowAbout] = useState(false)
 
   const fetchDrawings = () => {
     if (!apiKey) return
@@ -199,6 +201,14 @@ function AdminPage() {
           </table>
         )}
       </main>
+
+      <footer style={styles.footer}>
+        <button style={styles.aboutBtn} onClick={() => setShowAbout(true)}>
+          About
+        </button>
+      </footer>
+
+      <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} />
     </div>
   )
 }
@@ -371,6 +381,20 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#fff',
     border: 'none',
     borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '13px',
+  },
+  footer: {
+    textAlign: 'center',
+    padding: '24px',
+    color: '#666',
+    fontSize: '13px',
+  },
+  aboutBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#666',
+    textDecoration: 'none',
     cursor: 'pointer',
     fontSize: '13px',
   },

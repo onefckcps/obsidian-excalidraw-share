@@ -24,16 +24,12 @@ export class DrawingCache {
   get(id: string): ExcalidrawData | undefined {
     if (!this.cache.has(id)) return undefined
 
-    // Element existiert -> Wir holen es
     const item = this.cache.get(id)!
-    
-    // LRU-Logik: Löschen und neu einfügen, damit es ans Ende der Map (als "kürzlich genutzt") rückt
     this.cache.delete(id)
     this.cache.set(id, item)
 
-    // Deep clone to prevent Excalidraw from mutating the cached data
     try {
-      return JSON.parse(JSON.stringify(item.data))
+      return structuredClone(item.data)
     } catch {
       return item.data
     }
@@ -72,6 +68,15 @@ export class DrawingCache {
         this.cache.delete(oldestId)
         console.debug(`Evicted drawing ${oldestId} from cache to free memory.`)
       }
+    }
+  }
+
+  delete(id: string): void {
+    if (this.cache.has(id)) {
+      const item = this.cache.get(id)!
+      this.currentSize -= item.size
+      this.cache.delete(id)
+      console.debug(`Deleted drawing ${id} from cache.`)
     }
   }
 

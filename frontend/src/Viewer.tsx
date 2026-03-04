@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Excalidraw } from '@excalidraw/excalidraw'
-import type { AppState, BinaryFiles } from '@excalidraw/excalidraw/types/types'
-import type { ExcalidrawElement, Theme } from '@excalidraw/excalidraw/types/element/types'
+import type { Theme } from '@excalidraw/excalidraw/types/element/types'
+import type { ExcalidrawData } from './types'
 import { drawingCache } from './utils/cache'
+import AboutModal from './AboutModal'
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => {
@@ -34,14 +35,6 @@ const spinKeyframes = `
   }
 `
 
-interface ExcalidrawData {
-  type: string
-  version: number
-  elements: ExcalidrawElement[]
-  appState?: Partial<AppState>
-  files?: BinaryFiles
-}
-
 function Viewer() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -50,6 +43,7 @@ function Viewer() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [showOverlay, setShowOverlay] = useState(false)
+  const [showAbout, setShowAbout] = useState(false)
   const [theme, setTheme] = useState<Theme>('light')
   const [mode, setMode] = useState<'view' | 'edit' | 'present'>(() => {
     if (typeof window !== 'undefined') {
@@ -81,6 +75,13 @@ function Viewer() {
       .catch(() => {
         setLoadingDrawings(false)
       })
+  }, [])
+
+  // Listen for about modal trigger from dropdown
+  useEffect(() => {
+    const handleShowAbout = () => setShowAbout(true)
+    document.addEventListener('excalidraw-share:show-about', handleShowAbout)
+    return () => document.removeEventListener('excalidraw-share:show-about', handleShowAbout)
   }, [])
 
   useEffect(() => {
@@ -552,6 +553,130 @@ function Viewer() {
     }
   }, [isMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData])
 
+  // Inject ExcaliShare links into Excalidraw help dropdown
+  useEffect(() => {
+    const injectExcaliShareDropdown = () => {
+      const dropdown = document.querySelector('.dropdown-menu-container')
+      if (!dropdown) return
+
+      const excalidrawLinks = dropdown.querySelector('.dropdown-menu-group')
+      if (!excalidrawLinks) return
+
+      // Remove existing ExcaliShare section first to handle dropdown re-open
+      dropdown.querySelector('.excalidraw-share-dropdown')?.remove()
+      dropdown.querySelectorAll('.excalidraw-share-hr').forEach(el => el.remove())
+
+      const excaliShareGroup = document.createElement('div')
+      excaliShareGroup.className = 'dropdown-menu-group excalidraw-share-dropdown'
+
+      const title = document.createElement('p')
+      title.className = 'dropdown-menu-group-title'
+      title.textContent = 'ExcaliShare'
+      excaliShareGroup.appendChild(title)
+
+      const githubLink = document.createElement('a')
+      githubLink.href = 'https://github.com/onefckcps/obsidian-excalidraw-share'
+      githubLink.target = '_blank'
+      githubLink.rel = 'noopener noreferrer'
+      githubLink.className = 'dropdown-menu-item dropdown-menu-item-base'
+      githubLink.title = 'ExcaliShare on GitHub'
+      githubLink.innerHTML = `
+        <div class="dropdown-menu-item__icon">
+          <svg aria-hidden="true" focusable="false" role="img" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7.5 15.833c-3.583 1.167-3.583-2.083-5-2.5m10 4.167v-2.917c0-.833.083-1.166-.417-1.666 2.334-.25 4.584-1.167 4.584-5a3.833 3.833 0 0 0-1.084-2.667 3.5 3.5 0 0 0-.083-2.667s-.917-.25-2.917 1.084a10.25 10.25 0 0 0-5.166 0C5.417 2.333 4.5 2.583 4.5 2.583a3.5 3.5 0 0 0-.083 2.667 3.833 3.833 0 0 0-1.084 2.667c0 3.833 2.25 4.75 4.584 5-.5.5-.5 1-.417 1.666V17.5" stroke-width="1.25"></path>
+          </svg>
+        </div>
+        <div class="dropdown-menu-item__text">GitHub</div>
+      `
+
+      const aboutLink = document.createElement('button')
+      aboutLink.type = 'button'
+      aboutLink.className = 'dropdown-menu-item dropdown-menu-item-base'
+      aboutLink.title = 'About ExcaliShare'
+      aboutLink.onclick = () => {
+        document.dispatchEvent(new CustomEvent('excalidraw-share:show-about'))
+      }
+      aboutLink.innerHTML = `
+        <div class="dropdown-menu-item__icon">
+          <svg aria-hidden="true" focusable="false" role="img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+        </div>
+        <div class="dropdown-menu-item__text">About</div>
+      `
+
+      excaliShareGroup.appendChild(githubLink)
+      excaliShareGroup.appendChild(aboutLink)
+
+      const hr = document.createElement('div')
+      hr.className = 'excalidraw-share-hr'
+      hr.style.height = '1px'
+      hr.style.backgroundColor = 'var(--default-border-color)'
+      hr.style.margin = '0.5rem 0px'
+
+      // Insert before the last element (Dark/Light mode toggle)
+      const lastElement = dropdown.lastElementChild
+      if (lastElement) {
+        dropdown.insertBefore(hr, lastElement)
+        dropdown.insertBefore(excaliShareGroup, hr)
+      } else {
+        dropdown.appendChild(hr)
+        dropdown.appendChild(excaliShareGroup)
+      }
+    }
+
+    let dropdownObserver: MutationObserver | null = null
+
+    const tryInjectDropdown = () => {
+      injectExcaliShareDropdown()
+    }
+
+    // Reduced timeouts for faster injection
+    const timers = [
+      setTimeout(tryInjectDropdown, 50),
+      setTimeout(tryInjectDropdown, 150),
+      setTimeout(tryInjectDropdown, 300),
+    ]
+
+    dropdownObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node instanceof HTMLElement) {
+            if (node.classList?.contains('dropdown-menu-container')) {
+              injectExcaliShareDropdown()
+            }
+            // Also check if nodes contain the dropdown as child
+            if (node.querySelector?.('.dropdown-menu-container')) {
+              injectExcaliShareDropdown()
+            }
+          }
+        }
+        // Also observe attribute changes for the dropdown itself
+        for (const mutation of mutations) {
+          if (mutation.type === 'attributes' && mutation.target instanceof HTMLElement) {
+            if (mutation.target.classList?.contains('dropdown-menu-container')) {
+              injectExcaliShareDropdown()
+            }
+          }
+        }
+      }
+    })
+
+    dropdownObserver.observe(document.body, { 
+      childList: true, 
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class']
+    })
+
+    return () => {
+      timers.forEach(clearTimeout)
+      if (dropdownObserver) dropdownObserver.disconnect()
+    }
+  }, [])
+
   // Zeige Loader, wenn explizit loading==true ODER wenn die sceneData noch zu einem alten Drawing gehören
   if (loading || currentDataId !== id) {
     return (
@@ -838,6 +963,8 @@ function Viewer() {
       {showOverlay && (
         <DrawingsBrowser mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} currentDrawingId={id} initialDrawings={drawingsList.length > 0 ? drawingsList as any : undefined} />
       )}
+
+      <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} theme={theme} />
     </div>
   )
 }
