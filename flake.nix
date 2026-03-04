@@ -10,6 +10,7 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
+      lib = nixpkgs.lib;
     in
     {
       packages.${system} =
@@ -27,16 +28,13 @@
             '';
           };
 
-          frontend = pkgs.stdenv.mkDerivation {
+          frontend = pkgs.buildNpmPackage {
             pname = "excalidraw-share-frontend";
             version = "0.1.0";
-            src = self;
-            nativeBuildInputs = [ pkgs.nodejs_20 ];
-            buildPhase = ''
-              cd frontend
-              npm install --legacy-peer-deps
-              npm run build
-            '';
+            src = ./frontend;
+            npmDepsHash = "sha256-RQghcJOxBMNghNpdjsU5EPB4FS/rkVy5spCgT4AfXAQ=";
+            # The Excalidraw package needs legacy-peer-deps
+            npmFlags = [ "--legacy-peer-deps" ];
             installPhase = ''
               mkdir -p $out
               cp -r dist/* $out/
