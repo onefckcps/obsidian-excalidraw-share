@@ -63,9 +63,16 @@ in
       description = "Max Upload Größe in MB.";
     };
 
+    apiKey = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = "API key for upload/delete operations. Use apiKeyFile for SOPS secrets.";
+    };
+
     apiKeyFile = lib.mkOption {
       type = lib.types.path;
-      description = "Pfad zur API-Key Datei.";
+      default = null;
+      description = "Path to file containing API key (for SOPS compatibility). Takes precedence over apiKey.";
     };
 
     frontendSource = lib.mkOption {
@@ -145,7 +152,7 @@ in
           "BASE_URL=https://${cfg.domain}"
           "MAX_UPLOAD_MB=${toString cfg.maxUploadMb}"
           "FRONTEND_DIR=${cfg.dataDir}/frontend"
-          "API_KEY=${lib.readFile cfg.apiKeyFile}"
+          "API_KEY=${if cfg.apiKeyFile != null then lib.readFile cfg.apiKeyFile else cfg.apiKey}"
         ];
 
         NoNewPrivileges = true;

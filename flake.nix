@@ -12,23 +12,54 @@
       pkgs = nixpkgs.legacyPackages.${system};
     in
     {
+      packages.${system} =
+        let
+          backend = pkgs.rustPlatform.buildRustPackage {
+            pname = "excalidraw-share";
+            version = "0.1.0";
+            src = self;
+            cargoLock.lockFile = ./backend/Cargo.lock;
+            buildPhase = ''
+              cargo build --release --package excalidraw-share
+            '';
+            installPhase = ''
+              install -Dm755 target/release/excalidraw-share $out/bin/excalidraw-share
+            '';
+          };
+
+          frontend = pkgs.stdenv.mkDerivation {
+            pname = "excalidraw-share-frontend";
+            version = "0.1.0";
+            src = self;
+            nativeBuildInputs = [ pkgs.nodejs_20 ];
+            buildPhase = ''
+              cd frontend
+              npm install --legacy-peer-deps
+              npm run build
+            '';
+            installPhase = ''
+              mkdir -p $out
+              cp -r dist/* $out/
+            '';
+          };
+        in
+        {
+          excalidraw-share-backend = backend;
+          excalidraw-share-frontend = frontend;
+          default = backend;
+        };
+
       devShells.${system}.default = pkgs.mkShell {
-        # Rust toolchain
         buildInputs = with pkgs; [
           cargo
           rustc
           rustfmt
           rustPackages.clippy
           rust-analyzer
-
-          # Node.js for frontend (includes npm)
           nodejs_20
-
-          # Additional dev tools
           git
         ];
 
-        # Shell hooks for convenient frontend setup
         shellHook = ''
           echo "Excalidraw Share Development Environment"
           echo "========================================"
@@ -39,9 +70,8 @@
           echo "  cd frontend && npm run build # Build frontend"
           echo ""
         '';
-
-        # Optional: Rust source for rust-analyzer
-        # RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
       };
+
+      nixosModules.default = import ./nixos/module.nix;
     };
 }
