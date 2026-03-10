@@ -169,10 +169,14 @@ export default class ExcalidrawSharePlugin extends Plugin {
       checkCallback: (checking: boolean) => {
         const file = this.app.workspace.getActiveFile();
         if (file && this.isExcalidrawFile(file)) {
-          if (!checking) {
-            this.publishDrawing(file);
+          const publishedId = this.getPublishedId(file);
+          // Only show if not yet published
+          if (!publishedId) {
+            if (!checking) {
+              this.publishDrawing(file);
+            }
+            return true;
           }
-          return true;
         }
         return false;
       },
