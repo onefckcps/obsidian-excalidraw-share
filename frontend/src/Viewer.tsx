@@ -205,20 +205,18 @@ function Viewer() {
       } else if (e.key === 'p' || e.key === 'P' || e.key === 'q' || e.key === 'Q') {
         const willBePresent = currentMode !== 'present'
         setMode(prev => prev === 'present' ? 'view' : 'present')
-        if (willBePresent) {
-          if (!loadingDrawings) {
-            setLoadingDrawings(true)
-            fetch('/api/public/drawings')
-              .then(res => res.json())
-              .then(data => {
-                const drawings = data.drawings || []
-                setDrawingsList(drawings)
-                setLoadingDrawings(false)
-              })
-              .catch(() => {
-                setLoadingDrawings(false)
-              })
-          }
+        if (willBePresent && drawingsList.length === 0 && !loadingDrawings) {
+          setLoadingDrawings(true)
+          fetch('/api/public/drawings')
+            .then(res => res.json())
+            .then(data => {
+              const drawings = data.drawings || []
+              setDrawingsList(drawings)
+              setLoadingDrawings(false)
+            })
+            .catch(() => {
+              setLoadingDrawings(false)
+            })
         }
       } else if (e.key === 'ArrowLeft') {
         if (drawingsList.length === 0) {
@@ -473,18 +471,20 @@ function Viewer() {
           setMode('view')
         } else {
           setMode('present')
-          // Load drawings list immediately when entering present mode
-          setLoadingDrawings(true)
-          fetch('/api/public/drawings')
-            .then(res => res.json())
-            .then(data => {
-              const drawings = data.drawings || []
-              setDrawingsList(drawings)
-              setLoadingDrawings(false)
-            })
-            .catch(() => {
-              setLoadingDrawings(false)
-            })
+          // Only load drawings if not already loaded
+          if (drawingsList.length === 0 && !loadingDrawings) {
+            setLoadingDrawings(true)
+            fetch('/api/public/drawings')
+              .then(res => res.json())
+              .then(data => {
+                const drawings = data.drawings || []
+                setDrawingsList(drawings)
+                setLoadingDrawings(false)
+              })
+              .catch(() => {
+                setLoadingDrawings(false)
+              })
+          }
         }
       }
 
@@ -785,7 +785,10 @@ function Viewer() {
               setMode('view')
             } else {
               setMode('present')
-              loadDrawingsList()
+              // Only load if not already loaded
+              if (drawingsList.length === 0 && !loadingDrawings) {
+                loadDrawingsList()
+              }
             }
           }}
           title="Present mode (p/q)"

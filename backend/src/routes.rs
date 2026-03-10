@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use serde::Serialize;
@@ -143,8 +144,8 @@ pub async fn list_drawings(
 
 pub async fn list_drawings_public(
     State(state): State<AppState>,
-) -> Result<Json<PublicListResponse>, AppError> {
-    let drawings = state.storage.list().await?;
+) -> impl IntoResponse {
+    let drawings = state.storage.list().await.unwrap();
     let public_drawings: Vec<PublicDrawingMeta> = drawings
         .into_iter()
         .map(|d| PublicDrawingMeta {
@@ -153,7 +154,8 @@ pub async fn list_drawings_public(
             source_path: d.source_path,
         })
         .collect();
-    Ok(Json(PublicListResponse { drawings: public_drawings }))
+    let body = Json(PublicListResponse { drawings: public_drawings });
+    ([("Cache-Control", "no-cache, no-store, must-revalidate")], body)
 }
 
 pub async fn health() -> &'static str {

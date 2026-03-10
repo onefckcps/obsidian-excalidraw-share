@@ -76,11 +76,13 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [isGlobalSearch, setIsGlobalSearch] = useState(false)
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
 
   const isMobile = useMediaQuery('(max-width: 730px)')
 
   const treeItemRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const drawingCardRefs = useRef<Map<number, HTMLAnchorElement>>(new Map())
+  const refreshDrawingsRef = useRef<() => void>(() => {})
 
   // In standalone mode we track system preference, in overlay we strictly follow the theme prop
   const [systemTheme, setSystemTheme] = useState('light')
@@ -130,16 +132,23 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
   }, [selectedDrawingIndex])
 
   useEffect(() => {
-    if (!onClose && mode !== 'overlay') return
-
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
         return
       }
 
+      // 'r' key for refresh - works in both overlay and standalone
+      if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault()
+        refreshDrawingsRef.current()
+        return
+      }
+
       if (e.key === 'Escape') {
-        onClose?.()
+        if (onClose) {
+          onClose()
+        }
       } else if (e.key === 'ArrowUp') {
         e.preventDefault()
         const items = flattenTreeItems()
@@ -442,12 +451,26 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
         if (onRefresh) {
           onRefresh()
         }
+        const count = fetchedDrawings.length
+        showToast(`🔄 ${count} drawing${count !== 1 ? 's' : ''} loaded`)
         setRefreshing(false)
       })
       .catch((err) => {
         setError(err.message)
+        showToast('Failed to load drawings', 'error')
         setRefreshing(false)
       })
+  }
+
+  // Keep refreshDrawingsRef updated
+  useEffect(() => {
+    refreshDrawingsRef.current = refreshDrawings
+  }, [refreshDrawings])
+
+  // Toast notification helper
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type })
+    setTimeout(() => setToast(null), 2500)
   }
 
   const toggleFolder = (path: string) => {
@@ -822,6 +845,21 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
                 </div>
               )}
             </>
+          )}
+
+          {/* Toast Notification */}
+          {toast && (
+            <div style={{
+              ...styles.toast,
+              backgroundColor: toast.type === 'error' ? (currentTheme === 'dark' ? '#3d2020' : '#ffebee') : (currentTheme === 'dark' ? '#1a3d1a' : '#e8f5e9'),
+              borderColor: toast.type === 'error' ? '#ef5350' : '#4caf50',
+            }}>
+              <span style={{
+                color: toast.type === 'error' ? (currentTheme === 'dark' ? '#ef5350' : '#d32f2f') : (currentTheme === 'dark' ? '#81c784' : '#2e7d32'),
+              }}>
+                {toast.message}
+              </span>
+            </div>
           )}
         </main>
       </div>
@@ -1443,7 +1481,40 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
     mobileGlobalSearchLabel: {
       letterSpacing: '0.3px',
     },
+    toast: {
+      position: 'absolute',
+      bottom: '24px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      padding: '12px 20px',
+      borderRadius: '8px',
+      border: '1px solid',
+      fontSize: '14px',
+      fontWeight: 500,
+      boxShadow: `0 4px 12px ${colors.shadow}`,
+      zIndex: 100,
+      animation: 'toastFadeIn 0.3s ease-out',
+    },
   };
+
+  // Add keyframes for toast animation
+  const styleSheet = document.createElement('style');
+  styleSheet.textContent = `
+    @keyframes toastFadeIn {
+      from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+    }
+  `;
+  if (!document.getElementById('toast-styles')) {
+    styleSheet.id = 'toast-styles';
+    document.head.appendChild(styleSheet);
+  }
 }
 
 export default DrawingsBrowser
