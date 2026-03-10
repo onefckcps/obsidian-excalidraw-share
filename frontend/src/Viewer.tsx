@@ -964,7 +964,7 @@ function Viewer() {
       )}
       
       {showOverlay && (
-        <DrawingsBrowser mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} currentDrawingId={id} initialDrawings={drawingsList.length > 0 ? drawingsList as any : undefined} />
+        <DrawingsBrowser mode="overlay" theme={theme} onClose={() => setShowOverlay(false)} currentDrawingId={id} initialDrawings={drawingsList.length > 0 ? drawingsList as any : undefined} onRefresh={loadDrawingsList} />
       )}
 
       <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} theme={theme} />

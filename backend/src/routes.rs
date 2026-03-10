@@ -144,7 +144,7 @@ pub async fn list_drawings(
 
 pub async fn list_drawings_public(
     State(state): State<AppState>,
-) -> impl IntoResponse {
+) -> Json<PublicListResponse> {
     let drawings = state.storage.list().await.unwrap();
     let public_drawings: Vec<PublicDrawingMeta> = drawings
         .into_iter()
@@ -154,8 +154,7 @@ pub async fn list_drawings_public(
             source_path: d.source_path,
         })
         .collect();
-    let body = Json(PublicListResponse { drawings: public_drawings });
-    ([("Cache-Control", "no-cache, no-store, must-revalidate")], body)
+    Json(PublicListResponse { drawings: public_drawings })
 }
 
 pub async fn health() -> &'static str {

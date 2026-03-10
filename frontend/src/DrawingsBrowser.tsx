@@ -78,6 +78,13 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
   const [isGlobalSearch, setIsGlobalSearch] = useState(false)
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
 
+  // Sync drawings state when initialDrawings changes (e.g., after refresh)
+  useEffect(() => {
+    if (initialDrawings && initialDrawings.length > 0) {
+      setDrawings(initialDrawings)
+    }
+  }, [initialDrawings])
+
   const isMobile = useMediaQuery('(max-width: 730px)')
 
   const treeItemRefs = useRef<Map<number, HTMLDivElement>>(new Map())
