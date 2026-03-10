@@ -75,6 +75,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
   const [mobileView, setMobileView] = useState<'drawings' | 'tree'>('drawings')
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearch, setShowSearch] = useState(false)
+  const [isGlobalSearch, setIsGlobalSearch] = useState(false)
 
   const isMobile = useMediaQuery('(max-width: 730px)')
 
@@ -513,7 +514,8 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
 
   // Get filtered drawings based on search query
   const getFilteredDrawings = () => {
-    const folderDrawings = getSelectedDrawings()
+    // For global search, search across all drawings regardless of folder
+    const folderDrawings = isGlobalSearch ? drawings : getSelectedDrawings()
     if (!searchQuery.trim()) return folderDrawings
 
     const query = searchQuery.toLowerCase()
@@ -634,14 +636,30 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
               </button>
             ) : (
               <>
-                <button
-                  style={styles.refreshIcon as React.CSSProperties}
-                  onClick={refreshDrawings}
-                  disabled={refreshing}
-                  title="Refresh drawings (r)"
-                >
-                  <span style={refreshing ? { animation: 'spin 1s linear infinite' } : {}}>🔄</span>
-                </button>
+                {mode === 'standalone' && !isMobile && (
+                  <Link to="/" style={styles.logo}>ExcaliShare</Link>
+                )}
+                {!isMobile && (
+                  <div style={styles.headerCenter}>
+                    <div style={styles.searchContainer}>
+                      <input
+                        type="text"
+                        placeholder="Search..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        style={styles.searchInput}
+                      />
+                      <button
+                        onClick={() => setIsGlobalSearch(!isGlobalSearch)}
+                        style={isGlobalSearch ? styles.globalSearchBtnActive : styles.globalSearchBtn}
+                        title={isGlobalSearch ? 'Search in current folder' : 'Search across all folders'}
+                      >
+                        <span style={styles.globalSearchIcon}>🌐</span>
+                        <span style={styles.globalSearchLabel}>Global</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {isMobile && (
                   <button
                     style={{
@@ -653,18 +671,6 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
                   >
                     🔍
                   </button>
-                )}
-                {mode === 'standalone' && !isMobile && (
-                  <Link to="/" style={styles.logo}>Excalidraw Share</Link>
-                )}
-                {!isMobile && (
-                  <input
-                    type="text"
-                    placeholder="Search..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    style={styles.searchInput}
-                  />
                 )}
               </>
             )}
@@ -681,6 +687,14 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
           )}
 
           <div style={styles.headerRight}>
+            <button
+              style={styles.refreshIcon as React.CSSProperties}
+              onClick={refreshDrawings}
+              disabled={refreshing}
+              title="Refresh drawings (r)"
+            >
+              <span style={refreshing ? { animation: 'spin 1s linear infinite' } : {}}>🔄</span>
+            </button>
             {mode === 'standalone' ? (
               <Link to="/admin" style={styles.adminIcon} title="Admin">⚙️</Link>
             ) : (
@@ -701,6 +715,14 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
               autoFocus
               style={styles.mobileSearchInput}
             />
+            <button
+              onClick={() => setIsGlobalSearch(!isGlobalSearch)}
+              style={isGlobalSearch ? styles.mobileGlobalSearchBtnActive : styles.mobileGlobalSearchBtn}
+              title={isGlobalSearch ? 'Search in current folder' : 'Search across all folders'}
+            >
+              <span style={styles.globalSearchIcon}>🌐</span>
+              <span style={styles.mobileGlobalSearchLabel}>Global</span>
+            </button>
           </div>
         )}
 
@@ -970,16 +992,29 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
     headerLeft: {
       display: 'flex',
       alignItems: 'center',
+      minWidth: '120px',
+      gap: '8px',
+    },
+    headerCenter: {
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      flex: 1,
+      padding: '0 20px',
     },
     headerRight: {
       display: 'flex',
       alignItems: 'center',
+      minWidth: '120px',
+      justifyContent: 'flex-end',
+      gap: '12px',
     },
     logo: {
       fontSize: '20px',
       fontWeight: 'bold',
       color: colors.textMain,
       textDecoration: 'none',
+      whiteSpace: 'nowrap',
     },
     refreshIcon: {
       fontSize: '16px',
@@ -1293,14 +1328,56 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
     // Search styles
     searchInput: {
       padding: '8px 12px',
-      borderRadius: '8px',
+      borderRadius: '8px 0 0 8px',
       border: `1px solid ${colors.border}`,
+      borderRight: 'none',
       backgroundColor: colors.bgPanel,
       color: colors.textMain,
       fontSize: '14px',
-      width: '200px',
-      marginRight: '12px',
+      width: '160px',
       outline: 'none',
+      flexShrink: 0,
+    },
+    searchContainer: {
+      display: 'flex',
+      alignItems: 'center',
+    },
+    globalSearchBtn: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '4px',
+      padding: '8px 10px',
+      borderRadius: '0 8px 8px 0',
+      border: `1px solid ${colors.border}`,
+      borderLeft: 'none',
+      backgroundColor: colors.bgPanel,
+      color: colors.textMuted,
+      fontSize: '12px',
+      fontWeight: 500,
+      cursor: 'pointer',
+      transition: 'all 0.2s ease',
+    },
+    globalSearchBtnActive: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '4px',
+      padding: '8px 10px',
+      borderRadius: '0 8px 8px 0',
+      border: `1px solid ${colors.textActive}`,
+      borderLeft: 'none',
+      backgroundColor: colors.bgActive,
+      color: colors.textActive,
+      fontSize: '12px',
+      fontWeight: 600,
+      cursor: 'pointer',
+      transition: 'all 0.2s ease',
+    },
+    globalSearchIcon: {
+      fontSize: '14px',
+      lineHeight: 1,
+    },
+    globalSearchLabel: {
+      letterSpacing: '0.3px',
     },
     searchBtn: {
       background: 'none',
@@ -1315,12 +1392,15 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       justifyContent: 'center',
     },
     mobileSearchContainer: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
       padding: '12px 16px',
       backgroundColor: colors.bgApp,
       borderBottom: `1px solid ${colors.border}`,
     },
     mobileSearchInput: {
-      width: '100%',
+      flex: 1,
       padding: '12px 16px',
       borderRadius: '8px',
       border: `1px solid ${colors.border}`,
@@ -1329,6 +1409,39 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       fontSize: '16px',
       outline: 'none',
       boxSizing: 'border-box',
+    },
+    mobileGlobalSearchBtn: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '4px',
+      padding: '12px 14px',
+      borderRadius: '8px',
+      border: `1px solid ${colors.border}`,
+      backgroundColor: colors.bgPanel,
+      color: colors.textMuted,
+      fontSize: '13px',
+      fontWeight: 500,
+      cursor: 'pointer',
+      transition: 'all 0.2s ease',
+      whiteSpace: 'nowrap',
+    },
+    mobileGlobalSearchBtnActive: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '4px',
+      padding: '12px 14px',
+      borderRadius: '8px',
+      border: `1px solid ${colors.textActive}`,
+      backgroundColor: colors.bgActive,
+      color: colors.textActive,
+      fontSize: '13px',
+      fontWeight: 600,
+      cursor: 'pointer',
+      transition: 'all 0.2s ease',
+      whiteSpace: 'nowrap',
+    },
+    mobileGlobalSearchLabel: {
+      letterSpacing: '0.3px',
     },
   };
 }
