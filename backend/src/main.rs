@@ -24,7 +24,7 @@ use routes::AppState;
 use storage::FileSystemStorage;
 
 #[derive(Parser, Debug)]
-#[command(name = "excalidraw-share", about = "Self-hosted Excalidraw sharing server")]
+#[command(name = "excalishare", about = "Self-hosted Excalidraw sharing server")]
 struct Config {
     /// Address to listen on
     #[arg(long, env = "LISTEN_ADDR", default_value = "127.0.0.1:8184")]
@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
         data_dir = %config.data_dir.display(),
         base_url = %config.base_url,
         max_upload_mb = config.max_upload_mb,
-        "Starting excalidraw-share server"
+        "Starting excalishare server"
     );
 
     let storage = FileSystemStorage::new(&config.data_dir).await?;

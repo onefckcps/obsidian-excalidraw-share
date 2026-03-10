@@ -1,5 +1,5 @@
 [package]
-name = "excalidraw-share"
+name = "excalishare"
 version = "0.1.0"
 edition = "2021"
 description = "Self-hosted Excalidraw drawing sharing server"

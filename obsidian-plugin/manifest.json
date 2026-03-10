@@ -1,6 +1,6 @@
 {
-  "id": "excalidraw-share",
-  "name": "Excalidraw Share",
+  "id": "excalishare",
+  "name": "ExcaliShare",
   "version": "1.0.0",
   "description": "Publish and manage Excalidraw drawings to a self-hosted share server",
   "author": "Excalidraw Share",

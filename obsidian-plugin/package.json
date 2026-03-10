@@ -1,7 +1,7 @@
 {
-  "name": "excalidraw-share",
+  "name": "excalishare",
   "version": "1.0.0",
-  "description": "Excalidraw Share Obsidian Plugin",
+  "description": "ExcaliShare Obsidian Plugin",
   "scripts": {
     "build": "tsc",
     "dev": "tsc -w"

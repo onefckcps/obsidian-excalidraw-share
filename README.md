@@ -1,4 +1,4 @@
-# Excalidraw Share
+# ExcaliShare
 
 A self-hosted solution for sharing Excalidraw drawings from your Obsidian vault.
 
@@ -27,7 +27,7 @@ This project enables you to share Excalidraw drawings from Obsidian via a self-h
 ## Project Structure
 
 ```
-obsidian-excalidraw-share/
+excalishare/
 ├── backend/          # Rust/Axum server
 │   ├── src/
 │   │   ├── main.rs   # Entry point
@@ -56,7 +56,7 @@ obsidian-excalidraw-share/
 
 ```bash
 # Clone and enter the project
-cd obsidian-excalidraw-share
+cd excalishare
 
 # Run the start script (auto-builds if needed)
 ./start.sh
@@ -121,7 +121,7 @@ cd backend
 # Build the release binary
 cargo build --release
 
-# Output: target/release/excalidraw-share
+# Output: target/release/excalishare
 ```
 
 ---
@@ -154,7 +154,7 @@ API_KEY="my-secret-key" \
 BASE_URL="http://localhost:3030" \
 DATA_DIR="./data/drawings" \
 FRONTEND_DIR="../frontend/dist" \
-./target/release/excalidraw-share
+./target/release/excalishare
 ```
 
 The server will start at `http://localhost:3030`. Visit `http://localhost:3030/` to see the landing page, or `http://localhost:3030/d/<id>` to view a drawing.
@@ -242,7 +242,7 @@ const CONFIG = {
 
 ```javascript
 // Option 1: Read from a separate file in your vault
-const apiKeyFile = app.vault.getAbstractFileByPath(".excalidraw-share-key");
+const apiKeyFile = app.vault.getAbstractFileByPath(".excalishare-key");
 const apiKey = apiKeyFile ? (await app.vault.read(apiKeyFile)).trim() : null;
 
 // Option 2: Use Obsidian's Secrets plugin
@@ -278,15 +278,15 @@ This is the recommended way to deploy in production on NixOS. The module handles
 ```bash
 # Create the API key file
 sudo mkdir -p /etc/secrets
-sudo openssl rand -base64 32 | sudo tee /etc/secrets/excalidraw-share-api-key
-sudo chmod 600 /etc/secrets/excalidraw-share-api-key
+sudo openssl rand -base64 32 | sudo tee /etc/secrets/excalishare-api-key
+sudo chmod 600 /etc/secrets/excalishare-api-key
 ```
 
 ### Step 2: Build Backend and Frontend
 
 ```bash
 # Build backend
-cd /path/to/obsidian-excalidraw-share/backend
+cd /path/to/excalishare/backend
 cargo build --release
 
 # Build frontend
@@ -300,18 +300,18 @@ npm run build
 Add to your `configuration.nix`:
 
 ```nix
-imports = [ /path/to/obsidian-excalidraw-share/nixos/module.nix ];
+imports = [ /path/to/excalishare/nixos/module.nix ];
 
-services.excalidraw-share = {
+services.excalishare = {
   enable = true;
   domain = "notes.leyk.me";
-  apiKeyFile = "/etc/secrets/excalidraw-share-api-key";
+  apiKeyFile = "/etc/secrets/excalishare-api-key";
   
   # Path to built binary (REQUIRED)
-  package = /path/to/obsidian-excalidraw-share/backend/target/release/excalidraw-share;
+  package = /path/to/excalishare/backend/target/release/excalishare;
   
   # Path to built frontend (REQUIRED)
-  frontendSource = /path/to/obsidian-excalidraw-share/frontend/dist;
+  frontendSource = /path/to/excalishare/frontend/dist;
   
   # Access control (default: vpnOnly)
   # Options: vpnOnly | vpnAndSelf | public
@@ -339,12 +339,12 @@ sudo nixos-rebuild switch
 
 If you prefer manual control:
 
-services.excalidraw-share = {
+services.excalishare = {
   enable = true;
   domain = "notes.leyk.me";
-  apiKeyFile = "/etc/secrets/excalidraw-share-api-key";
-  dataDir = "/var/lib/excalidraw-share";
-  frontendDir = "/var/lib/excalidraw-share/frontend";
+  apiKeyFile = "/etc/secrets/excalishare-api-key";
+  dataDir = "/var/lib/excalishare";
+  frontendDir = "/var/lib/excalishare/frontend";
 };
 ```
 
@@ -364,7 +364,7 @@ The module will:
 
 ```bash
 # Build everything
-cd /path/to/obsidian-excalidraw-share
+cd /path/to/excalishare
 
 # Build frontend
 cd frontend && npm install && npm run build
@@ -373,25 +373,25 @@ cd frontend && npm install && npm run build
 cd ../backend && cargo build --release
 
 # Copy to server
-sudo cp target/release/excalidraw-share /usr/local/bin/
-sudo cp -r ../frontend/dist /var/lib/excalidraw-share/frontend
+sudo cp target/release/excalishare /usr/local/bin/
+sudo cp -r ../frontend/dist /var/lib/excalishare/frontend
 
 # Create data directory
-sudo mkdir -p /var/lib/excalidraw-share/drawings
+sudo mkdir -p /var/lib/excalishare/drawings
 ```
 
 ##### Install Systemd Service
 
 ```bash
 # Copy the service file
-sudo cp excalidraw-share.service /etc/systemd/system/
+sudo cp excalishare.service /etc/systemd/system/
 
 # Reload systemd
 sudo systemctl daemon-reload
 
 # Enable and start
-sudo systemctl enable excalidraw-share
-sudo systemctl start excalidraw-share
+sudo systemctl enable excalishare
+sudo systemctl start excalishare
 ```
 
 Edit the service file to set your environment variables (`API_KEY`, `BASE_URL`, etc.) before starting.
@@ -400,7 +400,7 @@ Edit the service file to set your environment variables (`API_KEY`, `BASE_URL`, 
 
 ```bash
 # Check service status
-systemctl status excalidraw-share
+systemctl status excalishare
 
 # Check health endpoint
 curl https://notes.leyk.me/api/health
@@ -447,12 +447,12 @@ curl -X POST https://notes.leyk.me/api/upload \
 
 ```bash
 # Check logs
-journalctl -u excalidraw-share -f
+journalctl -u excalishare -f
 
 # Common issues:
 # - Port already in use: Check if another service is using the port
-# - Missing data directory: mkdir -p /var/lib/excalidraw-share
-# - Wrong permissions: chown -R excalidraw-share:excalidraw-share /var/lib/excalidraw-share
+# - Missing data directory: mkdir -p /var/lib/excalishare
+# - Wrong permissions: chown -R excalishare:excalishare /var/lib/excalishare
 ```
 
 ### Upload Fails
@@ -465,7 +465,7 @@ curl -X POST https://notes.leyk.me/api/upload \
   -d '{"type":"excalidraw","elements":[]}'
 
 # Check server logs for errors
-journalctl -u excalidraw-share | tail -50
+journalctl -u excalishare | tail -50
 ```
 
 ### Drawing Not Loading
@@ -523,7 +523,7 @@ The Excalidraw viewer uses self-hosted fonts. The NixOS module automatically cop
 
 ```bash
 # Copy fonts from node_modules
-cp -r node_modules/@excalidraw/excalidraw/dist/prod/fonts /var/lib/excalidraw-share/frontend/assets/
+cp -r node_modules/@excalidraw/excalidraw/dist/prod/fonts /var/lib/excalishare/frontend/assets/
 
 # Set asset path in frontend (already configured in main.tsx)
 window.EXCALIDRAW_ASSET_PATH = '/assets/'

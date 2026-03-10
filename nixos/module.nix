@@ -1,16 +1,16 @@
-# Excalidraw Share - NixOS Module (Service Only)
+# ExcaliShare - NixOS Module (Service Only)
 #
 # Deklaratives Deployment für NixOS - nur Service, kein Nginx!
 #
 # Usage:
 #   imports = [ /path/to/nixos/module.nix ];
 #
-#   services.excalidraw-share = {
+#   services.excalishare = {
 #     enable = true;
 #     domain = "notes.leyk.me";
-#     apiKeyFile = "/etc/secrets/excalidraw-share-api-key";
-#     package = /path/to/obsidian-excalidraw-share/backend/target/release/excalidraw-share;
-#     frontendSource = /path/to/obsidian-excalidraw-share/frontend/dist;
+#     apiKeyFile = "/etc/secrets/excalishare-api-key";
+#     package = /path/to/excalishare/backend/target/release/excalishare;
+#     frontendSource = /path/to/excalishare/frontend/dist;
 #   };
 #
 # WICHTIG: Die nginx Configuration muss MANUELL in deiner configuration.nix
@@ -25,18 +25,18 @@
 }:
 
 let
-  cfg = config.services.excalidraw-share;
+  cfg = config.services.excalishare;
 in
 {
-  options.services.excalidraw-share = {
+  options.services.excalishare = {
     enable = lib.mkEnableOption ''
-      Excalidraw Share - Self-hosted Excalidraw drawing sharing server
+      ExcaliShare - Self-hosted Excalidraw drawing sharing server
     '';
 
     package = lib.mkOption {
       type = lib.types.path;
-      example = "/root/obsidian-excalidraw-share/backend/target/release/excalidraw-share";
-      description = "Pfad zum gebauten excalidraw-share Binary.";
+      example = "/root/excalishare/backend/target/release/excalishare";
+      description = "Pfad zum gebauten excalishare Binary.";
     };
 
     domain = lib.mkOption {
@@ -47,7 +47,7 @@ in
 
     dataDir = lib.mkOption {
       type = lib.types.path;
-      default = "/var/lib/excalidraw-share";
+      default = "/var/lib/excalishare";
       description = "Verzeichnis für Daten und Frontend.";
     };
 
@@ -85,27 +85,27 @@ in
     # -------------------------------------------------------------------------
     # 1. User und Verzeichnisse
     # -------------------------------------------------------------------------
-    users.users.excalidraw-share = {
+    users.users.excalishare = {
       isSystemUser = true;
-      group = "excalidraw-share";
-      description = "Excalidraw Share Service User";
+      group = "excalishare";
+      description = "ExcaliShare Service User";
     };
 
-    users.groups.excalidraw-share = { };
+    users.groups.excalishare = { };
 
     # -------------------------------------------------------------------------
     # 2. Verzeichnisse und Frontend
     # -------------------------------------------------------------------------
     systemd.tmpfiles.rules = [
-      "d ${cfg.dataDir} 0755 excalidraw-share excalidraw-share - -"
-      "d ${cfg.dataDir}/drawings 0755 excalidraw-share excalidraw-share - -"
+      "d ${cfg.dataDir} 0755 excalishare excalishare - -"
+      "d ${cfg.dataDir}/drawings 0755 excalishare excalishare - -"
     ];
 
     # -------------------------------------------------------------------------
     # 3. Frontend kopieren (einmalig bei Aktivierung)
     # -------------------------------------------------------------------------
-    systemd.services.excalidraw-share-setup = {
-      description = "Excalidraw Share - Setup (copy frontend)";
+    systemd.services.excalishare-setup = {
+      description = "ExcaliShare - Setup (copy frontend)";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
       serviceConfig = {
@@ -118,7 +118,7 @@ in
           if [ -d "${cfg.frontendSource}" ]; then
             rm -rf ${cfg.dataDir}/frontend
             cp -r ${cfg.frontendSource} ${cfg.dataDir}/frontend
-            chown -R excalidraw-share:excalidraw-share ${cfg.dataDir}/frontend
+            chown -R excalishare:excalishare ${cfg.dataDir}/frontend
           fi
         ''}
       '';
@@ -127,23 +127,23 @@ in
     # -------------------------------------------------------------------------
     # 4. Systemd Service
     # -------------------------------------------------------------------------
-    systemd.services.excalidraw-share = {
-      description = "Excalidraw Share Server";
+    systemd.services.excalishare = {
+      description = "ExcaliShare Server";
       wantedBy = [ "multi-user.target" ];
       after = [
         "network.target"
-        "excalidraw-share-setup.service"
+        "excalishare-setup.service"
       ];
-      requires = [ "excalidraw-share-setup.service" ];
+      requires = [ "excalishare-setup.service" ];
 
       serviceConfig = {
         Type = "simple";
-        User = "excalidraw-share";
-        Group = "excalidraw-share";
+        User = "excalishare";
+        Group = "excalishare";
         Restart = "on-failure";
         RestartSec = "10s";
 
-        RuntimeDirectory = "excalidraw-share";
+        RuntimeDirectory = "excalishare";
         RuntimeDirectoryMode = "0755";
 
         Environment = [
@@ -163,12 +163,12 @@ in
 
         ExecStart =
           if cfg.apiKeyFile != null then
-            "${pkgs.writeShellScript "start-excalidraw-share" ''
+            "${pkgs.writeShellScript "start-excalishare" ''
               export API_KEY="$(cat ${cfg.apiKeyFile})"
-              exec ${cfg.package}/bin/excalidraw-share
+              exec ${cfg.package}/bin/excalishare
             ''}"
           else
-            "${cfg.package}/bin/excalidraw-share";
+            "${cfg.package}/bin/excalishare";
 
         StartLimitBurst = 5;
         StartLimitIntervalSec = 60;

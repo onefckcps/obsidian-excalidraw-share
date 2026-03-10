@@ -80,8 +80,8 @@ function Viewer() {
   // Listen for about modal trigger from dropdown
   useEffect(() => {
     const handleShowAbout = () => setShowAbout(true)
-    document.addEventListener('excalidraw-share:show-about', handleShowAbout)
-    return () => document.removeEventListener('excalidraw-share:show-about', handleShowAbout)
+    document.addEventListener('excalishare:show-about', handleShowAbout)
+    return () => document.removeEventListener('excalishare:show-about', handleShowAbout)
   }, [])
 
   useEffect(() => {
@@ -338,7 +338,7 @@ function Viewer() {
     if (!isMobile) return
 
     const currentMode = mode as string
-    const containerClass = 'excalidraw-share-mobile-buttons'
+    const containerClass = 'excalishare-mobile-buttons'
     let observer: MutationObserver | null = null
 
     const injectButtons = () => {
@@ -549,7 +549,7 @@ function Viewer() {
       cancelAnimationFrame(rAfId)
       timers.forEach(clearTimeout)
       if (observer) observer.disconnect()
-      document.querySelectorAll('.excalidraw-share-mobile-buttons').forEach(el => el.remove())
+      document.querySelectorAll('.excalishare-mobile-buttons').forEach(el => el.remove())
     }
   }, [isMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData])
 
@@ -563,11 +563,11 @@ function Viewer() {
       if (!excalidrawLinks) return
 
       // Remove existing ExcaliShare section first to handle dropdown re-open
-      dropdown.querySelector('.excalidraw-share-dropdown')?.remove()
-      dropdown.querySelectorAll('.excalidraw-share-hr').forEach(el => el.remove())
+      dropdown.querySelector('.excalishare-dropdown')?.remove()
+      dropdown.querySelectorAll('.excalishare-hr').forEach(el => el.remove())
 
       const excaliShareGroup = document.createElement('div')
-      excaliShareGroup.className = 'dropdown-menu-group excalidraw-share-dropdown'
+      excaliShareGroup.className = 'dropdown-menu-group excalishare-dropdown'
 
       const title = document.createElement('p')
       title.className = 'dropdown-menu-group-title'
@@ -575,7 +575,7 @@ function Viewer() {
       excaliShareGroup.appendChild(title)
 
       const githubLink = document.createElement('a')
-      githubLink.href = 'https://github.com/onefckcps/obsidian-excalidraw-share'
+      githubLink.href = 'https://github.com/onefckcps/obsidian-excalishare'
       githubLink.target = '_blank'
       githubLink.rel = 'noopener noreferrer'
       githubLink.className = 'dropdown-menu-item dropdown-menu-item-base'
@@ -594,7 +594,7 @@ function Viewer() {
       aboutLink.className = 'dropdown-menu-item dropdown-menu-item-base'
       aboutLink.title = 'About ExcaliShare'
       aboutLink.onclick = () => {
-        document.dispatchEvent(new CustomEvent('excalidraw-share:show-about'))
+        document.dispatchEvent(new CustomEvent('excalishare:show-about'))
       }
       aboutLink.innerHTML = `
         <div class="dropdown-menu-item__icon">
@@ -611,7 +611,7 @@ function Viewer() {
       excaliShareGroup.appendChild(aboutLink)
 
       const hr = document.createElement('div')
-      hr.className = 'excalidraw-share-hr'
+      hr.className = 'excalishare-hr'
       hr.style.height = '1px'
       hr.style.backgroundColor = 'var(--default-border-color)'
       hr.style.margin = '0.5rem 0px'

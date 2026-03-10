@@ -71,7 +71,7 @@ const pdfToPng = async (app, file, pageNum = 1, cropRect, scale = 1.5) => {
         return resultBase64;
     }
     catch (e) {
-        console.error('Excalidraw Share: PDF conversion failed', e);
+        console.error('ExcaliShare: PDF conversion failed', e);
         throw e;
     }
 };
@@ -80,14 +80,14 @@ const DEFAULT_SETTINGS = {
     baseUrl: 'http://localhost:8184',
     pdfScale: 1.5,
 };
-class ExcalidrawSharePlugin extends obsidian_1.Plugin {
+class ExcaliSharePlugin extends obsidian_1.Plugin {
     constructor() {
         super(...arguments);
         this.settings = DEFAULT_SETTINGS;
     }
     async onload() {
         await this.loadSettings();
-        console.log('Excalidraw Share: Plugin loaded');
+        console.log('ExcaliShare: Plugin loaded');
         // Add ribbon icons in sidebar
         this.addRibbonIcon('upload', 'Publish Drawing', async () => {
             const file = this.app.workspace.getActiveFile();
@@ -113,7 +113,7 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
         // Add command for publishing
         this.addCommand({
             id: 'publish-drawing',
-            name: 'Publish to Excalidraw Share',
+            name: 'Publish to ExcaliShare',
             checkCallback: (checking) => {
                 const file = this.app.workspace.getActiveFile();
                 if (file && this.isExcalidrawFile(file)) {
@@ -132,7 +132,7 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
         // Add command for syncing
         this.addCommand({
             id: 'sync-drawing',
-            name: 'Sync to Excalidraw Share',
+            name: 'Sync to ExcaliShare',
             checkCallback: (checking) => {
                 const file = this.app.workspace.getActiveFile();
                 if (file && this.isExcalidrawFile(file)) {
@@ -191,7 +191,7 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
                 if (publishedId) {
                     menu.addItem((item) => {
                         item
-                            .setTitle('Sync to Excalidraw Share')
+                            .setTitle('Sync to ExcaliShare')
                             .setIcon('refresh-cw')
                             .onClick(() => this.publishDrawing(file, publishedId));
                     });
@@ -216,14 +216,14 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
                 else {
                     menu.addItem((item) => {
                         item
-                            .setTitle('Publish to Excalidraw Share')
+                            .setTitle('Publish to ExcaliShare')
                             .setIcon('upload')
                             .onClick(() => this.publishDrawing(file));
                     });
                 }
             }
         }));
-        this.addSettingTab(new ExcalidrawShareSettingTab(this.app, this));
+        this.addSettingTab(new ExcaliShareSettingTab(this.app, this));
     }
     getExcalidrawPlugin() {
         try {
@@ -231,22 +231,22 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
             // The official Excalidraw plugin ID is 'obsidian-excalidraw-plugin'
             const plugin = this.app.plugins.getPlugin('obsidian-excalidraw-plugin');
             if (plugin) {
-                console.log('Excalidraw Share: Found Excalidraw plugin');
+                console.log('ExcaliShare: Found Excalidraw plugin');
                 return plugin;
             }
             // Also try 'excalidraw'
             const plugin2 = this.app.plugins.getPlugin('excalidraw');
             if (plugin2) {
-                console.log('Excalidraw Share: Found Excalidraw plugin (alt ID)');
+                console.log('ExcaliShare: Found Excalidraw plugin (alt ID)');
                 return plugin2;
             }
             // Log available plugins for debugging
             const plugins = this.app.plugins.plugins;
-            console.log('Excalidraw Share: Available plugins:', Object.keys(plugins));
+            console.log('ExcaliShare: Available plugins:', Object.keys(plugins));
             return null;
         }
         catch (e) {
-            console.log('Excalidraw Share: Error getting plugin', e);
+            console.log('ExcaliShare: Error getting plugin', e);
             return null;
         }
     }
@@ -262,8 +262,8 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
     }
     getPublishedId(file) {
         const cache = this.app.metadataCache.getFileCache(file);
-        if (cache && cache.frontmatter && cache.frontmatter['excalidraw-share-id']) {
-            return cache.frontmatter['excalidraw-share-id'];
+        if (cache && cache.frontmatter && cache.frontmatter['excalishare-id']) {
+            return cache.frontmatter['excalishare-id'];
         }
         return null;
     }
@@ -274,7 +274,7 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
         await this.saveData(this.settings);
     }
     async publishDrawing(file, existingId) {
-        console.log('Excalidraw Share: Publishing', file.name);
+        console.log('ExcaliShare: Publishing', file.name);
         if (!this.settings.apiKey) {
             new obsidian_1.Notice('Please configure API key in plugin settings');
             return;
@@ -326,16 +326,16 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
                                 };
                             }
                         }
-                        console.log('Excalidraw Share: Fetched images from active Excalidraw view', Object.keys(files).length);
+                        console.log('ExcaliShare: Fetched images from active Excalidraw view', Object.keys(files).length);
                     }
                 }
             }
             catch (e) {
-                console.log('Excalidraw Share: Could not fetch files from active view, falling back to manual parse', e);
+                console.log('ExcaliShare: Could not fetch files from active view, falling back to manual parse', e);
             }
             // If active view didn't have the files (e.g. published from file explorer), parse manually
             if (Object.keys(files).length === 0) {
-                console.log('Excalidraw Share: Parsing embedded files manually from markdown');
+                console.log('ExcaliShare: Parsing embedded files manually from markdown');
                 const fileContent = await this.app.vault.read(file);
                 // Look for the "Embedded Files" section
                 const embeddedFilesMatch = fileContent.match(/## Embedded Files\n([\s\S]*?)(?:# |$)/);
@@ -383,17 +383,17 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
                                         dataURL: `data:image/png;base64,${pngBase64}`,
                                         created: linkedFile.stat.ctime,
                                     };
-                                    console.log(`Excalidraw Share: Converted PDF ${linkPath} page ${pageNum} to PNG (${fileId})`);
+                                    console.log(`ExcaliShare: Converted PDF ${linkPath} page ${pageNum} to PNG (${fileId})`);
                                 }
                                 catch (e) {
-                                    console.error(`Excalidraw Share: Failed to convert PDF ${linkPath}`, e);
+                                    console.error(`ExcaliShare: Failed to convert PDF ${linkPath}`, e);
                                 }
                                 continue;
                             }
                             // Only process image files for manual parsing
                             const supportedImageTypes = ['png', 'jpg', 'jpeg', 'svg', 'gif'];
                             if (!supportedImageTypes.includes(ext)) {
-                                console.log(`Excalidraw Share: Skipping unsupported embedded file type ${ext} for ${linkPath}`);
+                                console.log(`ExcaliShare: Skipping unsupported embedded file type ${ext} for ${linkPath}`);
                                 continue;
                             }
                             try {
@@ -415,10 +415,10 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
                                     dataURL: `data:${mimeType};base64,${base64}`,
                                     created: linkedFile.stat.ctime,
                                 };
-                                console.log(`Excalidraw Share: Processed image ${linkPath} (${fileId})`);
+                                console.log(`ExcaliShare: Processed image ${linkPath} (${fileId})`);
                             }
                             catch (e) {
-                                console.error(`Excalidraw Share: Failed to read image ${linkPath}`, e);
+                                console.error(`ExcaliShare: Failed to read image ${linkPath}`, e);
                             }
                         }
                     }
@@ -461,13 +461,13 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
             // Save the ID in the file's frontmatter
             // @ts-ignore - processFrontMatter is available in newer Obsidian APIs
             await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-                frontmatter['excalidraw-share-id'] = result.id;
+                frontmatter['excalishare-id'] = result.id;
             });
             await navigator.clipboard.writeText(result.url);
             new obsidian_1.Notice(`Drawing ${existingId ? 'synced' : 'published'}! URL copied to clipboard.`);
         }
         catch (error) {
-            console.error('Excalidraw Share: Publish error', error);
+            console.error('ExcaliShare: Publish error', error);
             new obsidian_1.Notice(`Failed to publish: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     }
@@ -495,7 +495,7 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
             // Remove the ID from the file's frontmatter
             // @ts-ignore - processFrontMatter is available in newer Obsidian APIs
             await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-                delete frontmatter['excalidraw-share-id'];
+                delete frontmatter['excalishare-id'];
             });
             new obsidian_1.Notice('Drawing unpublished successfully');
             return true;
@@ -512,8 +512,8 @@ class ExcalidrawSharePlugin extends obsidian_1.Plugin {
         return this.getPublishedId(file) !== null;
     }
 }
-exports.default = ExcalidrawSharePlugin;
-class ExcalidrawShareSettingTab extends obsidian_1.PluginSettingTab {
+exports.default = ExcaliSharePlugin;
+class ExcaliShareSettingTab extends obsidian_1.PluginSettingTab {
     constructor(app, plugin) {
         super(app, plugin);
         this.pluginRef = plugin;
@@ -521,7 +521,7 @@ class ExcalidrawShareSettingTab extends obsidian_1.PluginSettingTab {
     display() {
         const { containerEl } = this;
         containerEl.empty();
-        containerEl.createEl('h2', { text: 'Excalidraw Share Settings' });
+        containerEl.createEl('h2', { text: 'ExcaliShare Settings' });
         new obsidian_1.Setting(containerEl)
             .setName('API Key')
             .setDesc('API key for the share server')

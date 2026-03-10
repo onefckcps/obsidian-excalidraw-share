@@ -1,4 +1,4 @@
-# Excalidraw Share - Deployment Guide
+# ExcaliShare - Deployment Guide
 
 ## Übersicht
 
@@ -21,8 +21,8 @@ Dieses Projekt kann auf zwei Arten deployed werden:
 ```bash
 # Auf deinem NixOS Server:
 sudo mkdir -p /etc/secrets
-sudo bash -c 'openssl rand -base64 32 > /etc/secrets/excalidraw-share-api-key'
-sudo chmod 600 /etc/secrets/excalidraw-share-api-key
+sudo bash -c 'openssl rand -base64 32 > /etc/secrets/excalishare-api-key'
+sudo chmod 600 /etc/secrets/excalishare-api-key
 ```
 
 ### Schritt 2: Backend bauen
@@ -30,7 +30,7 @@ sudo chmod 600 /etc/secrets/excalidraw-share-api-key
 Das Backend muss gebaut werden:
 
 ```bash
-cd /root/obsidian-excalidraw-share/backend
+cd /root/excalishare/backend
 cargo build --release
 ```
 
@@ -39,7 +39,7 @@ cargo build --release
 Das Frontend muss ebenfalls gebaut werden:
 
 ```bash
-cd /root/obsidian-excalidraw-share/frontend
+cd /root/excalishare/frontend
 npm install
 npm run build
 ```
@@ -51,20 +51,20 @@ Füge dies zu deiner `configuration.nix` hinzu:
 ```nix
 # Importiere das Modul
 imports = [
-  /path/to/obsidian-excalidraw-share/nixos/module.nix
+  /path/to/excalishare/nixos/module.nix
 ];
 
 # Konfiguriere den Service
-services.excalidraw-share = {
+services.excalishare = {
   enable = true;
   domain = "notes.leyk.me";
-  apiKeyFile = "/etc/secrets/excalidraw-share-api-key";
+  apiKeyFile = "/etc/secrets/excalishare-api-key";
   
   # Pfad zum gebauten Binary
-  package = /root/obsidian-excalidraw-share/backend/target/release/excalidraw-share;
+  package = /root/excalishare/backend/target/release/excalishare;
   
   # Pfad zum gebauten Frontend
-  frontendSource = /root/obsidian-excalidraw-share/frontend/dist;
+  frontendSource = /root/excalishare/frontend/dist;
   
   # Optional: VPN-Zugriffskontrolle (Standard: vpnOnly)
   # vpnAccess = "vpnOnly";    # Nur VPN-Clients
@@ -95,8 +95,8 @@ Das Modul übernimmt:
 ```bash
 # Projekt auf Server übertragen
 cd /root
-git clone https://github.com/YOUR_USERNAME/obsidian-excalidraw-share.git
-cd obsidian-excalidraw-share
+git clone https://github.com/YOUR_USERNAME/excalishare.git
+cd excalishare
 ```
 
 ### Bauen
@@ -115,25 +115,25 @@ cd backend && cargo build --release && cd ..
 ### API-Key erstellen
 
 ```bash
-echo "dein-sicherer-api-key" | sudo tee /etc/secrets/excalidraw-share-api-key
-sudo chmod 600 /etc/secrets/excalidraw-share-api-key
+echo "dein-sicherer-api-key" | sudo tee /etc/secrets/excalishare-api-key
+sudo chmod 600 /etc/secrets/excalishare-api-key
 ```
 
 ### Service einrichten
 
 ```bash
 # Service-Datei anpassen (Pfade!) und kopieren
-cp excalidraw-share.service /etc/systemd/system/
+cp excalishare.service /etc/systemd/system/
 
 # Oder manuell:
-sudo useradd -r -s /bin/false -d /var/empty excalidraw-share
-sudo mkdir -p /var/lib/excalidraw-share/drawings
-sudo chown -R excalidraw-share:excalidraw-share /var/lib/excalidraw-share
+sudo useradd -r -s /bin/false -d /var/empty excalishare
+sudo mkdir -p /var/lib/excalishare/drawings
+sudo chown -R excalishare:excalishare /var/lib/excalishare
 
 # Starten
 sudo systemctl daemon-reload
-sudo systemctl enable excalidraw-share
-sudo systemctl start excalidraw-share
+sudo systemctl enable excalishare
+sudo systemctl start excalishare
 ```
 
 ### Nginx Config (VPN Only)
@@ -190,11 +190,11 @@ const CONFIG = {
 
 ```bash
 # Logs anzeigen
-journalctl -u excalidraw-share -f
+journalctl -u excalishare -f
 
 # Häufige Fehler:
 # - Port bereits belegt: lsof -i :3030
-# - Fehlende Rechte: chown -R excalidraw-share /var/lib/excalidraw-share
+# - Fehlende Rechte: chown -R excalishare /var/lib/excalishare
 ```
 
 ### Upload scheitert

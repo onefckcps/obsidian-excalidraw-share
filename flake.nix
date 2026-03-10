@@ -1,5 +1,5 @@
 {
-  description = "Excalidraw Share - Self-hosted drawing sharing for Obsidian";
+  description = "ExcaliShare - Self-hosted drawing sharing for Obsidian";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -16,14 +16,14 @@
       packages.${system} =
         let
           backend = pkgs.rustPlatform.buildRustPackage {
-            pname = "excalidraw-share";
+            pname = "excalishare";
             version = "0.1.0";
             src = ./backend;
             cargoLock.lockFile = ./backend/Cargo.lock;
           };
 
           frontend = pkgs.buildNpmPackage {
-            pname = "excalidraw-share-frontend";
+            pname = "excalishare-frontend";
             version = "0.1.0";
             src = ./frontend;
             npmDepsHash = "sha256-RQghcJOxBMNghNpdjsU5EPB4FS/rkVy5spCgT4AfXAQ=";
@@ -36,8 +36,8 @@
           };
         in
         {
-          excalidraw-share-backend = backend;
-          excalidraw-share-frontend = frontend;
+          excalishare-backend = backend;
+          excalishare-frontend = frontend;
           default = backend;
         };
 
@@ -53,7 +53,7 @@
         ];
 
         shellHook = ''
-          echo "Excalidraw Share Development Environment"
+          echo "ExcaliShare Development Environment"
           echo "========================================"
           echo ""
           echo "Available commands:"

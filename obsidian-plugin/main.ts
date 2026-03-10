@@ -102,18 +102,18 @@ const pdfToPng = async (
     
     return resultBase64;
   } catch (e) {
-    console.error('Excalidraw Share: PDF conversion failed', e);
+    console.error('ExcaliShare: PDF conversion failed', e);
     throw e;
   }
 };
 
-interface ExcalidrawShareSettings {
+interface ExcaliShareSettings {
   apiKey: string;
   baseUrl: string;
   pdfScale: number;
 }
 
-const DEFAULT_SETTINGS: ExcalidrawShareSettings = {
+const DEFAULT_SETTINGS: ExcaliShareSettings = {
   apiKey: '',
   baseUrl: 'http://localhost:8184',
   pdfScale: 1.5,
@@ -133,12 +133,12 @@ interface ExcalidrawPlugin {
   };
 }
 
-export default class ExcalidrawSharePlugin extends Plugin {
-  settings: ExcalidrawShareSettings = DEFAULT_SETTINGS;
+export default class ExcaliSharePlugin extends Plugin {
+  settings: ExcaliShareSettings = DEFAULT_SETTINGS;
 
   async onload() {
     await this.loadSettings();
-    console.log('Excalidraw Share: Plugin loaded');
+    console.log('ExcaliShare: Plugin loaded');
 
     // Add ribbon icons in sidebar
     this.addRibbonIcon('upload', 'Publish Drawing', async () => {
@@ -165,7 +165,7 @@ export default class ExcalidrawSharePlugin extends Plugin {
     // Add command for publishing
     this.addCommand({
       id: 'publish-drawing',
-      name: 'Publish to Excalidraw Share',
+      name: 'Publish to ExcaliShare',
       checkCallback: (checking: boolean) => {
         const file = this.app.workspace.getActiveFile();
         if (file && this.isExcalidrawFile(file)) {
@@ -185,7 +185,7 @@ export default class ExcalidrawSharePlugin extends Plugin {
     // Add command for syncing
     this.addCommand({
       id: 'sync-drawing',
-      name: 'Sync to Excalidraw Share',
+      name: 'Sync to ExcaliShare',
       checkCallback: (checking: boolean) => {
         const file = this.app.workspace.getActiveFile();
         if (file && this.isExcalidrawFile(file)) {
@@ -247,7 +247,7 @@ export default class ExcalidrawSharePlugin extends Plugin {
           if (publishedId) {
             menu.addItem((item) => {
               item
-                .setTitle('Sync to Excalidraw Share')
+                .setTitle('Sync to ExcaliShare')
                 .setIcon('refresh-cw')
                 .onClick(() => this.publishDrawing(file, publishedId));
             });
@@ -271,7 +271,7 @@ export default class ExcalidrawSharePlugin extends Plugin {
           } else {
             menu.addItem((item) => {
               item
-                .setTitle('Publish to Excalidraw Share')
+                .setTitle('Publish to ExcaliShare')
                 .setIcon('upload')
                 .onClick(() => this.publishDrawing(file));
             });
@@ -280,7 +280,7 @@ export default class ExcalidrawSharePlugin extends Plugin {
       })
     );
 
-    this.addSettingTab(new ExcalidrawShareSettingTab(this.app, this));
+    this.addSettingTab(new ExcaliShareSettingTab(this.app, this));
   }
 
   private getExcalidrawPlugin(): ExcalidrawPlugin | null {
@@ -290,23 +290,23 @@ export default class ExcalidrawSharePlugin extends Plugin {
       const plugin = (this.app as unknown as { plugins: { getPlugin: (id: string) => unknown } }).plugins.getPlugin('obsidian-excalidraw-plugin');
       
       if (plugin) {
-        console.log('Excalidraw Share: Found Excalidraw plugin');
+        console.log('ExcaliShare: Found Excalidraw plugin');
         return plugin as ExcalidrawPlugin;
       }
       
       // Also try 'excalidraw'
       const plugin2 = (this.app as unknown as { plugins: { getPlugin: (id: string) => unknown } }).plugins.getPlugin('excalidraw');
       if (plugin2) {
-        console.log('Excalidraw Share: Found Excalidraw plugin (alt ID)');
+        console.log('ExcaliShare: Found Excalidraw plugin (alt ID)');
         return plugin2 as ExcalidrawPlugin;
       }
       
       // Log available plugins for debugging
       const plugins = (this.app as unknown as { plugins: { plugins: Record<string, unknown> } }).plugins.plugins;
-      console.log('Excalidraw Share: Available plugins:', Object.keys(plugins));
+      console.log('ExcaliShare: Available plugins:', Object.keys(plugins));
       return null;
     } catch (e) {
-      console.log('Excalidraw Share: Error getting plugin', e);
+      console.log('ExcaliShare: Error getting plugin', e);
       return null;
     }
   }
@@ -324,8 +324,8 @@ export default class ExcalidrawSharePlugin extends Plugin {
 
   private getPublishedId(file: TFile): string | null {
     const cache = this.app.metadataCache.getFileCache(file);
-    if (cache && cache.frontmatter && cache.frontmatter['excalidraw-share-id']) {
-      return cache.frontmatter['excalidraw-share-id'] as string;
+    if (cache && cache.frontmatter && cache.frontmatter['excalishare-id']) {
+      return cache.frontmatter['excalishare-id'] as string;
     }
     return null;
   }
@@ -339,7 +339,7 @@ export default class ExcalidrawSharePlugin extends Plugin {
   }
 
   async publishDrawing(file: TFile, existingId?: string) {
-    console.log('Excalidraw Share: Publishing', file.name);
+    console.log('ExcaliShare: Publishing', file.name);
     
     if (!this.settings.apiKey) {
       new Notice('Please configure API key in plugin settings');
@@ -400,16 +400,16 @@ export default class ExcalidrawSharePlugin extends Plugin {
                 };
               }
             }
-            console.log('Excalidraw Share: Fetched images from active Excalidraw view', Object.keys(files).length);
+            console.log('ExcaliShare: Fetched images from active Excalidraw view', Object.keys(files).length);
           }
         }
       } catch (e) {
-        console.log('Excalidraw Share: Could not fetch files from active view, falling back to manual parse', e);
+        console.log('ExcaliShare: Could not fetch files from active view, falling back to manual parse', e);
       }
 
       // If active view didn't have the files (e.g. published from file explorer), parse manually
       if (Object.keys(files).length === 0) {
-        console.log('Excalidraw Share: Parsing embedded files manually from markdown');
+        console.log('ExcaliShare: Parsing embedded files manually from markdown');
         const fileContent = await this.app.vault.read(file);
         
         // Look for the "Embedded Files" section
@@ -460,9 +460,9 @@ export default class ExcalidrawSharePlugin extends Plugin {
                     dataURL: `data:image/png;base64,${pngBase64}`,
                     created: linkedFile.stat.ctime,
                   };
-                  console.log(`Excalidraw Share: Converted PDF ${linkPath} page ${pageNum} to PNG (${fileId})`);
+                  console.log(`ExcaliShare: Converted PDF ${linkPath} page ${pageNum} to PNG (${fileId})`);
                 } catch (e) {
-                  console.error(`Excalidraw Share: Failed to convert PDF ${linkPath}`, e);
+                  console.error(`ExcaliShare: Failed to convert PDF ${linkPath}`, e);
                 }
                 continue;
               }
@@ -470,7 +470,7 @@ export default class ExcalidrawSharePlugin extends Plugin {
               // Only process image files for manual parsing
               const supportedImageTypes = ['png', 'jpg', 'jpeg', 'svg', 'gif'];
               if (!supportedImageTypes.includes(ext)) {
-                console.log(`Excalidraw Share: Skipping unsupported embedded file type ${ext} for ${linkPath}`);
+                console.log(`ExcaliShare: Skipping unsupported embedded file type ${ext} for ${linkPath}`);
                 continue;
               }
 
@@ -493,9 +493,9 @@ export default class ExcalidrawSharePlugin extends Plugin {
                   dataURL: `data:${mimeType};base64,${base64}`,
                   created: linkedFile.stat.ctime,
                 };
-                console.log(`Excalidraw Share: Processed image ${linkPath} (${fileId})`);
+                console.log(`ExcaliShare: Processed image ${linkPath} (${fileId})`);
               } catch (e) {
-                console.error(`Excalidraw Share: Failed to read image ${linkPath}`, e);
+                console.error(`ExcaliShare: Failed to read image ${linkPath}`, e);
               }
             }
           }
@@ -546,13 +546,13 @@ export default class ExcalidrawSharePlugin extends Plugin {
       // Save the ID in the file's frontmatter
       // @ts-ignore - processFrontMatter is available in newer Obsidian APIs
       await this.app.fileManager.processFrontMatter(file, (frontmatter: any) => {
-        frontmatter['excalidraw-share-id'] = result.id;
+        frontmatter['excalishare-id'] = result.id;
       });
       
       await navigator.clipboard.writeText(result.url);
       new Notice(`Drawing ${existingId ? 'synced' : 'published'}! URL copied to clipboard.`);
     } catch (error) {
-      console.error('Excalidraw Share: Publish error', error);
+      console.error('ExcaliShare: Publish error', error);
       new Notice(`Failed to publish: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -585,7 +585,7 @@ export default class ExcalidrawSharePlugin extends Plugin {
       // Remove the ID from the file's frontmatter
       // @ts-ignore - processFrontMatter is available in newer Obsidian APIs
       await this.app.fileManager.processFrontMatter(file, (frontmatter: any) => {
-        delete frontmatter['excalidraw-share-id'];
+        delete frontmatter['excalishare-id'];
       });
 
       new Notice('Drawing unpublished successfully');
@@ -604,10 +604,10 @@ export default class ExcalidrawSharePlugin extends Plugin {
   }
 }
 
-class ExcalidrawShareSettingTab extends PluginSettingTab {
-  pluginRef: ExcalidrawSharePlugin;
-  
-  constructor(app: App, plugin: ExcalidrawSharePlugin) {
+class ExcaliShareSettingTab extends PluginSettingTab {
+  pluginRef: ExcaliSharePlugin;
+
+  constructor(app: App, plugin: ExcaliSharePlugin) {
     super(app, plugin);
     this.pluginRef = plugin;
   }
@@ -616,7 +616,7 @@ class ExcalidrawShareSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Excalidraw Share Settings' });
+    containerEl.createEl('h2', { text: 'ExcaliShare Settings' });
 
     new Setting(containerEl)
       .setName('API Key')

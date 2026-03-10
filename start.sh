@@ -36,7 +36,7 @@ log_error() {
 }
 
 # Check if binary exists
-BINARY="$PROJECT_ROOT/backend/target/release/excalidraw-share"
+BINARY="$PROJECT_ROOT/backend/target/release/excalishare"
 
 if [ ! -f "$BINARY" ]; then
 	log_warn "Binary not found. Building..."
