@@ -630,9 +630,10 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
 
   // Get filtered drawings based on search query
   const getFilteredDrawings = () => {
-    // When search is not visible, always show current folder's drawings (ignore global search)
-    // When search is visible, use isGlobalSearch to decide whether to search all folders
-    const useGlobalSearch = showSearch && isGlobalSearch
+    // On desktop (always visible search), use isGlobalSearch directly
+    // On mobile, only use global search when search is visible
+    const searchVisible = !isMobile || showSearch
+    const useGlobalSearch = searchVisible && isGlobalSearch
     const folderDrawings = useGlobalSearch ? drawings : getSelectedDrawings()
     if (!searchQuery.trim()) return folderDrawings
 
