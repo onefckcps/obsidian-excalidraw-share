@@ -139,6 +139,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
     }
   }, [showSearch])
 
+
   const isMobile = useMediaQuery('(max-width: 730px)')
 
   const treeItemRefs = useRef<Map<number, HTMLDivElement>>(new Map())
@@ -629,8 +630,10 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
 
   // Get filtered drawings based on search query
   const getFilteredDrawings = () => {
-    // For global search, search across all drawings regardless of folder
-    const folderDrawings = isGlobalSearch ? drawings : getSelectedDrawings()
+    // When search is not visible, always show current folder's drawings (ignore global search)
+    // When search is visible, use isGlobalSearch to decide whether to search all folders
+    const useGlobalSearch = showSearch && isGlobalSearch
+    const folderDrawings = useGlobalSearch ? drawings : getSelectedDrawings()
     if (!searchQuery.trim()) return folderDrawings
 
     const query = searchQuery.toLowerCase()
@@ -827,7 +830,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
           </div>
 
           {isMobile && mobileView === 'drawings' && (
-            <div style={{ flex: 1, display: 'flex', justifyContent: 'center', padding: '0 8px' }}>
+            <div style={{ flex: 1, display: 'flex', paddingLeft: '8px' }}>
               <button style={styles.mobileFolderBtn} onClick={openMobileTree}>
                 <span style={{ filter: currentTheme === 'dark' ? 'brightness(1.3)' : 'none' }}>📁</span>
                 <span style={{ flex: 1 }}>{selectedFolder === '_root' ? 'Top Level' : selectedFolder.split('/').pop()}</span>
@@ -1234,7 +1237,7 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
     headerLeft: {
       display: 'flex',
       alignItems: 'center',
-      minWidth: '120px',
+      minWidth: '40px',
       gap: '8px',
     },
     headerCenter: {

@@ -160,21 +160,33 @@ if [ "$WATCH" = true ]; then
 	# Watch frontend in background - rebuild on changes
 	(
 		cd "$PROJECT_ROOT/frontend"
-		while true; do
-			if command -v fswatch &> /dev/null; then
-				fswatch -o src/ | xargs -n1 npm run build
-			elif command -v entr &> /dev/null; then
-				find src -type f | entr -r npm run build
-			elif command -v inotifywait &> /dev/null; then
-				inotifywait -m -r -e modify src/ | while read -r; do
-					npm run build
-				done
-			else
-				log_warn "No file watcher found. Install fswatch, entr, or inotify-tools."
-				break
-			fi
-			log_info "Frontend rebuilt."
-		done
+		# Debounce timer to avoid multiple builds
+		debounce_timer=0
+		trigger_build() {
+			kill $debounce_timer 2>/dev/null || true
+			# Wait 500ms before building to batch rapid changes
+			(
+				sleep 0.5
+				if npm run build; then
+					log_info "Frontend rebuilt."
+				else
+					log_warn "Frontend build failed."
+				fi
+			) &
+			debounce_timer=$!
+		}
+		if command -v fswatch &> /dev/null; then
+			fswatch -o src/ | while read -r; do trigger_build; done
+		elif command -v entr &> /dev/null; then
+			while true; do
+				find src -type f | entr -p npm run build
+				log_info "Frontend rebuilt."
+			done
+		elif command -v inotifywait &> /dev/null; then
+			inotifywait -m -r -e modify src/ | while read -r; do trigger_build; done
+		else
+			log_warn "No file watcher found. Install fswatch, entr, or inotify-tools."
+		fi
 	) &
 	FRONTEND_WATCH_PID=$!
 
