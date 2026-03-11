@@ -732,7 +732,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
             {hasChildren ? (isExpanded ? '📂' : '📁') : '📁'}
           </span>
           <span style={styles.treeLabel}>
-            {isRoot ? 'All Drawings' : node.name}
+            {isRoot ? 'Top Level' : node.name}
           </span>
           <span style={{...styles.treeCount, color: isSelected ? styles.treeItemActive.color : styles.treeCount.color}}>
             ({totalCount})
@@ -830,7 +830,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
             <div style={{ flex: 1, display: 'flex', justifyContent: 'center', padding: '0 8px' }}>
               <button style={styles.mobileFolderBtn} onClick={openMobileTree}>
                 <span style={{ filter: currentTheme === 'dark' ? 'brightness(1.3)' : 'none' }}>📁</span>
-                <span style={{ flex: 1 }}>{selectedFolder === '_root' ? 'All Drawings' : selectedFolder.split('/').pop()}</span>
+                <span style={{ flex: 1 }}>{selectedFolder === '_root' ? 'Top Level' : selectedFolder.split('/').pop()}</span>
                 <span style={{ fontSize: '12px', marginLeft: '8px', color: currentTheme === 'dark' ? '#aaaaaa' : '#666' }}>▼</span>
               </button>
             </div>
