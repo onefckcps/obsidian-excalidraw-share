@@ -75,8 +75,29 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
   const [mobileView, setMobileView] = useState<'drawings' | 'tree'>('drawings')
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearch, setShowSearch] = useState(false)
-  const [isGlobalSearch, setIsGlobalSearch] = useState(false)
+  const [isGlobalSearch, setIsGlobalSearch] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('drawingsBrowserGlobalSearch')
+      return saved === 'true'
+    }
+    return false
+  })
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('drawingsBrowserSidebarWidth')
+      if (saved) {
+        const parsed = parseInt(saved, 10)
+        if (!isNaN(parsed) && parsed >= 200 && parsed <= 600) {
+          return parsed
+        }
+      }
+    }
+    return 300
+  })
+  const [isResizing, setIsResizing] = useState(false)
+  const [treeTooltip, setTreeTooltip] = useState<{ name: string; path: string; x: number; y: number } | null>(null)
+  const sidebarRef = useRef<HTMLDivElement>(null)
 
   // Sync drawings state when initialDrawings changes (e.g., after refresh)
   useEffect(() => {
@@ -84,6 +105,24 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
       setDrawings(initialDrawings)
     }
   }, [initialDrawings])
+
+  // Persist sidebar width to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('drawingsBrowserSidebarWidth', sidebarWidth.toString())
+    } catch {
+      // localStorage not available
+    }
+  }, [sidebarWidth])
+
+  // Persist global search state to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('drawingsBrowserGlobalSearch', isGlobalSearch.toString())
+    } catch {
+      // localStorage not available
+    }
+  }, [isGlobalSearch])
 
   const isMobile = useMediaQuery('(max-width: 730px)')
 
@@ -474,6 +513,37 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
     refreshDrawingsRef.current = refreshDrawings
   }, [refreshDrawings])
 
+  // Sidebar resize handlers
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsResizing(true)
+  }
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing || !sidebarRef.current) return
+      const containerRect = sidebarRef.current.parentElement?.getBoundingClientRect()
+      if (containerRect) {
+        const newWidth = e.clientX - containerRect.left
+        setSidebarWidth(Math.max(200, Math.min(600, newWidth)))
+      }
+    }
+
+    const handleMouseUp = () => {
+      setIsResizing(false)
+    }
+
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove)
+      document.addEventListener('mouseup', handleMouseUp)
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isResizing])
+
   // Toast notification helper
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type })
@@ -606,6 +676,41 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
             if (hasChildren) toggleFolder(node.path)
             selectFolder(node.path)
             setSelectedTreeIndex(treeIndex >= 0 ? treeIndex : 0)
+          }}
+          onTouchStart={(e) => {
+            if (!isMobile) return
+            e.stopPropagation()
+            const rect = e.currentTarget.getBoundingClientRect()
+
+            // Long press timer - show tooltip after 500ms
+            const longPressTimer = setTimeout(() => {
+              setTreeTooltip({
+                name: node.name,
+                path: node.path,
+                x: rect.left + rect.width / 2,
+                y: rect.top
+              })
+            }, 500)
+
+            // Store timer reference for cleanup
+            ;(e.currentTarget as HTMLElement).dataset.longPressTimer = String(longPressTimer)
+
+            // Track touch move to cancel timer if user moves finger
+            const handleTouchMove = () => {
+              clearTimeout(longPressTimer)
+              e.currentTarget.removeEventListener('touchmove', handleTouchMove)
+              e.currentTarget.removeEventListener('touchend', handleTouchEnd)
+            }
+
+            // Clean up on touch end
+            const handleTouchEnd = () => {
+              clearTimeout(longPressTimer)
+              e.currentTarget.removeEventListener('touchmove', handleTouchMove)
+              e.currentTarget.removeEventListener('touchend', handleTouchEnd)
+            }
+
+            e.currentTarget.addEventListener('touchmove', handleTouchMove, { once: true })
+            e.currentTarget.addEventListener('touchend', handleTouchEnd, { once: true })
           }}
         >
           <span style={styles.treeIcon}>
@@ -789,10 +894,32 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
               {(!isMobile || mobileView === 'drawings') && (
                 <div style={isMobile ? { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' } : styles.layout}>
                   {!isMobile && (
-                    <div style={styles.sidebar}>
+                    <div
+                      ref={sidebarRef}
+                      style={{
+                        ...styles.sidebar,
+                        width: `${sidebarWidth}px`,
+                        position: 'relative',
+                        cursor: isResizing ? 'col-resize' : 'default',
+                      }}
+                    >
                       <div style={styles.treeContainer}>
                         {tree && renderTree(tree)}
                       </div>
+                      {/* Resize handle */}
+                      <div
+                        onMouseDown={startResize}
+                        style={{
+                          position: 'absolute',
+                          right: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: '8px',
+                          cursor: 'col-resize',
+                          zIndex: 10,
+                        }}
+                        title="Drag to resize"
+                      />
                     </div>
                   )}
 
@@ -866,6 +993,61 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
               }}>
                 {toast.message}
               </span>
+            </div>
+          )}
+
+          {/* Tree Tooltip */}
+          {treeTooltip && (
+            <div
+              onClick={() => setTreeTooltip(null)}
+              style={{
+                position: 'fixed',
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 1000,
+              }}
+            >
+              <div style={{
+                position: 'absolute',
+                left: treeTooltip.x,
+                top: treeTooltip.y,
+                transform: 'translate(-50%, -100%)',
+                backgroundColor: currentTheme === 'dark' ? '#2a2a2a' : '#fff',
+                border: `1px solid ${currentTheme === 'dark' ? '#444' : '#ddd'}`,
+                borderRadius: '8px',
+                padding: '12px 16px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+                maxWidth: '300px',
+                zIndex: 1001,
+              }}>
+                <div style={{
+                  fontWeight: 600,
+                  color: currentTheme === 'dark' ? '#fff' : '#333',
+                  marginBottom: '4px',
+                  wordBreak: 'break-all',
+                }}>
+                  {treeTooltip.name}
+                </div>
+                {treeTooltip.path !== '_root' && (
+                  <div style={{
+                    fontSize: '11px',
+                    color: currentTheme === 'dark' ? '#888' : '#666',
+                    wordBreak: 'break-all',
+                  }}>
+                    {treeTooltip.path}
+                  </div>
+                )}
+                <div style={{
+                  fontSize: '10px',
+                  color: currentTheme === 'dark' ? '#666' : '#999',
+                  marginTop: '8px',
+                  textAlign: 'center',
+                }}>
+                  Tap anywhere to close
+                </div>
+              </div>
             </div>
           )}
         </main>
@@ -1382,6 +1564,8 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       width: '160px',
       outline: 'none',
       flexShrink: 0,
+      height: '38px',
+      boxSizing: 'border-box',
     },
     searchContainer: {
       display: 'flex',
@@ -1390,8 +1574,9 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
     globalSearchBtn: {
       display: 'flex',
       alignItems: 'center',
+      justifyContent: 'center',
       gap: '4px',
-      padding: '8px 10px',
+      padding: '8px 12px',
       borderRadius: '0 8px 8px 0',
       border: `1px solid ${colors.border}`,
       borderLeft: 'none',
@@ -1401,17 +1586,22 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       fontWeight: 500,
       cursor: 'pointer',
       transition: 'all 0.2s ease',
+      height: '38px',
+      boxSizing: 'border-box',
     },
     globalSearchBtnActive: {
       display: 'flex',
       alignItems: 'center',
+      justifyContent: 'center',
       gap: '4px',
-      padding: '8px 10px',
+      padding: '8px 12px',
       borderRadius: '0 8px 8px 0',
       border: `1px solid ${colors.textActive}`,
       borderLeft: 'none',
       backgroundColor: colors.bgActive,
       color: colors.textActive,
+      height: '38px',
+      boxSizing: 'border-box',
       fontSize: '12px',
       fontWeight: 600,
       cursor: 'pointer',

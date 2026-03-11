@@ -17,14 +17,14 @@
         let
           backend = pkgs.rustPlatform.buildRustPackage {
             pname = "excalishare";
-            version = "0.1.0";
+            version = "1.0.1";
             src = ./backend;
             cargoLock.lockFile = ./backend/Cargo.lock;
           };
 
           frontend = pkgs.buildNpmPackage {
             pname = "excalishare-frontend";
-            version = "0.1.0";
+            version = "1.0.1";
             src = ./frontend;
             npmDepsHash = "sha256-88Kfr5P03wYwZMVBQ5TkJRGgOALFkGePJwC1VL/csRw=";
             # The Excalidraw package needs legacy-peer-deps
@@ -48,8 +48,10 @@
           rustfmt
           rustPackages.clippy
           rust-analyzer
+          cargo-watch
           nodejs_20
           git
+          inotify-tools
         ];
 
         shellHook = ''

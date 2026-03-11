@@ -84,7 +84,7 @@ function AboutModal({ isOpen, onClose, theme = 'light' }: AboutModalProps) {
       <div style={styles.modal}>
         <div style={styles.icon}>🎨</div>
         <h2 style={styles.title}>ExcaliShare</h2>
-        <p style={styles.version}>v1.0.0</p>
+        <p style={styles.version}>v1.0.1</p>
         <p style={styles.description}>
           Self-hosted Excalidraw sharing solution.<br />
           Share your drawings from Obsidian easily.
