@@ -74,7 +74,13 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
   const [refreshing, setRefreshing] = useState(false)
   const [mobileView, setMobileView] = useState<'drawings' | 'tree'>('drawings')
   const [searchQuery, setSearchQuery] = useState('')
-  const [showSearch, setShowSearch] = useState(false)
+  const [showSearch, setShowSearch] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('drawingsBrowserShowSearch')
+      return saved === 'true'
+    }
+    return false
+  })
   const [isGlobalSearch, setIsGlobalSearch] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('drawingsBrowserGlobalSearch')
@@ -123,6 +129,15 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
       // localStorage not available
     }
   }, [isGlobalSearch])
+
+  // Persist search visibility to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('drawingsBrowserShowSearch', showSearch.toString())
+    } catch {
+      // localStorage not available
+    }
+  }, [showSearch])
 
   const isMobile = useMediaQuery('(max-width: 730px)')
 
