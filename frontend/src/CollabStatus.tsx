@@ -1,19 +1,14 @@
 import { useState, useCallback } from 'react';
 import type { Theme } from '@excalidraw/excalidraw/types/element/types';
-import type { CollaboratorInfo } from './types';
 
 interface CollabStatusProps {
   theme: Theme;
   isCollabActive: boolean;
   isJoined: boolean;
-  isConnected: boolean;
-  collaborators: CollaboratorInfo[];
   participantCount: number;
   displayName: string;
   sessionEnded: { saved: boolean } | null;
   onJoin: (name: string) => void;
-  onLeave: () => void;
-  onSetName: (name: string) => void;
   onDismissSessionEnded: () => void;
 }
 
@@ -21,19 +16,14 @@ function CollabStatus({
   theme,
   isCollabActive,
   isJoined,
-  isConnected,
-  collaborators,
   participantCount,
   displayName,
   sessionEnded,
   onJoin,
-  onLeave,
-  onSetName: _onSetName,
   onDismissSessionEnded,
 }: CollabStatusProps) {
   const [showJoinDialog, setShowJoinDialog] = useState(false);
   const [nameInput, setNameInput] = useState(displayName);
-  const [showParticipants, setShowParticipants] = useState(false);
 
   const isDark = theme === 'dark';
 
@@ -89,8 +79,14 @@ function CollabStatus({
     );
   }
 
-  // Not active - don't render anything
+  // Not active and not joined — don't render anything
   if (!isCollabActive && !isJoined) {
+    return null;
+  }
+
+  // Already joined — Excalidraw's native UI handles the in-session display
+  // (user badges, LiveCollaborationTrigger, CollabPopover)
+  if (isJoined) {
     return null;
   }
 
@@ -154,78 +150,7 @@ function CollabStatus({
     );
   }
 
-  // Joined state - show status badge
-  if (isJoined) {
-    return (
-      <div
-        style={{
-          ...styles.badge,
-          backgroundColor: isDark ? 'rgba(30,30,30,0.95)' : 'rgba(255,255,255,0.95)',
-          borderColor: isDark ? '#444' : '#ddd',
-        }}
-      >
-        <div
-          style={{
-            ...styles.liveDot,
-            backgroundColor: isConnected ? '#4CAF50' : '#ff9800',
-          }}
-        />
-        <span
-          style={{
-            color: isDark ? '#e0e0e0' : '#333',
-            fontSize: '13px',
-            fontFamily: 'system-ui, -apple-system, sans-serif',
-            cursor: 'pointer',
-          }}
-          onClick={() => setShowParticipants(!showParticipants)}
-          title="Click to show participants"
-        >
-          Live · {collaborators.length} {collaborators.length === 1 ? 'user' : 'users'}
-        </span>
-        <button
-          style={{
-            ...styles.smallButton,
-            backgroundColor: isDark ? '#333' : '#f5f5f5',
-            borderColor: isDark ? '#555' : '#ccc',
-            color: isDark ? '#e0e0e0' : '#333',
-          }}
-          onClick={onLeave}
-          title="Leave session"
-        >
-          ✕
-        </button>
-
-        {/* Participants dropdown */}
-        {showParticipants && (
-          <div
-            style={{
-              ...styles.participantsDropdown,
-              backgroundColor: isDark ? '#2b2b2b' : '#fff',
-              borderColor: isDark ? '#444' : '#ddd',
-            }}
-          >
-            <div style={{ fontSize: '12px', color: isDark ? '#888' : '#999', marginBottom: '6px' }}>
-              Participants
-            </div>
-            {collaborators.map((c) => (
-              <div
-                key={c.id}
-                style={{
-                  fontSize: '13px',
-                  color: isDark ? '#e0e0e0' : '#333',
-                  padding: '2px 0',
-                }}
-              >
-                👤 {c.name}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // Not joined but session is active - show join button
+  // Not joined but session is active — show join banner
   return (
     <div
       style={{
@@ -313,18 +238,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '50%',
     animation: 'pulse 2s ease-in-out infinite',
   },
-  smallButton: {
-    width: '24px',
-    height: '24px',
-    borderRadius: '50%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '12px',
-    cursor: 'pointer',
-    border: '1px solid',
-    padding: 0,
-  },
   joinButton: {
     padding: '4px 12px',
     borderRadius: '12px',
@@ -334,17 +247,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     cursor: 'pointer',
     fontFamily: 'system-ui, -apple-system, sans-serif',
-  },
-  participantsDropdown: {
-    position: 'absolute',
-    top: '100%',
-    right: 0,
-    marginTop: '4px',
-    padding: '8px 12px',
-    borderRadius: '8px',
-    border: '1px solid',
-    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-    minWidth: '150px',
   },
 };
 

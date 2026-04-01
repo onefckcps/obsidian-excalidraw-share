@@ -130,7 +130,7 @@ export class CollabClient {
     }
   }
 
-  sendPointerUpdate(x: number, y: number, button: 'down' | 'up'): void {
+  sendPointerUpdate(x: number, y: number, button: 'down' | 'up', tool?: 'pointer' | 'laser', scrollX?: number, scrollY?: number, zoom?: number): void {
     // Throttle pointer updates
     const now = Date.now();
     if (now - this.lastPointerUpdate < POINTER_UPDATE_THROTTLE_MS) {
@@ -143,6 +143,10 @@ export class CollabClient {
       x,
       y,
       button,
+      tool,
+      scrollX,
+      scrollY,
+      zoom,
     });
   }
 

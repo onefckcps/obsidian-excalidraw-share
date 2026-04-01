@@ -6,6 +6,7 @@ import type { ExcalidrawData } from './types'
 import { drawingCache } from './utils/cache'
 import { useCollab } from './hooks/useCollab'
 import CollabStatus from './CollabStatus'
+import CollabPopover from './CollabPopover'
 import AboutModal from './AboutModal'
 
 function useMediaQuery(query: string): boolean {
@@ -62,6 +63,7 @@ function Viewer() {
   const [showEditWarning, setShowEditWarning] = useState(false)
   const [drawingsList, setDrawingsList] = useState<{id: string, created_at: string, source_path: string | null}[]>([])
   const [loadingDrawings, setLoadingDrawings] = useState(false)
+  const [showCollabPopover, setShowCollabPopover] = useState(false)
 
   const isMobile = useMediaQuery('(max-width: 730px)')
 
@@ -157,9 +159,27 @@ function Viewer() {
 
   const handlePointerUpdate = useCallback((payload: { pointer: { x: number; y: number; tool: string }; button: 'down' | 'up'; pointersMap: Map<number, Readonly<{ x: number; y: number }>> }) => {
     if (collab.isJoined && collab.isConnected) {
-      collab.sendPointerUpdate(payload.pointer.x, payload.pointer.y, payload.button)
+      // Include viewport data for follow mode
+      const api = excalidrawAPI as { getAppState?: () => { scrollX: number; scrollY: number; zoom: { value: number } } } | null;
+      let scrollX: number | undefined;
+      let scrollY: number | undefined;
+      let zoom: number | undefined;
+      if (api?.getAppState) {
+        const appState = api.getAppState();
+        scrollX = appState.scrollX;
+        scrollY = appState.scrollY;
+        zoom = appState.zoom?.value;
+      }
+      const tool = (payload.pointer.tool === 'laser' ? 'laser' : 'pointer') as 'pointer' | 'laser';
+      collab.sendPointerUpdate(payload.pointer.x, payload.pointer.y, payload.button, tool, scrollX, scrollY, zoom)
+
+      // Auto-exit follow mode only when user actively clicks/drags on canvas
+      // (not on every pointer move, which would make follow mode unusable)
+      if (collab.followingUserId && payload.button === 'down') {
+        collab.stopFollowing();
+      }
     }
-  }, [collab.isJoined, collab.isConnected, collab.sendPointerUpdate])
+  }, [collab.isJoined, collab.isConnected, collab.sendPointerUpdate, collab.followingUserId, collab.stopFollowing, excalidrawAPI])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -793,25 +813,21 @@ function Viewer() {
           collab.isJoined ? (
             <LiveCollaborationTrigger
               isCollaborating={true}
-              onSelect={() => {}}
+              onSelect={() => setShowCollabPopover(prev => !prev)}
             />
           ) : null
         }
       />
 
-      {/* Collaboration Status */}
+      {/* Collaboration Status — pre-join banner + session ended only */}
       <CollabStatus
         theme={theme}
         isCollabActive={collab.isCollabActive}
         isJoined={collab.isJoined}
-        isConnected={collab.isConnected}
-        collaborators={collab.collaborators}
         participantCount={collab.participantCount}
         displayName={collab.displayName}
         sessionEnded={collab.sessionEnded}
         onJoin={collab.joinSession}
-        onLeave={collab.leaveSession}
-        onSetName={collab.setDisplayName}
         onDismissSessionEnded={() => {
           collab.dismissSessionEnded()
           // Reload the drawing to get the latest state
@@ -830,6 +846,24 @@ function Viewer() {
           }
         }}
       />
+
+      {/* Collab Popover — shown when clicking LiveCollaborationTrigger */}
+      {collab.isJoined && showCollabPopover && (
+        <CollabPopover
+          theme={theme}
+          isConnected={collab.isConnected}
+          collaborators={collab.collaborators}
+          displayName={collab.displayName}
+          followingUserId={collab.followingUserId}
+          onLeave={() => {
+            collab.leaveSession()
+            setShowCollabPopover(false)
+          }}
+          onStartFollowing={collab.startFollowing}
+          onStopFollowing={collab.stopFollowing}
+          onClose={() => setShowCollabPopover(false)}
+        />
+      )}
       
       {/* Floating Action Buttons - hidden on mobile, use Obsidian ribbon instead */}
       {!isMobile && (

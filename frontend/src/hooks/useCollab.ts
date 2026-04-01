@@ -6,6 +6,7 @@ import type {
   ServerMessage,
 } from '../types';
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
+import type { Collaborator, UserIdleState } from '@excalidraw/excalidraw/types/types';
 
 const DISPLAY_NAME_KEY = 'excalishare-collab-name';
 
@@ -15,6 +16,25 @@ function getStoredName(): string {
 
 function storeName(name: string): void {
   localStorage.setItem(DISPLAY_NAME_KEY, name);
+}
+
+// ──────────────────────────────────────────────
+// Color palette for collaborators (deterministic by colorIndex from server)
+// ──────────────────────────────────────────────
+
+const COLLAB_COLORS: { background: string; stroke: string }[] = [
+  { background: '#FF6B6B33', stroke: '#FF6B6B' },  // Red
+  { background: '#4ECDC433', stroke: '#4ECDC4' },  // Teal
+  { background: '#45B7D133', stroke: '#45B7D1' },  // Blue
+  { background: '#96CEB433', stroke: '#96CEB4' },  // Green
+  { background: '#DDA0DD33', stroke: '#DDA0DD' },  // Plum
+  { background: '#F7DC6F33', stroke: '#F7DC6F' },  // Gold
+  { background: '#E8915633', stroke: '#E89156' },  // Orange
+  { background: '#98D8C833', stroke: '#98D8C8' },  // Mint
+];
+
+function getCollaboratorColor(colorIndex: number): { background: string; stroke: string } {
+  return COLLAB_COLORS[colorIndex % COLLAB_COLORS.length];
 }
 
 interface UseCollabOptions {
@@ -39,20 +59,26 @@ interface UseCollabReturn {
   displayName: string;
   /** Whether the session just ended */
   sessionEnded: { saved: boolean } | null;
+  /** The user ID we are currently following (null if not following anyone) */
+  followingUserId: string | null;
   /** Join the collab session */
   joinSession: (name: string) => void;
   /** Leave the collab session */
   leaveSession: () => void;
   /** Send a scene update */
   sendSceneUpdate: (elements: ExcalidrawElement[]) => void;
-  /** Send a pointer update */
-  sendPointerUpdate: (x: number, y: number, button: 'down' | 'up') => void;
+  /** Send a pointer update (with optional tool type and viewport data) */
+  sendPointerUpdate: (x: number, y: number, button: 'down' | 'up', tool?: 'pointer' | 'laser', scrollX?: number, scrollY?: number, zoom?: number) => void;
   /** Update display name */
   setDisplayName: (name: string) => void;
   /** Dismiss session ended notification */
   dismissSessionEnded: () => void;
   /** Refresh collab status */
   refreshStatus: () => void;
+  /** Start following a user */
+  startFollowing: (userId: string) => void;
+  /** Stop following */
+  stopFollowing: () => void;
 }
 
 export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCollabReturn {
@@ -64,16 +90,25 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const [participantCount, setParticipantCount] = useState(0);
   const [displayName, setDisplayNameState] = useState(getStoredName);
   const [sessionEnded, setSessionEnded] = useState<{ saved: boolean } | null>(null);
+  const [followingUserId, setFollowingUserId] = useState<string | null>(null);
 
   const clientRef = useRef<CollabClient | null>(null);
   const excalidrawAPIRef = useRef(excalidrawAPI);
   /** Tracks which drawing ID the collab session was joined for */
   const collabDrawingIdRef = useRef<string | null>(null);
+  /** Persistent collaborator state map for Excalidraw (includes pointer, color, etc.) */
+  const collaboratorMapRef = useRef<Map<string, Collaborator>>(new Map());
+  /** Track the followed user ID in a ref for use in callbacks */
+  const followingUserIdRef = useRef<string | null>(null);
 
-  // Keep excalidrawAPI ref up to date
+  // Keep refs in sync
   useEffect(() => {
     excalidrawAPIRef.current = excalidrawAPI;
   }, [excalidrawAPI]);
+
+  useEffect(() => {
+    followingUserIdRef.current = followingUserId;
+  }, [followingUserId]);
 
   // Auto-disconnect when navigating away from the collab drawing
   useEffect(() => {
@@ -91,6 +126,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       setIsJoined(false);
       setIsConnected(false);
       setCollaborators([]);
+      setFollowingUserId(null);
+      collaboratorMapRef.current = new Map();
 
       // Clear collaborators from Excalidraw
       const api = excalidrawAPIRef.current as {
@@ -131,6 +168,45 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     return () => clearInterval(interval);
   }, [refreshStatus]);
 
+  // Helper: build the Excalidraw collaborator map from our collaborator info list
+  const buildCollaboratorMap = useCallback((collabList: CollaboratorInfo[]) => {
+    const map = collaboratorMapRef.current;
+
+    // Remove collaborators that are no longer in the list
+    const currentIds = new Set(collabList.map((c) => c.id));
+    for (const key of map.keys()) {
+      if (!currentIds.has(key)) {
+        map.delete(key);
+      }
+    }
+
+    // Add/update collaborators
+    for (const c of collabList) {
+      const existing = map.get(c.id);
+      const color = getCollaboratorColor(c.colorIndex);
+      map.set(c.id, {
+        ...existing,
+        username: c.name,
+        color,
+        id: c.id,
+        userState: existing?.userState || ('active' as UserIdleState),
+      });
+    }
+
+    return map;
+  }, []);
+
+  // Helper: push the collaborator map to Excalidraw
+  const syncCollaboratorsToExcalidraw = useCallback(() => {
+    const api = excalidrawAPIRef.current as {
+      updateScene: (data: unknown) => void;
+    } | null;
+    if (api) {
+      // Create a new Map copy so React/Excalidraw detects the change
+      api.updateScene({ collaborators: new Map(collaboratorMapRef.current) });
+    }
+  }, []);
+
   // Join session
   const joinSession = useCallback(
     (name: string) => {
@@ -154,15 +230,13 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         } | null;
 
         if (api) {
-          const collabMap = new Map<string, { username: string }>();
-          for (const c of msg.collaborators) {
-            collabMap.set(c.id, { username: c.name });
-          }
+          // Build the collaborator map with full Collaborator objects
+          const collabMap = buildCollaboratorMap(msg.collaborators);
 
           api.updateScene({
             elements: msg.elements,
             appState: msg.appState,
-            collaborators: collabMap,
+            collaborators: new Map(collabMap),
           });
         }
 
@@ -181,18 +255,13 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         if (api) {
           // Full reconciliation merge: union of all element IDs,
           // pick the highest version per element ID.
-          // This correctly handles deletions (isDeleted: true) and
-          // prevents deleted elements from flickering back.
           const currentElements = api.getSceneElements();
           const allElements = new Map<string, ExcalidrawElement>();
 
-          // Start with all current local elements
           for (const el of currentElements) {
             allElements.set(el.id, el);
           }
 
-          // Merge incoming: use incoming if version is higher or equal
-          // (equal handles same-version updates like isDeleted toggling)
           for (const el of msg.elements as ExcalidrawElement[]) {
             const existing = allElements.get(el.id);
             if (!existing || el.version >= existing.version) {
@@ -205,7 +274,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         }
       });
 
-      // Handle pointer updates from other users
+      // Handle pointer updates from other users — THIS IS THE KEY FIX
       client.on('pointer_update', (msg: ServerMessage) => {
         if (msg.type !== 'pointer_update') return;
 
@@ -214,19 +283,32 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         } | null;
 
         if (api) {
-          // Update the collaborator's pointer position
-          setCollaborators((prev) => {
-            const collabMap = new Map<string, { username: string }>();
-            for (const c of prev) {
-              collabMap.set(c.id, { username: c.name });
-            }
-            // Add pointer info for this user
-            collabMap.set(msg.userId, {
-              username: msg.name,
-            });
-            api.updateScene({ collaborators: collabMap });
-            return prev;
+          const color = getCollaboratorColor(msg.colorIndex);
+
+          // Update the specific collaborator's full state including pointer
+          const pointerTool = (msg.tool === 'laser' ? 'laser' : 'pointer') as 'pointer' | 'laser';
+          collaboratorMapRef.current.set(msg.userId, {
+            ...collaboratorMapRef.current.get(msg.userId),
+            pointer: { x: msg.x, y: msg.y, tool: pointerTool },
+            button: msg.button as 'up' | 'down',
+            username: msg.name,
+            color,
+            id: msg.userId,
           });
+
+          // Push updated map to Excalidraw — this makes cursors visible!
+          syncCollaboratorsToExcalidraw();
+
+          // Follow mode: sync viewport if we're following this user
+          if (followingUserIdRef.current === msg.userId && msg.scrollX !== undefined && msg.scrollY !== undefined) {
+            api.updateScene({
+              appState: {
+                scrollX: msg.scrollX,
+                scrollY: msg.scrollY,
+                ...(msg.zoom !== undefined ? { zoom: { value: msg.zoom } } : {}),
+              },
+            });
+          }
         }
       });
 
@@ -235,17 +317,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         if (msg.type !== 'user_joined') return;
         setCollaborators(msg.collaborators);
 
-        const api = excalidrawAPIRef.current as {
-          updateScene: (data: unknown) => void;
-        } | null;
-
-        if (api) {
-          const collabMap = new Map<string, { username: string }>();
-          for (const c of msg.collaborators) {
-            collabMap.set(c.id, { username: c.name });
-          }
-          api.updateScene({ collaborators: collabMap });
-        }
+        buildCollaboratorMap(msg.collaborators);
+        syncCollaboratorsToExcalidraw();
       });
 
       // Handle user left
@@ -253,17 +326,13 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         if (msg.type !== 'user_left') return;
         setCollaborators(msg.collaborators);
 
-        const api = excalidrawAPIRef.current as {
-          updateScene: (data: unknown) => void;
-        } | null;
-
-        if (api) {
-          const collabMap = new Map<string, { username: string }>();
-          for (const c of msg.collaborators) {
-            collabMap.set(c.id, { username: c.name });
-          }
-          api.updateScene({ collaborators: collabMap });
+        // If we were following this user, stop following
+        if (followingUserIdRef.current === msg.userId) {
+          setFollowingUserId(null);
         }
+
+        buildCollaboratorMap(msg.collaborators);
+        syncCollaboratorsToExcalidraw();
       });
 
       // Handle session ended
@@ -275,7 +344,9 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         setIsCollabActive(false);
         setSessionId(null);
         setCollaborators([]);
+        setFollowingUserId(null);
         collabDrawingIdRef.current = null;
+        collaboratorMapRef.current = new Map();
         client.disconnect();
         clientRef.current = null;
       });
@@ -305,7 +376,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       client.connect();
       setIsJoined(true);
     },
-    [sessionId, drawingId]
+    [sessionId, drawingId, buildCollaboratorMap, syncCollaboratorsToExcalidraw]
   );
 
   // Leave session
@@ -318,6 +389,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     setIsJoined(false);
     setIsConnected(false);
     setCollaborators([]);
+    setFollowingUserId(null);
+    collaboratorMapRef.current = new Map();
 
     // Clear collaborators from Excalidraw
     const api = excalidrawAPIRef.current as {
@@ -335,10 +408,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     }
   }, [drawingId]);
 
-  // Send pointer update
+  // Send pointer update (with optional tool type and viewport data for follow mode)
   const sendPointerUpdate = useCallback(
-    (x: number, y: number, button: 'down' | 'up') => {
-      clientRef.current?.sendPointerUpdate(x, y, button);
+    (x: number, y: number, button: 'down' | 'up', tool?: 'pointer' | 'laser', scrollX?: number, scrollY?: number, zoom?: number) => {
+      clientRef.current?.sendPointerUpdate(x, y, button, tool, scrollX, scrollY, zoom);
     },
     []
   );
@@ -356,6 +429,15 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   // Dismiss session ended notification
   const dismissSessionEnded = useCallback(() => {
     setSessionEnded(null);
+  }, []);
+
+  // Follow mode
+  const startFollowing = useCallback((userId: string) => {
+    setFollowingUserId(userId);
+  }, []);
+
+  const stopFollowing = useCallback(() => {
+    setFollowingUserId(null);
   }, []);
 
   // Cleanup on unmount
@@ -377,6 +459,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     participantCount,
     displayName,
     sessionEnded,
+    followingUserId,
     joinSession,
     leaveSession,
     sendSceneUpdate,
@@ -384,5 +467,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     setDisplayName,
     dismissSessionEnded,
     refreshStatus,
+    startFollowing,
+    stopFollowing,
   };
 }

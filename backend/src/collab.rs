@@ -21,6 +21,13 @@ pub enum ClientMessage {
         x: f64,
         y: f64,
         button: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        #[serde(rename = "scrollX")]
+        scroll_x: Option<f64>,
+        #[serde(rename = "scrollY")]
+        scroll_y: Option<f64>,
+        zoom: Option<f64>,
     },
     SetName {
         name: String,
@@ -45,9 +52,19 @@ pub enum ServerMessage {
         x: f64,
         y: f64,
         button: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
         #[serde(rename = "userId")]
         user_id: String,
         name: String,
+        #[serde(rename = "colorIndex")]
+        color_index: u8,
+        #[serde(rename = "scrollX", skip_serializing_if = "Option::is_none")]
+        scroll_x: Option<f64>,
+        #[serde(rename = "scrollY", skip_serializing_if = "Option::is_none")]
+        scroll_y: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        zoom: Option<f64>,
     },
     UserJoined {
         #[serde(rename = "userId")]
@@ -73,6 +90,8 @@ pub enum ServerMessage {
 pub struct CollaboratorInfo {
     pub id: String,
     pub name: String,
+    #[serde(rename = "colorIndex")]
+    pub color_index: u8,
 }
 
 // ──────────────────────────────────────────────
@@ -83,6 +102,7 @@ pub struct CollaboratorInfo {
 pub struct Participant {
     pub user_id: String,
     pub name: String,
+    pub color_index: u8,
 }
 
 #[derive(Debug)]
@@ -99,6 +119,8 @@ pub struct CollabSession {
     pub files: serde_json::Value,
     /// Connected participants
     pub participants: HashMap<String, Participant>,
+    /// Next color index to assign to a new participant
+    pub next_color_index: u8,
     /// Broadcast channel for sending messages to all connected clients
     pub broadcast_tx: broadcast::Sender<ServerMessage>,
 }
@@ -110,6 +132,7 @@ impl CollabSession {
             .map(|p| CollaboratorInfo {
                 id: p.user_id.clone(),
                 name: p.name.clone(),
+                color_index: p.color_index,
             })
             .collect()
     }
@@ -193,6 +216,7 @@ impl SessionManager {
             app_state,
             files,
             participants: HashMap::new(),
+            next_color_index: 0,
             broadcast_tx,
         };
 
@@ -298,9 +322,13 @@ impl SessionManager {
             return Err(AppError::SessionFull);
         }
 
+        let color_index = session.next_color_index;
+        session.next_color_index = session.next_color_index.wrapping_add(1);
+
         let participant = Participant {
             user_id: user_id.to_string(),
             name: name.to_string(),
+            color_index,
         };
 
         session
@@ -459,24 +487,33 @@ impl SessionManager {
         x: f64,
         y: f64,
         button: &str,
+        tool: Option<String>,
+        scroll_x: Option<f64>,
+        scroll_y: Option<f64>,
+        zoom: Option<f64>,
     ) -> Result<(), AppError> {
         let sessions = self.sessions.read().await;
         let session = sessions
             .get(session_id)
             .ok_or(AppError::SessionNotFound)?;
 
-        let name = session
-            .participants
-            .get(user_id)
+        let participant = session.participants.get(user_id);
+        let name = participant
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "Unknown".to_string());
+        let color_index = participant.map(|p| p.color_index).unwrap_or(0);
 
         let pointer_msg = ServerMessage::PointerUpdate {
             x,
             y,
             button: button.to_string(),
+            tool,
             user_id: user_id.to_string(),
             name,
+            color_index,
+            scroll_x,
+            scroll_y,
+            zoom,
         };
         let _ = session.broadcast_tx.send(pointer_msg);
 

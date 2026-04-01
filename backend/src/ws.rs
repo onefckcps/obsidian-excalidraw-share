@@ -206,9 +206,9 @@ async fn handle_client_message(
                 );
             }
         }
-        ClientMessage::PointerUpdate { x, y, button } => {
+        ClientMessage::PointerUpdate { x, y, button, tool, scroll_x, scroll_y, zoom } => {
             if let Err(e) = session_manager
-                .broadcast_pointer(session_id, user_id, x, y, &button)
+                .broadcast_pointer(session_id, user_id, x, y, &button, tool, scroll_x, scroll_y, zoom)
                 .await
             {
                 tracing::warn!(

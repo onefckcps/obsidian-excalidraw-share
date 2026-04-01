@@ -22,6 +22,7 @@ export interface PublicDrawing {
 export interface CollaboratorInfo {
   id: string
   name: string
+  colorIndex: number
 }
 
 export interface CollabStatusResponse {
@@ -41,7 +42,7 @@ export interface CollabSessionInfo {
 // Client -> Server WebSocket messages
 export type ClientMessage =
   | { type: 'scene_update'; elements: ExcalidrawElement[] }
-  | { type: 'pointer_update'; x: number; y: number; button: 'down' | 'up' }
+  | { type: 'pointer_update'; x: number; y: number; button: 'down' | 'up'; tool?: 'pointer' | 'laser'; scrollX?: number; scrollY?: number; zoom?: number }
   | { type: 'set_name'; name: string }
 
 // Server -> Client WebSocket messages
@@ -59,8 +60,13 @@ export type ServerMessage =
       x: number
       y: number
       button: string
+      tool?: 'pointer' | 'laser'
       userId: string
       name: string
+      colorIndex: number
+      scrollX?: number
+      scrollY?: number
+      zoom?: number
     }
   | {
       type: 'user_joined'
