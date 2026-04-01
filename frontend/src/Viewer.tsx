@@ -173,13 +173,98 @@ function Viewer() {
       const tool = (payload.pointer.tool === 'laser' ? 'laser' : 'pointer') as 'pointer' | 'laser';
       collab.sendPointerUpdate(payload.pointer.x, payload.pointer.y, payload.button, tool, scrollX, scrollY, zoom)
 
+      // When pointer goes up (stroke/drag ends), flush any deferred remote scene updates
+      if (payload.button === 'up') {
+        collab.flushPendingSceneUpdates();
+      }
+
       // Auto-exit follow mode only when user actively clicks/drags on canvas
       // (not on every pointer move, which would make follow mode unusable)
       if (collab.followingUserId && payload.button === 'down') {
         collab.stopFollowing();
       }
     }
-  }, [collab.isJoined, collab.isConnected, collab.sendPointerUpdate, collab.followingUserId, collab.stopFollowing, excalidrawAPI])
+  }, [collab.isJoined, collab.isConnected, collab.sendPointerUpdate, collab.flushPendingSceneUpdates, collab.followingUserId, collab.stopFollowing, excalidrawAPI])
+
+  // ──────────────────────────────────────────────
+  // Bug 2 Fix: Click-to-follow on Excalidraw's native user badges
+  // Excalidraw renders collaborator avatars in a .UserList container with .Avatar elements.
+  // We intercept clicks on these to toggle follow mode for the corresponding collaborator.
+  //
+  // Matching strategy: The avatars are rendered in the same order as the collaborator Map
+  // entries (insertion order). We use getCollaboratorIds() from the hook which returns
+  // the IDs in the same order as the collaborator Map passed to Excalidraw.
+  // ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!collab.isJoined || !excalidrawAPI) return;
+
+    const container = document.querySelector('.excalidraw');
+    if (!container) return;
+
+    const handleAvatarClick = (e: Event) => {
+      // Find the clicked .Avatar element
+      const avatar = (e.target as HTMLElement).closest('.Avatar') as HTMLElement | null;
+      if (!avatar) return;
+
+      // Find the .UserList container to confirm this is a collaborator badge
+      const userList = avatar.closest('.UserList');
+      if (!userList) return;
+
+      // Get all Avatar elements in the UserList
+      const avatars = Array.from(userList.querySelectorAll('.Avatar'));
+      const avatarIndex = avatars.indexOf(avatar as Element);
+      if (avatarIndex < 0) return;
+
+      // Get the collaborator IDs in the same order as the Excalidraw collaborator Map
+      const orderedIds = collab.getCollaboratorIds();
+      if (avatarIndex >= orderedIds.length) return;
+
+      const clickedUserId = orderedIds[avatarIndex];
+
+      // Find the collaborator info
+      const collaborator = collab.collaborators.find(c => c.id === clickedUserId);
+      if (!collaborator) return;
+
+      // Don't follow yourself
+      if (collaborator.name === collab.displayName) return;
+
+      if (collab.followingUserId === clickedUserId) {
+        collab.stopFollowing();
+      } else {
+        collab.startFollowing(clickedUserId);
+      }
+    };
+
+    // Use capture phase to intercept before Excalidraw's own handler
+    container.addEventListener('click', handleAvatarClick, true);
+    return () => container.removeEventListener('click', handleAvatarClick, true);
+  }, [collab.isJoined, collab.collaborators, collab.displayName, collab.followingUserId, collab.startFollowing, collab.stopFollowing, collab.getCollaboratorIds, excalidrawAPI]);
+
+  // Visual follow indicator: highlight the followed user's badge with a CSS outline
+  useEffect(() => {
+    if (!collab.isJoined || !collab.followingUserId) return;
+
+    // Find the followed user's avatar index using the collaborator Map order
+    const orderedIds = collab.getCollaboratorIds();
+    const followedIndex = orderedIds.indexOf(collab.followingUserId);
+    if (followedIndex < 0) return;
+
+    // Inject a style that highlights the followed user's badge
+    const style = document.createElement('style');
+    style.setAttribute('data-excalishare-follow', 'true');
+    style.textContent = `
+      .UserList .Avatar:nth-child(${followedIndex + 1}) {
+        outline: 2px solid #4CAF50 !important;
+        outline-offset: 2px;
+        border-radius: 50%;
+        box-shadow: 0 0 8px rgba(76, 175, 80, 0.4);
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      style.remove();
+    };
+  }, [collab.isJoined, collab.followingUserId, collab.getCollaboratorIds]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

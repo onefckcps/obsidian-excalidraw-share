@@ -79,6 +79,10 @@ interface UseCollabReturn {
   startFollowing: (userId: string) => void;
   /** Stop following */
   stopFollowing: () => void;
+  /** Flush any pending scene updates that were deferred during active drawing */
+  flushPendingSceneUpdates: () => void;
+  /** Get collaborator IDs in the same order as the Excalidraw collaborator Map (for badge matching) */
+  getCollaboratorIds: () => string[];
 }
 
 export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCollabReturn {
@@ -100,6 +104,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const collaboratorMapRef = useRef<Map<string, Collaborator>>(new Map());
   /** Track the followed user ID in a ref for use in callbacks */
   const followingUserIdRef = useRef<string | null>(null);
+  /** Queue of remote scene updates deferred while user is actively drawing */
+  const pendingSceneUpdatesRef = useRef<ExcalidrawElement[][]>([]);
+  /** Timer for safety flush of pending scene updates */
+  const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Keep refs in sync
   useEffect(() => {
@@ -207,6 +215,89 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     }
   }, []);
 
+  // Helper: check if user is actively drawing/resizing (mid-stroke)
+  const isUserDrawing = useCallback((): boolean => {
+    const api = excalidrawAPIRef.current as {
+      getAppState: () => { draggingElement: unknown; resizingElement: unknown; editingElement: unknown };
+    } | null;
+    if (!api?.getAppState) return false;
+    const appState = api.getAppState();
+    return !!(appState.draggingElement || appState.resizingElement || appState.editingElement);
+  }, []);
+
+  // Helper: apply a remote scene update (merge with current elements)
+  const applyRemoteSceneUpdate = useCallback((remoteElements: ExcalidrawElement[]) => {
+    const api = excalidrawAPIRef.current as {
+      updateScene: (data: unknown) => void;
+      getSceneElements: () => ExcalidrawElement[];
+    } | null;
+    if (!api) return;
+
+    const currentElements = api.getSceneElements();
+    const allElements = new Map<string, ExcalidrawElement>();
+
+    for (const el of currentElements) {
+      allElements.set(el.id, el);
+    }
+
+    for (const el of remoteElements) {
+      const existing = allElements.get(el.id);
+      if (!existing || el.version >= existing.version) {
+        allElements.set(el.id, el);
+      }
+    }
+
+    const merged = Array.from(allElements.values());
+    api.updateScene({ elements: merged });
+  }, []);
+
+  // Flush all pending scene updates (called when user finishes drawing)
+  const flushPendingSceneUpdates = useCallback(() => {
+    const pending = pendingSceneUpdatesRef.current;
+    if (pending.length === 0) return;
+
+    // Merge all pending updates into one combined update
+    const combined = new Map<string, ExcalidrawElement>();
+    for (const elements of pending) {
+      for (const el of elements) {
+        const existing = combined.get(el.id);
+        if (!existing || el.version >= existing.version) {
+          combined.set(el.id, el);
+        }
+      }
+    }
+
+    // Clear the queue
+    pendingSceneUpdatesRef.current = [];
+
+    // Apply the combined update
+    applyRemoteSceneUpdate(Array.from(combined.values()));
+  }, [applyRemoteSceneUpdate]);
+
+  // Safety interval: flush pending updates when user stops drawing
+  useEffect(() => {
+    if (!isJoined) {
+      if (flushTimerRef.current) {
+        clearInterval(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      return;
+    }
+
+    flushTimerRef.current = setInterval(() => {
+      if (pendingSceneUpdatesRef.current.length > 0 && !isUserDrawing()) {
+        flushPendingSceneUpdates();
+      }
+    }, 300);
+
+    return () => {
+      if (flushTimerRef.current) {
+        clearInterval(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+    };
+  }, [isJoined, isUserDrawing, flushPendingSceneUpdates]);
+
   // Join session
   const joinSession = useCallback(
     (name: string) => {
@@ -244,33 +335,24 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       });
 
       // Handle scene updates from other users
+      // Defers updates while user is actively drawing to prevent stroke interruption
       client.on('scene_update', (msg: ServerMessage) => {
         if (msg.type !== 'scene_update') return;
 
-        const api = excalidrawAPIRef.current as {
-          updateScene: (data: unknown) => void;
-          getSceneElements: () => ExcalidrawElement[];
-        } | null;
+        const remoteElements = msg.elements as ExcalidrawElement[];
 
-        if (api) {
-          // Full reconciliation merge: union of all element IDs,
-          // pick the highest version per element ID.
-          const currentElements = api.getSceneElements();
-          const allElements = new Map<string, ExcalidrawElement>();
+        // If user is actively drawing, queue the update to avoid interrupting the stroke
+        if (isUserDrawing()) {
+          pendingSceneUpdatesRef.current.push(remoteElements);
+          return;
+        }
 
-          for (const el of currentElements) {
-            allElements.set(el.id, el);
-          }
-
-          for (const el of msg.elements as ExcalidrawElement[]) {
-            const existing = allElements.get(el.id);
-            if (!existing || el.version >= existing.version) {
-              allElements.set(el.id, el);
-            }
-          }
-
-          const merged = Array.from(allElements.values());
-          api.updateScene({ elements: merged });
+        // Flush any previously queued updates first, then apply this one
+        if (pendingSceneUpdatesRef.current.length > 0) {
+          pendingSceneUpdatesRef.current.push(remoteElements);
+          flushPendingSceneUpdates();
+        } else {
+          applyRemoteSceneUpdate(remoteElements);
         }
       });
 
@@ -440,6 +522,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     setFollowingUserId(null);
   }, []);
 
+  // Get collaborator IDs in the same order as the Excalidraw collaborator Map
+  // This matches the order Excalidraw's UserList renders the avatars
+  const getCollaboratorIds = useCallback((): string[] => {
+    return Array.from(collaboratorMapRef.current.keys());
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -469,5 +557,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     refreshStatus,
     startFollowing,
     stopFollowing,
+    flushPendingSceneUpdates,
+    getCollaboratorIds,
   };
 }

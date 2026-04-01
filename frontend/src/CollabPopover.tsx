@@ -2,16 +2,23 @@ import { useEffect, useRef } from 'react';
 import type { Theme } from '@excalidraw/excalidraw/types/element/types';
 import type { CollaboratorInfo } from './types';
 
-const COLLAB_COLORS = [
-  '#FF6B6B', // Red
-  '#4ECDC4', // Teal
-  '#45B7D1', // Blue
-  '#96CEB4', // Green
-  '#DDA0DD', // Plum
-  '#F7DC6F', // Gold
-  '#E89156', // Orange
-  '#98D8C8', // Mint
-];
+// Replicate Excalidraw's getClientColor algorithm so our popover colors
+// match the native user badge colors exactly.
+function hashToInteger(id: string): number {
+  let hash = 0;
+  if (id.length === 0) return hash;
+  for (let i = 0; i < id.length; i++) {
+    const char = id.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+  }
+  return hash;
+}
+
+function getClientColor(id: string): string {
+  const hash = Math.abs(hashToInteger(id));
+  const hue = (hash % 37) * 10;
+  return `hsl(${hue}, 100%, 83%)`;
+}
 
 interface CollabPopoverProps {
   theme: Theme;
@@ -122,7 +129,7 @@ function CollabPopover({
         {collaborators.map((c) => {
           const isFollowing = followingUserId === c.id;
           const isSelf = c.name === displayName;
-          const color = COLLAB_COLORS[c.colorIndex % COLLAB_COLORS.length];
+          const color = getClientColor(c.id);
 
           return (
             <div
