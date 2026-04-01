@@ -43,6 +43,8 @@ pub async fn ws_collab_handler(
 ) -> impl IntoResponse {
     let name = if query.name.is_empty() {
         default_name()
+    } else if query.name.len() > 50 {
+        query.name.chars().take(50).collect()
     } else {
         query.name
     };
@@ -141,6 +143,15 @@ async fn handle_ws_connection(
             match msg {
                 Message::Text(text) => {
                     let text_str: &str = &text;
+                    // Reject oversized messages (5 MB max) to prevent memory abuse
+                    if text_str.len() > 5 * 1024 * 1024 {
+                        tracing::warn!(
+                            user_id = %user_id_recv,
+                            size = text_str.len(),
+                            "WebSocket message too large, ignoring"
+                        );
+                        continue;
+                    }
                     match serde_json::from_str::<ClientMessage>(text_str) {
                         Ok(client_msg) => {
                             handle_client_message(

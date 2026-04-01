@@ -6,15 +6,18 @@ mod storage;
 mod ws;
 
 use axum::{
+    http::{header, Method},
     middleware,
     routing::{delete, get, post},
     Router,
 };
 use clap::Parser;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
     compression::CompressionLayer,
-    cors::{Any, CorsLayer},
+    cors::CorsLayer,
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
@@ -65,6 +68,11 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse();
 
+    // Warn about insecure default API key
+    if config.api_key == "change-me-in-production" {
+        tracing::warn!("⚠️  Using default API key 'change-me-in-production' — set API_KEY for production!");
+    }
+
     tracing::info!(
         listen = %config.listen_addr,
         data_dir = %config.data_dir.display(),
@@ -89,6 +97,26 @@ async fn main() -> anyhow::Result<()> {
     let frontend_service = ServeDir::new(&config.frontend_dir)
         .not_found_service(ServeFile::new(&index_file));
 
+    // Rate limiting: 120 req/sec per IP for public, 30 req/sec per IP for protected
+    let public_rate_limit = GovernorLayer {
+        config: Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(1)
+                .burst_size(120)
+                .finish()
+                .expect("Failed to build public rate limiter"),
+        ),
+    };
+    let protected_rate_limit = GovernorLayer {
+        config: Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(1)
+                .burst_size(30)
+                .finish()
+                .expect("Failed to build protected rate limiter"),
+        ),
+    };
+
     // Public API routes (no auth required)
     let public_api = Router::new()
         .route("/api/health", get(routes::health))
@@ -97,7 +125,8 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/collab/status/{drawing_id}",
             get(routes::collab_status),
-        );
+        )
+        .layer(public_rate_limit);
 
     // Protected API routes (auth required)
     let protected_api = Router::new()
@@ -108,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/collab/stop", post(routes::stop_collab))
         .route("/api/collab/sessions", get(routes::list_collab_sessions))
         .layer(axum::extract::DefaultBodyLimit::max(body_limit))
+        .layer(protected_rate_limit)
         .route_layer(middleware::from_fn_with_state(
             api_key.clone(),
             auth::api_key_middleware,
@@ -121,6 +151,23 @@ async fn main() -> anyhow::Result<()> {
         )
         .with_state(session_manager.clone());
 
+    // Restrict CORS to the configured BASE_URL origin and Obsidian's app origin.
+    // This prevents arbitrary websites from making cross-origin requests while
+    // allowing the frontend (same-origin) and the Obsidian plugin to work.
+    let allowed_origins = [
+        config
+            .base_url
+            .parse()
+            .expect("BASE_URL must be a valid header value for CORS origin"),
+        "app://obsidian.md"
+            .parse()
+            .expect("Obsidian origin must be valid"),
+    ];
+    let cors = CorsLayer::new()
+        .allow_origin(allowed_origins)
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
+
     let app = Router::new()
         .merge(public_api)
         .merge(protected_api)
@@ -128,28 +175,30 @@ async fn main() -> anyhow::Result<()> {
         .merge(ws_routes)
         .fallback_service(frontend_service)
         .layer(CompressionLayer::new())
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(cors)
         .layer(TraceLayer::new_for_http());
 
-    // Spawn background task for session cleanup (every 60 seconds)
+    // Spawn background task for session cleanup (every 60 seconds).
+    // Expired sessions are saved to storage before being removed.
     let cleanup_manager = session_manager.clone();
+    let cleanup_storage = storage.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
-            cleanup_manager.cleanup_expired().await;
+            cleanup_manager.cleanup_expired(&cleanup_storage).await;
         }
     });
 
     let listener = tokio::net::TcpListener::bind(&config.listen_addr).await?;
     tracing::info!("Listening on {}", config.listen_addr);
 
-    axum::serve(listener, app).await?;
+    // Use into_make_service_with_connect_info so tower_governor can extract peer IP
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

@@ -14,7 +14,7 @@ function AdminPage() {
   const [drawings, setDrawings] = useState<Drawing[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('excalidraw-api-key') || '')
+  const [apiKey, setApiKey] = useState(() => sessionStorage.getItem('excalidraw-api-key') || '')
   const [showApiInput, setShowApiInput] = useState(!apiKey)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [showAbout, setShowAbout] = useState(false)
@@ -105,7 +105,7 @@ function AdminPage() {
 
   const handleApiKeySave = (e: React.FormEvent) => {
     e.preventDefault()
-    localStorage.setItem('excalidraw-api-key', apiKey)
+    sessionStorage.setItem('excalidraw-api-key', apiKey)
     setShowApiInput(false)
     fetchDrawings()
   }
@@ -201,7 +201,7 @@ function AdminPage() {
         <div style={styles.titleRow}>
           <h1 style={styles.title}>Manage Drawings</h1>
           <button
-            onClick={() => { localStorage.removeItem('excalidraw-api-key'); setApiKey(''); setShowApiInput(true); }}
+            onClick={() => { sessionStorage.removeItem('excalidraw-api-key'); setApiKey(''); setShowApiInput(true); }}
             style={styles.logoutBtn}
           >
             Change API Key

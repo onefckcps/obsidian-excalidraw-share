@@ -63,16 +63,9 @@ in
       description = "Max Upload Größe in MB.";
     };
 
-    apiKey = lib.mkOption {
-      type = lib.types.str;
-      default = "";
-      description = "API key for upload/delete operations. Use apiKeyFile for SOPS secrets.";
-    };
-
     apiKeyFile = lib.mkOption {
       type = lib.types.path;
-      default = null;
-      description = "Path to file containing API key (for SOPS compatibility). Takes precedence over apiKey.";
+      description = "Path to file containing API key (required). Use SOPS or similar secret management.";
     };
 
     frontendSource = lib.mkOption {
@@ -152,8 +145,7 @@ in
           "BASE_URL=https://${cfg.domain}"
           "MAX_UPLOAD_MB=${toString cfg.maxUploadMb}"
           "FRONTEND_DIR=${cfg.dataDir}/frontend"
-        ]
-        ++ lib.optional (cfg.apiKeyFile == null) "API_KEY=${cfg.apiKey}";
+        ];
 
         NoNewPrivileges = true;
         PrivateTmp = true;
@@ -161,14 +153,11 @@ in
         ProtectHome = true;
         ReadWritePaths = [ cfg.dataDir ];
 
-        ExecStart =
-          if cfg.apiKeyFile != null then
-            "${pkgs.writeShellScript "start-excalishare" ''
-              export API_KEY="$(cat ${cfg.apiKeyFile})"
-              exec ${cfg.package}/bin/excalishare
-            ''}"
-          else
-            "${cfg.package}/bin/excalishare";
+        # Always load API key from file to avoid leaking it in systemd environment
+        ExecStart = "${pkgs.writeShellScript "start-excalishare" ''
+          export API_KEY="$(cat ${cfg.apiKeyFile})"
+          exec ${cfg.package}/bin/excalishare
+        ''}";
 
         StartLimitBurst = 5;
         StartLimitIntervalSec = 60;

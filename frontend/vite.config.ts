@@ -12,7 +12,9 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         runtimeCaching: [
           {
-            urlPattern: /\/api\/.*/,
+            // Only cache public API routes — exclude authenticated endpoints
+            // (/api/drawings, /api/upload, /api/collab/start, /api/collab/stop, /api/collab/sessions)
+            urlPattern: /\/api\/(?:view|public|health|collab\/status)\/.*/,
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',

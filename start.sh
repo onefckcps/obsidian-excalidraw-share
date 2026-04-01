@@ -43,6 +43,7 @@ done
 # Default values
 API_KEY="${API_KEY:-change-me-in-production}"
 BASE_URL="${BASE_URL:-http://localhost:8184}"
+
 DATA_DIR="${DATA_DIR:-$PROJECT_ROOT/data/drawings}"
 FRONTEND_DIR="${FRONTEND_DIR:-$PROJECT_ROOT/frontend/dist}"
 LISTEN_ADDR="${LISTEN_ADDR:-127.0.0.1:8184}"
@@ -64,6 +65,16 @@ log_warn() {
 log_error() {
 	echo -e "${RED}[ERROR]${NC} $1"
 }
+
+# Security: reject default API key in production mode
+if [ "$API_KEY" = "change-me-in-production" ]; then
+	if [ "$MODE" = "production" ]; then
+		log_error "Cannot use default API key in production mode. Set API_KEY environment variable."
+		exit 1
+	else
+		log_warn "⚠️  Using default API key! Set API_KEY env var for production."
+	fi
+fi
 
 # Build in nix develop shell (from project root)
 if [ "$SKIP_BUILD" = false ]; then

@@ -6,6 +6,7 @@ use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::storage::DrawingStorage;
 
 // ──────────────────────────────────────────────
 // WebSocket message types
@@ -182,12 +183,8 @@ impl SessionManager {
             return Err(AppError::SessionAlreadyExists);
         }
 
-        let session_id = Uuid::new_v4()
-            .to_string()
-            .split('-')
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
+        // Use full UUID (128 bits of entropy) for session IDs
+        let session_id = Uuid::new_v4().to_string().replace('-', "");
 
         let elements = drawing_data
             .get("elements")
@@ -520,17 +517,18 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Update a participant's display name.
+    /// Update a participant's display name (truncated to 50 chars max).
     pub async fn set_participant_name(
         &self,
         session_id: &str,
         user_id: &str,
         name: &str,
     ) {
+        let truncated: String = name.chars().take(50).collect();
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
             if let Some(participant) = session.participants.get_mut(user_id) {
-                participant.name = name.to_string();
+                participant.name = truncated;
             }
         }
     }
@@ -561,7 +559,8 @@ impl SessionManager {
     }
 
     /// Clean up expired sessions. Called periodically by background task.
-    pub async fn cleanup_expired(&self) {
+    /// Expired sessions are saved to storage before being removed to prevent data loss.
+    pub async fn cleanup_expired(&self, storage: &crate::storage::FileSystemStorage) {
         let now = Utc::now();
         let mut expired_ids = Vec::new();
 
@@ -576,9 +575,32 @@ impl SessionManager {
         }
 
         for session_id in expired_ids {
-            tracing::info!(session_id = %session_id, "Cleaning up expired collab session");
-            // End without saving (timeout = discard)
-            let _ = self.end_session(&session_id, false).await;
+            tracing::info!(session_id = %session_id, "Cleaning up expired collab session (saving changes)");
+            match self.end_session(&session_id, true).await {
+                Ok(Some((drawing_id, data))) => {
+                    // Preserve existing source_path from stored drawing
+                    let source_path: Option<String> = match storage.load(&drawing_id).await {
+                        Ok(existing) => existing
+                            .get("_source_path")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
+                        Err(_) => None,
+                    };
+                    if let Err(e) = storage.save(&drawing_id, &data, source_path.as_deref()).await {
+                        tracing::error!(
+                            drawing_id = %drawing_id,
+                            error = %e,
+                            "Failed to save expired collab session"
+                        );
+                    } else {
+                        tracing::info!(drawing_id = %drawing_id, "Expired collab session saved to storage");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!(session_id = %session_id, error = %e, "Failed to end expired session");
+                }
+            }
         }
     }
 }

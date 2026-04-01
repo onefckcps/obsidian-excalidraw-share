@@ -130,20 +130,28 @@ pub async fn upload_drawing(
 
     let mut is_update = false;
     let id = if let Some(req_id) = body.id {
-        // Only allow using a specific ID if the user wants to update an existing drawing
+        // Validate the ID format to prevent abuse
+        let valid = !req_id.is_empty()
+            && req_id.len() <= 64
+            && req_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+        if !valid {
+            return Err(AppError::BadRequest(
+                "Invalid ID: must be 1-64 alphanumeric characters, hyphens, or underscores.".into(),
+            ));
+        }
         is_update = true;
         req_id
     } else {
         let new_id = Uuid::new_v4()
             .to_string()
-            .split('-')
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
+            .replace('-', "")
+            .chars()
+            .take(16)
+            .collect::<String>();
 
         // Ensure uniqueness for new IDs
         if state.storage.exists(&new_id).await? {
-            Uuid::new_v4().to_string().replace('-', "")[..12].to_string()
+            Uuid::new_v4().to_string().replace('-', "")
         } else {
             new_id
         }
@@ -191,8 +199,8 @@ pub async fn list_drawings(
 
 pub async fn list_drawings_public(
     State(state): State<AppState>,
-) -> Json<PublicListResponse> {
-    let drawings = state.storage.list().await.unwrap();
+) -> Result<Json<PublicListResponse>, AppError> {
+    let drawings = state.storage.list().await?;
     let public_drawings: Vec<PublicDrawingMeta> = drawings
         .into_iter()
         .map(|d| PublicDrawingMeta {
@@ -201,7 +209,7 @@ pub async fn list_drawings_public(
             source_path: d.source_path,
         })
         .collect();
-    Json(PublicListResponse { drawings: public_drawings })
+    Ok(Json(PublicListResponse { drawings: public_drawings }))
 }
 
 pub async fn health() -> &'static str {
@@ -220,9 +228,14 @@ pub async fn start_collab(
     // Verify the drawing exists
     let drawing_data = state.storage.load(&body.drawing_id).await?;
 
+    // Clamp timeout to a reasonable range (5 min – 24 hours)
+    const MIN_TIMEOUT: u64 = 300;
+    const MAX_TIMEOUT: u64 = 86400;
+    let timeout = body.timeout_secs.clamp(MIN_TIMEOUT, MAX_TIMEOUT);
+
     let session_id = state
         .session_manager
-        .create_session(&body.drawing_id, &drawing_data, body.timeout_secs)
+        .create_session(&body.drawing_id, &drawing_data, timeout)
         .await?;
 
     let base = state.base_url.trim_end_matches('/');
@@ -284,6 +297,8 @@ pub async fn stop_collab(
 }
 
 /// Get collab status for a drawing (public).
+/// The session_id is exposed so the frontend viewer can join via WebSocket.
+/// Security relies on session IDs being full 128-bit UUIDs (unguessable).
 pub async fn collab_status(
     State(state): State<AppState>,
     Path(drawing_id): Path<String>,
