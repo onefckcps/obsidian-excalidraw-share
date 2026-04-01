@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "description": "ExcaliShare Obsidian Plugin",
   "scripts": {
-    "build": "tsc && cp manifest.json dist/",
-    "dev": "tsc -w"
+    "build": "node esbuild.config.mjs && cp manifest.json dist/",
+    "dev": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "esbuild": "^0.21.0",
     "obsidian": "^0.15.0",
     "typescript": "^5.0.0"
   }

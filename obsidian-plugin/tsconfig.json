@@ -11,6 +11,6 @@
     "declaration": false,
     "moduleResolution": "node"
   },
-  "include": ["main.ts", "pdfUtils.ts"],
+  "include": ["main.ts", "pdfUtils.ts", "toolbar.ts", "styles.ts", "settings.ts"],
   "exclude": ["node_modules", "dist"]
 }
