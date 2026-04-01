@@ -1,0 +1,3 @@
+- passwort protect für drawings
+- delta updates und weitere performance updates
+- in obsidian direkt live collaborieren können!

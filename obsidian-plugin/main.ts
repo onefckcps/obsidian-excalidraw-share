@@ -133,6 +133,16 @@ export default class ExcaliSharePlugin extends Plugin {
   // Toolbar management
   private toolbarInstances: Map<string, ExcaliShareToolbar> = new Map();
   private autoSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  /** MutationObservers watching for .excalidraw-wrapper to appear, keyed by leafId */
+  private _mountObservers: Map<string, MutationObserver> = new Map();
+  /** MutationObservers watching for toolbar orphaning (removed from DOM), keyed by leafId */
+  private _orphanObservers: Map<string, MutationObserver> = new Map();
+  /** Fallback retry timers for initial injection, keyed by leafId */
+  private _retryTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+  /** Track which file path is associated with each leaf's toolbar */
+  private _leafFilePaths: Map<string, string> = new Map();
+  /** Debounce timer for layout-change events */
+  private _layoutChangeTimer: ReturnType<typeof setTimeout> | null = null;
 
   async onload() {
     await this.loadSettings();
@@ -363,10 +373,15 @@ export default class ExcaliSharePlugin extends Plugin {
     );
 
     // ── Floating Toolbar: Layout Change (handles tab switches, splits) ──
+    // Debounced to avoid excessive churn on mobile (side panel open/close)
     this.registerEvent(
       this.app.workspace.on('layout-change', () => {
-        const leaf = this.app.workspace.activeLeaf;
-        if (leaf) this.handleLeafChange(leaf);
+        if (this._layoutChangeTimer) clearTimeout(this._layoutChangeTimer);
+        this._layoutChangeTimer = setTimeout(() => {
+          this._layoutChangeTimer = null;
+          const leaf = this.app.workspace.activeLeaf;
+          if (leaf) this.handleLeafChange(leaf);
+        }, 150);
       })
     );
 
@@ -408,6 +423,12 @@ export default class ExcaliSharePlugin extends Plugin {
     }
     this.toolbarInstances.clear();
 
+    // Disconnect all MutationObservers
+    for (const obs of this._mountObservers.values()) obs.disconnect();
+    this._mountObservers.clear();
+    for (const obs of this._orphanObservers.values()) obs.disconnect();
+    this._orphanObservers.clear();
+
     // Remove global styles
     removeGlobalStyles();
 
@@ -416,9 +437,45 @@ export default class ExcaliSharePlugin extends Plugin {
       clearTimeout(this.autoSyncTimer);
       this.autoSyncTimer = null;
     }
+
+    // Clear all retry timers
+    for (const timerId of Object.values(this._retryTimers)) {
+      clearTimeout(timerId);
+    }
+    this._retryTimers = {};
+    this._leafFilePaths.clear();
+
+    // Clear layout-change debounce timer
+    if (this._layoutChangeTimer) {
+      clearTimeout(this._layoutChangeTimer);
+      this._layoutChangeTimer = null;
+    }
   }
 
   // ── Toolbar Management ──
+
+  /**
+   * Clean up all observers and timers for a specific leaf.
+   */
+  private cleanupLeafObservers(leafId: string): void {
+    // Cancel pending retry timer
+    if (this._retryTimers[leafId]) {
+      clearTimeout(this._retryTimers[leafId]);
+      delete this._retryTimers[leafId];
+    }
+    // Disconnect mount observer
+    const mountObs = this._mountObservers.get(leafId);
+    if (mountObs) {
+      mountObs.disconnect();
+      this._mountObservers.delete(leafId);
+    }
+    // Disconnect orphan observer
+    const orphanObs = this._orphanObservers.get(leafId);
+    if (orphanObs) {
+      orphanObs.disconnect();
+      this._orphanObservers.delete(leafId);
+    }
+  }
 
   private handleLeafChange(leaf: WorkspaceLeaf | null): void {
     if (!this.settings.showFloatingToolbar) return;
@@ -438,67 +495,157 @@ export default class ExcaliSharePlugin extends Plugin {
         return;
       }
 
-      let toolbar = this.toolbarInstances.get(leafId);
-      if (!toolbar) {
-        toolbar = this.createToolbar(file);
-        this.toolbarInstances.set(leafId, toolbar);
+      // Check if we already have a toolbar for this exact leaf+file combo
+      // and it's still properly injected — skip re-creation to avoid churn
+      const existingToolbar = this.toolbarInstances.get(leafId);
+      const existingFilePath = this._leafFilePaths.get(leafId);
+      if (existingToolbar && existingToolbar.isInjected() && existingFilePath === file.path) {
+        console.log('ExcaliShare: Toolbar already injected for same file, updating state only');
+        this.updateToolbarState(existingToolbar, file);
+        return;
       }
 
-      // Inject into the view's container
-      // Use a retry mechanism for mobile where DOM may not be ready yet
-      this.injectToolbarWithRetry(toolbar, view.containerEl, file, 0);
+      // Clean up any previous observers/timers for this leaf
+      this.cleanupLeafObservers(leafId);
+
+      // Remove existing toolbar if any (different file or orphaned)
+      if (existingToolbar) {
+        existingToolbar.remove();
+      }
+
+      // Create a fresh toolbar
+      const toolbar = this.createToolbar(file);
+      this.toolbarInstances.set(leafId, toolbar);
+      this._leafFilePaths.set(leafId, file.path);
+
+      // Try to inject immediately, then set up observer if needed
+      this.injectToolbarIntoView(toolbar, view.containerEl, file, leafId);
     } else {
-      // Not an Excalidraw view — remove toolbar for this leaf
+      // Not an Excalidraw view — clean up everything for this leaf
+      this.cleanupLeafObservers(leafId);
       const toolbar = this.toolbarInstances.get(leafId);
       if (toolbar) {
         toolbar.remove();
         this.toolbarInstances.delete(leafId);
       }
+      this._leafFilePaths.delete(leafId);
     }
   }
 
   /**
-   * Try to inject the toolbar into the Excalidraw container.
-   * On mobile/tablet, the DOM may not be ready immediately, so retry a few times.
+   * Find the best container and inject the toolbar.
+   * If .excalidraw-wrapper is not yet available, sets up a MutationObserver
+   * to wait for it (with a fallback timeout).
    */
-  private injectToolbarWithRetry(toolbar: ExcaliShareToolbar, containerEl: HTMLElement, file: TFile, attempt: number): void {
-    // Try to find the best container for the toolbar
-    // Search broadly for Excalidraw-related containers
-    const excalidrawContainer = containerEl.querySelector('.excalidraw-wrapper')
-      || containerEl.querySelector('.excalidraw')
-      || containerEl.querySelector('.view-content')
-      || containerEl;
+  private injectToolbarIntoView(toolbar: ExcaliShareToolbar, containerEl: HTMLElement, file: TFile, leafId: string): void {
+    const wrapper = containerEl.querySelector('.excalidraw-wrapper') as HTMLElement | null;
 
-    console.log('ExcaliShare: Injecting toolbar attempt', attempt,
-      'container:', excalidrawContainer.className || excalidrawContainer.tagName,
-      'isFallback:', excalidrawContainer === containerEl);
-
-    if (!toolbar.isInjected()) {
-      toolbar.inject(excalidrawContainer as HTMLElement);
+    if (wrapper) {
+      // Ideal container found — inject directly
+      console.log('ExcaliShare: ✓ .excalidraw-wrapper found immediately, injecting toolbar');
+      this.doInject(toolbar, wrapper, file, leafId);
+      return;
     }
 
-    // Update toolbar state
+    // .excalidraw-wrapper not yet in DOM — Excalidraw hasn't mounted yet.
+    // Inject into a temporary container so the toolbar is visible while waiting,
+    // then use MutationObserver to re-inject into the ideal container.
+    const tempContainer = (containerEl.querySelector('.view-content') || containerEl) as HTMLElement;
+    console.log('ExcaliShare: .excalidraw-wrapper not found yet, injecting into temporary container:', tempContainer.className || tempContainer.tagName);
+    toolbar.inject(tempContainer);
     this.updateToolbarState(toolbar, file);
 
-    // On mobile, the Excalidraw DOM might load asynchronously.
-    // If we injected into the fallback containerEl, retry to find a better container.
-    if (attempt < 8 && excalidrawContainer === containerEl) {
-      setTimeout(() => {
-        if (!toolbar.isInjected()) return; // Already removed
-        const betterContainer = containerEl.querySelector('.excalidraw-wrapper')
-          || containerEl.querySelector('.excalidraw')
-          || containerEl.querySelector('.view-content');
-        if (betterContainer && betterContainer !== containerEl) {
-          console.log('ExcaliShare: Found better container on retry', attempt + 1, betterContainer.className);
-          toolbar.remove();
-          toolbar.inject(betterContainer as HTMLElement);
-          this.updateToolbarState(toolbar, file);
-        } else {
-          // Keep retrying
-          this.injectToolbarWithRetry(toolbar, containerEl, file, attempt + 1);
+    // Set up MutationObserver to watch for .excalidraw-wrapper appearing
+    const observer = new MutationObserver((mutations, obs) => {
+      const wrapper = containerEl.querySelector('.excalidraw-wrapper') as HTMLElement | null;
+      if (wrapper) {
+        console.log('ExcaliShare: ✓ MutationObserver detected .excalidraw-wrapper, re-injecting toolbar');
+        obs.disconnect();
+        this._mountObservers.delete(leafId);
+
+        // Verify this leaf is still active and toolbar still exists
+        if (!this.toolbarInstances.has(leafId)) return;
+
+        toolbar.remove();
+        this.doInject(toolbar, wrapper, file, leafId);
+      }
+    });
+
+    observer.observe(containerEl, { childList: true, subtree: true });
+    this._mountObservers.set(leafId, observer);
+
+    // Fallback: if MutationObserver doesn't fire within 15s, try one last time
+    this._retryTimers[leafId] = setTimeout(() => {
+      delete this._retryTimers[leafId];
+      if (this._mountObservers.has(leafId)) {
+        // Observer still active — wrapper never appeared
+        const obs = this._mountObservers.get(leafId);
+        if (obs) {
+          obs.disconnect();
+          this._mountObservers.delete(leafId);
         }
-      }, 500 * (attempt + 1));
-    }
+        console.log('ExcaliShare: ✗ Timeout (15s) waiting for .excalidraw-wrapper');
+
+        // Try one final injection with whatever container is available
+        if (this.toolbarInstances.has(leafId)) {
+          const finalWrapper = containerEl.querySelector('.excalidraw-wrapper') as HTMLElement | null;
+          const finalContainer = finalWrapper
+            || containerEl.querySelector('.excalidraw') as HTMLElement | null
+            || tempContainer;
+          toolbar.remove();
+          this.doInject(toolbar, finalContainer, file, leafId);
+        }
+      }
+    }, 15000);
+  }
+
+  /**
+   * Perform the actual toolbar injection and set up orphan detection.
+   */
+  private doInject(toolbar: ExcaliShareToolbar, container: HTMLElement, file: TFile, leafId: string): void {
+    toolbar.inject(container);
+    this.updateToolbarState(toolbar, file);
+
+    // Set up orphan detection: watch if the toolbar gets removed from the DOM
+    // (e.g., by Excalidraw re-rendering its React tree)
+    this.setupOrphanDetection(toolbar, container, file, leafId);
+  }
+
+  /**
+   * Watch for the toolbar being removed from the DOM by external forces
+   * (Excalidraw React re-renders). If detected, re-inject it.
+   */
+  private setupOrphanDetection(toolbar: ExcaliShareToolbar, container: HTMLElement, file: TFile, leafId: string): void {
+    // Disconnect any existing orphan observer for this leaf
+    const existing = this._orphanObservers.get(leafId);
+    if (existing) existing.disconnect();
+
+    const observer = new MutationObserver(() => {
+      // Check if toolbar was removed from DOM
+      if (!toolbar.isInjected()) {
+        console.log('ExcaliShare: ⚠ Toolbar orphaned (removed from DOM), re-injecting for leaf', leafId);
+
+        // Verify this leaf's toolbar is still managed
+        if (!this.toolbarInstances.has(leafId)) {
+          observer.disconnect();
+          this._orphanObservers.delete(leafId);
+          return;
+        }
+
+        // Find the best available container again
+        const rootEl = container.closest('.workspace-leaf-content') || container.parentElement || container;
+        const newWrapper = rootEl.querySelector('.excalidraw-wrapper') as HTMLElement | null;
+        const newContainer = newWrapper || container;
+
+        toolbar.inject(newContainer);
+        this.updateToolbarState(toolbar, file);
+      }
+    });
+
+    // Observe the container's parent for child removals (which would include our toolbar's container)
+    const observeTarget = container.parentElement || container;
+    observer.observe(observeTarget, { childList: true, subtree: true });
+    this._orphanObservers.set(leafId, observer);
   }
 
   private createToolbar(file: TFile): ExcaliShareToolbar {
