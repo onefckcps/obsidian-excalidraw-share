@@ -226,14 +226,20 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   }, []);
 
   // Helper: apply a remote scene update (merge with current elements)
+  // Uses getSceneElementsIncludingDeleted() to preserve deleted elements in the
+  // merge base — without this, deleted elements would be missing from the local
+  // side, allowing stale remote updates to resurrect them.
   const applyRemoteSceneUpdate = useCallback((remoteElements: ExcalidrawElement[]) => {
     const api = excalidrawAPIRef.current as {
       updateScene: (data: unknown) => void;
       getSceneElements: () => ExcalidrawElement[];
+      getSceneElementsIncludingDeleted?: () => ExcalidrawElement[];
     } | null;
     if (!api) return;
 
-    const currentElements = api.getSceneElements();
+    const currentElements = api.getSceneElementsIncludingDeleted
+      ? api.getSceneElementsIncludingDeleted()
+      : api.getSceneElements();
     const allElements = new Map<string, ExcalidrawElement>();
 
     for (const el of currentElements) {
