@@ -37,6 +37,14 @@ export const pdfToPng = async (
     canvas.height = Math.round(viewport.height);
     canvas.width = Math.round(viewport.width);
     
+    // Fill with white background so PDF is visible in both light and dark themes.
+    // Without this, the canvas is transparent and Excalidraw's dark mode CSS inversion
+    // makes black text on transparent background invisible.
+    if (ctx) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    
     const renderContext = {
       canvasContext: ctx,
       viewport: viewport,

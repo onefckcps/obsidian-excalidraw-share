@@ -67,11 +67,40 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
 
   const clientRef = useRef<CollabClient | null>(null);
   const excalidrawAPIRef = useRef(excalidrawAPI);
+  /** Tracks which drawing ID the collab session was joined for */
+  const collabDrawingIdRef = useRef<string | null>(null);
 
   // Keep excalidrawAPI ref up to date
   useEffect(() => {
     excalidrawAPIRef.current = excalidrawAPI;
   }, [excalidrawAPI]);
+
+  // Auto-disconnect when navigating away from the collab drawing
+  useEffect(() => {
+    if (
+      collabDrawingIdRef.current &&
+      drawingId !== collabDrawingIdRef.current &&
+      clientRef.current
+    ) {
+      console.log(
+        `ExcaliShare Collab: Drawing changed (${collabDrawingIdRef.current} → ${drawingId}), auto-disconnecting`
+      );
+      clientRef.current.disconnect();
+      clientRef.current = null;
+      collabDrawingIdRef.current = null;
+      setIsJoined(false);
+      setIsConnected(false);
+      setCollaborators([]);
+
+      // Clear collaborators from Excalidraw
+      const api = excalidrawAPIRef.current as {
+        updateScene: (data: unknown) => void;
+      } | null;
+      if (api) {
+        api.updateScene({ collaborators: new Map() });
+      }
+    }
+  }, [drawingId]);
 
   // Check collab status on mount and when drawingId changes
   const refreshStatus = useCallback(() => {
@@ -111,6 +140,9 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       setDisplayNameState(finalName);
       storeName(finalName);
 
+      // Track which drawing this collab session belongs to
+      collabDrawingIdRef.current = drawingId || null;
+
       const client = new CollabClient(sessionId, finalName);
 
       // Handle snapshot (initial state)
@@ -147,29 +179,28 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         } | null;
 
         if (api) {
-          // Merge incoming elements with current scene
+          // Full reconciliation merge: union of all element IDs,
+          // pick the highest version per element ID.
+          // This correctly handles deletions (isDeleted: true) and
+          // prevents deleted elements from flickering back.
           const currentElements = api.getSceneElements();
-          const incomingMap = new Map<string, ExcalidrawElement>();
+          const allElements = new Map<string, ExcalidrawElement>();
+
+          // Start with all current local elements
+          for (const el of currentElements) {
+            allElements.set(el.id, el);
+          }
+
+          // Merge incoming: use incoming if version is higher or equal
+          // (equal handles same-version updates like isDeleted toggling)
           for (const el of msg.elements as ExcalidrawElement[]) {
-            incomingMap.set(el.id, el);
-          }
-
-          // Merge: use incoming version if it's newer
-          const merged = currentElements.map((el) => {
-            const incoming = incomingMap.get(el.id);
-            if (incoming && incoming.version > el.version) {
-              return incoming;
-            }
-            return el;
-          });
-
-          // Add any new elements that don't exist locally
-          for (const [id, el] of incomingMap) {
-            if (!currentElements.find((e) => e.id === id)) {
-              merged.push(el);
+            const existing = allElements.get(el.id);
+            if (!existing || el.version >= existing.version) {
+              allElements.set(el.id, el);
             }
           }
 
+          const merged = Array.from(allElements.values());
           api.updateScene({ elements: merged });
         }
       });
@@ -244,6 +275,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         setIsCollabActive(false);
         setSessionId(null);
         setCollaborators([]);
+        collabDrawingIdRef.current = null;
         client.disconnect();
         clientRef.current = null;
       });
@@ -273,7 +305,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       client.connect();
       setIsJoined(true);
     },
-    [sessionId]
+    [sessionId, drawingId]
   );
 
   // Leave session
@@ -282,6 +314,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       clientRef.current.disconnect();
       clientRef.current = null;
     }
+    collabDrawingIdRef.current = null;
     setIsJoined(false);
     setIsConnected(false);
     setCollaborators([]);
@@ -295,10 +328,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     }
   }, []);
 
-  // Send scene update
+  // Send scene update — only if we're on the drawing the collab session was started for
   const sendSceneUpdate = useCallback((elements: ExcalidrawElement[]) => {
-    clientRef.current?.sendSceneUpdate(elements);
-  }, []);
+    if (collabDrawingIdRef.current && collabDrawingIdRef.current === drawingId) {
+      clientRef.current?.sendSceneUpdate(elements);
+    }
+  }, [drawingId]);
 
   // Send pointer update
   const sendPointerUpdate = useCallback(

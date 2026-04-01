@@ -363,6 +363,10 @@ impl SessionManager {
     }
 
     /// Update the scene elements for a session and broadcast to others.
+    /// Uses version-based merging to prevent deletion flickering:
+    /// each element is identified by its "id" field, and the highest
+    /// "version" wins. This ensures that isDeleted=true updates are
+    /// not overwritten by stale updates from other clients.
     pub async fn update_scene(
         &self,
         session_id: &str,
@@ -374,17 +378,77 @@ impl SessionManager {
             .get_mut(session_id)
             .ok_or(AppError::SessionNotFound)?;
 
-        // Update stored elements
-        session.current_elements = elements.clone();
+        // Version-based merge of incoming elements with stored elements
+        let merged = Self::merge_elements(&session.current_elements, &elements);
+        session.current_elements = merged.clone();
 
-        // Broadcast to all participants
+        // Broadcast the merged state to all participants
         let update_msg = ServerMessage::SceneUpdate {
-            elements,
+            elements: merged,
             from: user_id.to_string(),
         };
         let _ = session.broadcast_tx.send(update_msg);
 
         Ok(())
+    }
+
+    /// Merge two element arrays using version-based conflict resolution.
+    /// For each element ID, the element with the highest version wins.
+    /// Elements only present in one side are kept as-is.
+    fn merge_elements(
+        current: &serde_json::Value,
+        incoming: &serde_json::Value,
+    ) -> serde_json::Value {
+        let current_arr = match current.as_array() {
+            Some(arr) => arr,
+            None => return incoming.clone(),
+        };
+        let incoming_arr = match incoming.as_array() {
+            Some(arr) => arr,
+            None => return current.clone(),
+        };
+
+        // Build a map of current elements by ID
+        let mut element_map: std::collections::HashMap<String, &serde_json::Value> =
+            std::collections::HashMap::new();
+        // Track insertion order to maintain stable element ordering
+        let mut order: Vec<String> = Vec::new();
+
+        for el in current_arr {
+            if let Some(id) = el.get("id").and_then(|v| v.as_str()) {
+                element_map.insert(id.to_string(), el);
+                order.push(id.to_string());
+            }
+        }
+
+        // Merge incoming elements
+        for el in incoming_arr {
+            if let Some(id) = el.get("id").and_then(|v| v.as_str()) {
+                let incoming_version = el.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+
+                if let Some(existing) = element_map.get(id) {
+                    let existing_version =
+                        existing.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+                    // Use incoming if version is higher or equal (equal handles
+                    // same-version state changes like isDeleted toggling)
+                    if incoming_version >= existing_version {
+                        element_map.insert(id.to_string(), el);
+                    }
+                } else {
+                    // New element not in current state — add it
+                    element_map.insert(id.to_string(), el);
+                    order.push(id.to_string());
+                }
+            }
+        }
+
+        // Reconstruct array in stable order
+        let merged: Vec<serde_json::Value> = order
+            .iter()
+            .filter_map(|id| element_map.get(id).map(|el| (*el).clone()))
+            .collect();
+
+        serde_json::Value::Array(merged)
     }
 
     /// Broadcast a pointer update to all participants.
