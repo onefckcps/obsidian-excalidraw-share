@@ -255,6 +255,7 @@ impl SessionManager {
     }
 
     /// Check if a drawing has an active session.
+    #[allow(dead_code)]
     pub async fn get_session_for_drawing(&self, drawing_id: &str) -> Option<String> {
         self.drawing_sessions
             .read()
@@ -434,6 +435,7 @@ impl SessionManager {
     }
 
     /// Get the broadcast sender for a session (used by WS handler).
+    #[allow(dead_code)]
     pub async fn get_broadcast_tx(
         &self,
         session_id: &str,

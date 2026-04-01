@@ -131,6 +131,7 @@ interface DrawingMeta {
 
 interface ExcalidrawPlugin {
   ea: {
+    setView: (view: unknown | 'first' | 'active') => unknown;
     getSceneFromFile: (file: TFile) => Promise<{ elements: unknown[]; appState: unknown }>;
     getExcalidrawAPI: () => {
       getFiles: () => Record<string, unknown>;
@@ -515,6 +516,7 @@ export default class ExcaliSharePlugin extends Plugin {
       }
       
       try {
+        excalidrawPlugin.ea.setView('active');
         const excalidrawAPI = excalidrawPlugin.ea.getExcalidrawAPI();
         if (excalidrawAPI && typeof excalidrawAPI.getFiles === 'function') {
           const apiFiles = excalidrawAPI.getFiles() as Record<string, any>;
@@ -894,6 +896,7 @@ export default class ExcaliSharePlugin extends Plugin {
       if (excalidrawPlugin?.ea) {
         // Try to update via the Excalidraw API if the file is currently open
         try {
+          excalidrawPlugin.ea.setView('active');
           const excalidrawAPI = excalidrawPlugin.ea.getExcalidrawAPI();
           if (excalidrawAPI && typeof excalidrawAPI.updateScene === 'function') {
             excalidrawAPI.updateScene({
@@ -984,6 +987,7 @@ class CollabStopModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
   }
+}
 
 class ExcaliShareSettingTab extends PluginSettingTab {
   pluginRef: ExcaliSharePlugin;

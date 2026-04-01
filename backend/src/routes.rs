@@ -1,7 +1,6 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
-    response::IntoResponse,
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -18,7 +17,6 @@ pub struct AppState {
     pub session_manager: SessionManager,
 }
 
-type Storage = FileSystemStorage;
 
 // ──────────────────────────────────────────────
 // Request / Response types
@@ -131,7 +129,7 @@ pub async fn upload_drawing(
     }
 
     let mut is_update = false;
-    let mut id = if let Some(req_id) = body.id {
+    let id = if let Some(req_id) = body.id {
         // Only allow using a specific ID if the user wants to update an existing drawing
         is_update = true;
         req_id
@@ -261,11 +259,15 @@ pub async fn stop_collab(
         .await?;
 
     if let Some((drawing_id, data)) = result {
-        // Save the collab scene data back to storage
-        let source_path = data
-            .get("_source_path")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        // Preserve the existing source_path from the stored drawing
+        // (collab session data doesn't include _source_path)
+        let source_path = match state.storage.load(&drawing_id).await {
+            Ok(existing) => existing
+                .get("_source_path")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            Err(_) => None,
+        };
 
         state
             .storage

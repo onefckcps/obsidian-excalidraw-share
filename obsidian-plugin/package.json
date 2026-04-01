@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "ExcaliShare Obsidian Plugin",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp manifest.json dist/",
     "dev": "tsc -w"
   },
   "devDependencies": {

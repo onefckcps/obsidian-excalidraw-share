@@ -78,6 +78,7 @@ else
 fi
 
 BINARY="$PROJECT_ROOT/backend/target/release/excalishare"
+SERVER_LOG="$PROJECT_ROOT/backend/server.log"
 
 # Check if binary exists (when --no-build is used)
 if [ ! -f "$BINARY" ]; then
@@ -90,6 +91,9 @@ if [ ! -d "$FRONTEND_DIR" ]; then
 	log_error "Frontend not found. Run without --no-build first."
 	exit 1
 fi
+
+# Ensure data directory exists
+mkdir -p "$DATA_DIR"
 
 # Watch mode: rebuild on changes
 if [ "$WATCH" = true ]; then
@@ -105,9 +109,17 @@ if [ "$WATCH" = true ]; then
 			--data-dir "$DATA_DIR" \
 			--frontend-dir "$FRONTEND_DIR" \
 			--base-url "$BASE_URL" \
-			--api-key "$API_KEY" &
+			--api-key "$API_KEY" \
+			>> "$SERVER_LOG" 2>&1 &
 		echo $! > "$SERVER_PID_FILE"
 		log_info "Server started (PID: $(cat $SERVER_PID_FILE))"
+		# Give the server a moment to start and check if it's alive
+		sleep 0.5
+		if ! kill -0 "$(cat $SERVER_PID_FILE)" 2>/dev/null; then
+			log_error "Server failed to start! Check logs: $SERVER_LOG"
+			tail -20 "$SERVER_LOG"
+			return 1
+		fi
 	}
 
 	# Function to stop server
@@ -123,37 +135,34 @@ if [ "$WATCH" = true ]; then
 		fi
 	}
 
-	# Function to rebuild and restart
-	rebuild_and_restart() {
-		log_info "Rebuilding..."
-		cd "$PROJECT_ROOT"
-		nix develop -c bash -c "
-			cd backend && cargo build --release
-			cd ../frontend && npm run build
-		"
-		stop_server
-		start_server
-	}
-
 	# Start initial server
+	> "$SERVER_LOG"  # Truncate log file
 	start_server
+	log_info "Server logs: tail -f $SERVER_LOG"
 
 	# Cleanup on exit
 	cleanup() {
 		log_info "Shutting down..."
 		stop_server
+		# Kill background watch processes
+		kill "$BACKEND_WATCH_PID" 2>/dev/null || true
+		kill "$FRONTEND_WATCH_PID" 2>/dev/null || true
 		rm -f "$SERVER_PID_FILE"
 		exit 0
 	}
 	trap cleanup INT TERM
 
-	# Watch backend in background - rebuild and restart on changes
+	# Watch backend in background using cargo watch with shell command
+	# cargo watch -s runs a shell command after each successful build
+	# We use -i to ignore non-source files that might trigger loops
 	(
-		cd "$PROJECT_ROOT/backend"
-		while true; do
-			nix develop -c cargo watch -x build
-			rebuild_and_restart
-		done
+		cd "$PROJECT_ROOT"
+		nix develop -c bash -c "
+			cd backend
+			cargo watch \
+				-w src \
+				-s 'cargo build --release 2>&1 && kill \$(cat \"$SERVER_PID_FILE\" 2>/dev/null) 2>/dev/null; \"$BINARY\" --listen-addr \"$LISTEN_ADDR\" --data-dir \"$DATA_DIR\" --frontend-dir \"$FRONTEND_DIR\" --base-url \"$BASE_URL\" --api-key \"$API_KEY\" >> \"$SERVER_LOG\" 2>&1 & echo \$! > \"$SERVER_PID_FILE\"; echo \"[INFO] Server restarted (PID: \$(cat $SERVER_PID_FILE))\"'
+		"
 	) &
 	BACKEND_WATCH_PID=$!
 
@@ -193,15 +202,15 @@ if [ "$WATCH" = true ]; then
 	FRONTEND_WATCH_PID=$!
 
 	log_info "Watch mode active. Press Ctrl+C to stop."
-	log_info "  - Backend: watching for changes (auto-restart)..."
+	log_info "  - Backend: watching src/ for changes (auto-rebuild + restart)..."
 	log_info "  - Frontend: watching for changes..."
+	log_info "  - Server logs: tail -f $SERVER_LOG"
 
-	# Wait forever
-	wait
+	# Wait forever (use loop to survive signal interrupts)
+	while true; do
+		wait -n 2>/dev/null || sleep 1
+	done
 fi
-
-# Create data directory
-mkdir -p "$DATA_DIR"
 
 log_info "Starting Excalidraw Share server..."
 log_info "  Mode:      $MODE"

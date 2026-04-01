@@ -6,11 +6,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": ".",
+    "outDir": "./dist",
     "rootDir": ".",
     "declaration": false,
     "moduleResolution": "node"
   },
   "include": ["main.ts", "pdfUtils.ts"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "dist"]
 }

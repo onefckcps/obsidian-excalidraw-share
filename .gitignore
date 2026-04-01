@@ -2,6 +2,7 @@
 /target
 temp-excalidraw-plugin
 frontend/dist
+obsidian-plugin/dist
 data/
 /dist
 /backend/target
