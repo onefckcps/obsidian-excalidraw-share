@@ -4,9 +4,10 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::collab::{SessionInfo, SessionManager};
 use crate::error::AppError;
 use crate::storage::{DrawingMeta, DrawingStorage, FileSystemStorage};
 
@@ -14,6 +15,7 @@ use crate::storage::{DrawingMeta, DrawingStorage, FileSystemStorage};
 pub struct AppState {
     pub storage: FileSystemStorage,
     pub base_url: String,
+    pub session_manager: SessionManager,
 }
 
 type Storage = FileSystemStorage;
@@ -45,7 +47,7 @@ pub struct PublicDrawingMeta {
     pub source_path: Option<String>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 pub struct UploadRequest {
     #[serde(flatten)]
     pub data: serde_json::Value,
@@ -53,6 +55,53 @@ pub struct UploadRequest {
     pub source_path: Option<String>,
     #[serde(default)]
     pub id: Option<String>,
+}
+
+// ──────────────────────────────────────────────
+// Collab Request / Response types
+// ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct StartCollabRequest {
+    pub drawing_id: String,
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_timeout() -> u64 {
+    7200 // 2 hours
+}
+
+#[derive(Serialize)]
+pub struct StartCollabResponse {
+    pub session_id: String,
+    pub ws_url: String,
+}
+
+#[derive(Deserialize)]
+pub struct StopCollabRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub save: bool,
+}
+
+#[derive(Serialize)]
+pub struct StopCollabResponse {
+    pub saved: bool,
+}
+
+#[derive(Serialize)]
+pub struct CollabStatusResponse {
+    pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant_count: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct CollabSessionsResponse {
+    pub sessions: Vec<SessionInfo>,
 }
 
 // ──────────────────────────────────────────────
@@ -159,4 +208,102 @@ pub async fn list_drawings_public(
 
 pub async fn health() -> &'static str {
     "ok"
+}
+
+// ──────────────────────────────────────────────
+// Collab Handlers
+// ──────────────────────────────────────────────
+
+/// Start a new collab session for a drawing (auth required).
+pub async fn start_collab(
+    State(state): State<AppState>,
+    Json(body): Json<StartCollabRequest>,
+) -> Result<(StatusCode, Json<StartCollabResponse>), AppError> {
+    // Verify the drawing exists
+    let drawing_data = state.storage.load(&body.drawing_id).await?;
+
+    let session_id = state
+        .session_manager
+        .create_session(&body.drawing_id, &drawing_data, body.timeout_secs)
+        .await?;
+
+    let base = state.base_url.trim_end_matches('/');
+    let ws_scheme = if base.starts_with("https") {
+        "wss"
+    } else {
+        "ws"
+    };
+    let host = base
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let ws_url = format!("{ws_scheme}://{host}/ws/collab/{session_id}");
+
+    tracing::info!(
+        drawing_id = %body.drawing_id,
+        session_id = %session_id,
+        "Collab session started"
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(StartCollabResponse { session_id, ws_url }),
+    ))
+}
+
+/// Stop a collab session, optionally saving changes (auth required).
+pub async fn stop_collab(
+    State(state): State<AppState>,
+    Json(body): Json<StopCollabRequest>,
+) -> Result<Json<StopCollabResponse>, AppError> {
+    let result = state
+        .session_manager
+        .end_session(&body.session_id, body.save)
+        .await?;
+
+    if let Some((drawing_id, data)) = result {
+        // Save the collab scene data back to storage
+        let source_path = data
+            .get("_source_path")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        state
+            .storage
+            .save(&drawing_id, &data, source_path.as_deref())
+            .await?;
+
+        tracing::info!(
+            drawing_id = %drawing_id,
+            "Collab session changes saved to storage"
+        );
+    }
+
+    Ok(Json(StopCollabResponse { saved: body.save }))
+}
+
+/// Get collab status for a drawing (public).
+pub async fn collab_status(
+    State(state): State<AppState>,
+    Path(drawing_id): Path<String>,
+) -> Json<CollabStatusResponse> {
+    match state.session_manager.get_session_status(&drawing_id).await {
+        Some((session_id, participant_count)) => Json(CollabStatusResponse {
+            active: true,
+            session_id: Some(session_id),
+            participant_count: Some(participant_count),
+        }),
+        None => Json(CollabStatusResponse {
+            active: false,
+            session_id: None,
+            participant_count: None,
+        }),
+    }
+}
+
+/// List all active collab sessions (auth required, for admin).
+pub async fn list_collab_sessions(
+    State(state): State<AppState>,
+) -> Json<CollabSessionsResponse> {
+    let sessions = state.session_manager.list_sessions().await;
+    Json(CollabSessionsResponse { sessions })
 }

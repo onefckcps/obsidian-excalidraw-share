@@ -1,9 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { Excalidraw } from '@excalidraw/excalidraw'
-import type { Theme } from '@excalidraw/excalidraw/types/element/types'
+import { Excalidraw, LiveCollaborationTrigger } from '@excalidraw/excalidraw'
+import type { Theme, ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types'
 import type { ExcalidrawData } from './types'
 import { drawingCache } from './utils/cache'
+import { useCollab } from './hooks/useCollab'
+import CollabStatus from './CollabStatus'
 import AboutModal from './AboutModal'
 
 function useMediaQuery(query: string): boolean {
@@ -45,6 +47,7 @@ function Viewer() {
   const [showOverlay, setShowOverlay] = useState(false)
   const [showAbout, setShowAbout] = useState(false)
   const [theme, setTheme] = useState<Theme>('light')
+  const [excalidrawAPI, setExcalidrawAPI] = useState<unknown>(null)
   const [mode, setMode] = useState<'view' | 'edit' | 'present'>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('viewerMode')
@@ -61,6 +64,9 @@ function Viewer() {
   const [loadingDrawings, setLoadingDrawings] = useState(false)
 
   const isMobile = useMediaQuery('(max-width: 730px)')
+
+  // Collaboration hook
+  const collab = useCollab({ drawingId: id, excalidrawAPI })
 
   // Preload drawings list on mount
   useEffect(() => {
@@ -133,16 +139,27 @@ function Viewer() {
     }
   }, [id])
 
-  const handleExcalidrawChange = useCallback((_elements: unknown, appState: { theme?: Theme }) => {
+  const handleExcalidrawChange = useCallback((elements: readonly ExcalidrawElement[], appState: { theme?: Theme }) => {
     setTheme(currentTheme => {
-      // Nur updaten wenn sich das Theme wirklich geändert hat, 
+      // Nur updaten wenn sich das Theme wirklich geändert hat,
       // um endlose Re-Renders zu verhindern
       if (appState.theme && currentTheme !== appState.theme) {
         return appState.theme
       }
       return currentTheme
     })
-  }, [])
+
+    // Send scene updates to collab session if joined
+    if (collab.isJoined && collab.isConnected) {
+      collab.sendSceneUpdate(elements as ExcalidrawElement[])
+    }
+  }, [collab.isJoined, collab.isConnected, collab.sendSceneUpdate])
+
+  const handlePointerUpdate = useCallback((payload: { pointer: { x: number; y: number; tool: string }; button: 'down' | 'up'; pointersMap: Map<number, Readonly<{ x: number; y: number }>> }) => {
+    if (collab.isJoined && collab.isConnected) {
+      collab.sendPointerUpdate(payload.pointer.x, payload.pointer.y, payload.button)
+    }
+  }, [collab.isJoined, collab.isConnected, collab.sendPointerUpdate])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -748,6 +765,7 @@ function Viewer() {
       <style>{spinKeyframes}</style>
       <Excalidraw
         key={id}
+        excalidrawAPI={(api: unknown) => setExcalidrawAPI(api)}
         initialData={{
           elements: sceneData.elements || [],
           appState: {
@@ -758,16 +776,58 @@ function Viewer() {
           files: sceneData.files || {},
         }}
         onChange={handleExcalidrawChange}
-        viewModeEnabled={mode === 'view' || mode === 'present'}
-        zenModeEnabled={mode !== 'edit'}
+        onPointerUpdate={collab.isJoined ? handlePointerUpdate : undefined}
+        viewModeEnabled={collab.isJoined ? false : (mode === 'view' || mode === 'present')}
+        zenModeEnabled={collab.isJoined ? false : mode !== 'edit'}
+        isCollaborating={collab.isJoined}
         theme={theme}
         UIOptions={{
           canvasActions: {
             loadScene: false,
-            export: mode === 'edit' ? { saveFileToDisk: true } : false,
-            saveAsImage: mode === 'edit',
+            export: (mode === 'edit' || collab.isJoined) ? { saveFileToDisk: true } : false,
+            saveAsImage: mode === 'edit' || collab.isJoined,
             toggleTheme: true,
           },
+        }}
+        renderTopRightUI={() =>
+          collab.isJoined ? (
+            <LiveCollaborationTrigger
+              isCollaborating={true}
+              onSelect={() => {}}
+            />
+          ) : null
+        }
+      />
+
+      {/* Collaboration Status */}
+      <CollabStatus
+        theme={theme}
+        isCollabActive={collab.isCollabActive}
+        isJoined={collab.isJoined}
+        isConnected={collab.isConnected}
+        collaborators={collab.collaborators}
+        participantCount={collab.participantCount}
+        displayName={collab.displayName}
+        sessionEnded={collab.sessionEnded}
+        onJoin={collab.joinSession}
+        onLeave={collab.leaveSession}
+        onSetName={collab.setDisplayName}
+        onDismissSessionEnded={() => {
+          collab.dismissSessionEnded()
+          // Reload the drawing to get the latest state
+          if (id) {
+            setLoading(true)
+            fetch(`/api/view/${id}`)
+              .then(res => res.json())
+              .then(data => {
+                drawingCache.set(id, data)
+                setSceneData(data)
+                setCurrentDataId(id)
+                setTheme(data.appState?.theme || 'light')
+                setLoading(false)
+              })
+              .catch(() => setLoading(false))
+          }
         }}
       />
       

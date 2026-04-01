@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import AboutModal from './AboutModal'
+import type { CollabSessionInfo } from './types'
 
 interface Drawing {
   id: string
@@ -17,6 +18,8 @@ function AdminPage() {
   const [showApiInput, setShowApiInput] = useState(!apiKey)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [showAbout, setShowAbout] = useState(false)
+  const [collabSessions, setCollabSessions] = useState<CollabSessionInfo[]>([])
+  const [endingSession, setEndingSession] = useState<string | null>(null)
 
   const fetchDrawings = () => {
     if (!apiKey) return
@@ -43,13 +46,62 @@ function AdminPage() {
       })
   }
 
+  const fetchCollabSessions = useCallback(() => {
+    if (!apiKey) return
+    fetch('/api/collab/sessions', {
+      headers: { 'Authorization': `Bearer ${apiKey}` }
+    })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.sessions) {
+          setCollabSessions(data.sessions)
+        }
+      })
+      .catch(() => {})
+  }, [apiKey])
+
+  const handleEndSession = async (sessionId: string) => {
+    if (!confirm('End this collab session? Changes will be discarded.')) return
+    setEndingSession(sessionId)
+    try {
+      const res = await fetch('/api/collab/stop', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ session_id: sessionId, save: false }),
+      })
+      if (!res.ok) throw new Error('Failed to end session')
+      setCollabSessions(prev => prev.filter(s => s.session_id !== sessionId))
+    } catch {
+      alert('Failed to end session')
+    } finally {
+      setEndingSession(null)
+    }
+  }
+
+  const formatDuration = (createdAt: string) => {
+    const start = new Date(createdAt).getTime()
+    const now = Date.now()
+    const diffMs = now - start
+    const mins = Math.floor(diffMs / 60000)
+    const hours = Math.floor(mins / 60)
+    if (hours > 0) return `${hours}h ${mins % 60}m`
+    return `${mins}m`
+  }
+
   useEffect(() => {
     if (apiKey) {
       fetchDrawings()
+      fetchCollabSessions()
+      // Auto-refresh collab sessions every 10 seconds
+      const interval = setInterval(fetchCollabSessions, 10000)
+      return () => clearInterval(interval)
     } else {
       setLoading(false)
     }
-  }, [apiKey])
+  }, [apiKey, fetchCollabSessions])
 
   const handleApiKeySave = (e: React.FormEvent) => {
     e.preventDefault()
@@ -158,6 +210,50 @@ function AdminPage() {
 
         {error && (
           <div style={styles.error}>{error}</div>
+        )}
+
+        {/* Active Collab Sessions */}
+        {collabSessions.length > 0 && (
+          <div style={{ marginBottom: '24px' }}>
+            <h2 style={{ fontSize: '18px', color: '#333', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#f44336', display: 'inline-block' }} />
+              Active Collab Sessions ({collabSessions.length})
+            </h2>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Drawing</th>
+                  <th style={styles.th}>Participants</th>
+                  <th style={styles.th}>Duration</th>
+                  <th style={styles.th}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {collabSessions.map(session => (
+                  <tr key={session.session_id} style={{ ...styles.tr, backgroundColor: '#fff3e0' }}>
+                    <td style={styles.td}>
+                      <Link to={`/d/${session.drawing_id}`} style={styles.idLink}>
+                        {session.drawing_id}
+                      </Link>
+                    </td>
+                    <td style={styles.td}>
+                      {session.participant_count} ({session.participants.map(p => p.name).join(', ') || 'none'})
+                    </td>
+                    <td style={styles.td}>{formatDuration(session.created_at)}</td>
+                    <td style={styles.td}>
+                      <button
+                        onClick={() => handleEndSession(session.session_id)}
+                        disabled={endingSession === session.session_id}
+                        style={{ ...styles.deleteBtn, backgroundColor: '#ff5722' }}
+                      >
+                        {endingSession === session.session_id ? 'Ending...' : 'End Session'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
 
         {drawings.length === 0 ? (

@@ -5,6 +5,7 @@ frontend/dist
 data/
 /dist
 /backend/target
+**/node_modules/**
 
 # Secrets
 .env

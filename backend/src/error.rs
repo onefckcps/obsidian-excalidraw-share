@@ -23,6 +23,15 @@ pub enum AppError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Collab session not found")]
+    SessionNotFound,
+
+    #[error("A collab session already exists for this drawing")]
+    SessionAlreadyExists,
+
+    #[error("Collab session is full")]
+    SessionFull,
 }
 
 #[derive(Serialize)]
@@ -51,6 +60,9 @@ impl axum::response::IntoResponse for AppError {
                 tracing::error!("Internal error: {msg}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
             }
+            AppError::SessionNotFound => (StatusCode::NOT_FOUND, self.to_string()),
+            AppError::SessionAlreadyExists => (StatusCode::CONFLICT, self.to_string()),
+            AppError::SessionFull => (StatusCode::FORBIDDEN, self.to_string()),
         };
 
         let body = axum::Json(ErrorResponse { error: message });

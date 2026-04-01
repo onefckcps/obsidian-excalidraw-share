@@ -1,7 +1,9 @@
 mod auth;
+mod collab;
 mod error;
 mod routes;
 mod storage;
+mod ws;
 
 use axum::{
     middleware,
@@ -20,6 +22,7 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use auth::ApiKey;
+use collab::SessionManager;
 use routes::AppState;
 use storage::FileSystemStorage;
 
@@ -72,10 +75,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let storage = FileSystemStorage::new(&config.data_dir).await?;
+    let session_manager = SessionManager::new();
 
     let app_state = AppState {
         storage: storage.clone(),
         base_url: config.base_url.clone(),
+        session_manager: session_manager.clone(),
     };
 
     let api_key = ApiKey(config.api_key.clone());
@@ -89,24 +94,40 @@ async fn main() -> anyhow::Result<()> {
     let public_api = Router::new()
         .route("/api/health", get(routes::health))
         .route("/api/public/drawings", get(routes::list_drawings_public))
-        .route("/api/view/{id}", get(routes::get_drawing));
+        .route("/api/view/{id}", get(routes::get_drawing))
+        .route(
+            "/api/collab/status/{drawing_id}",
+            get(routes::collab_status),
+        );
 
     // Protected API routes (auth required)
     let protected_api = Router::new()
         .route("/api/upload", post(routes::upload_drawing))
         .route("/api/drawings/{id}", delete(routes::delete_drawing))
         .route("/api/drawings", get(routes::list_drawings))
+        .route("/api/collab/start", post(routes::start_collab))
+        .route("/api/collab/stop", post(routes::stop_collab))
+        .route("/api/collab/sessions", get(routes::list_collab_sessions))
         .layer(axum::extract::DefaultBodyLimit::max(body_limit))
         .route_layer(middleware::from_fn_with_state(
             api_key.clone(),
             auth::api_key_middleware,
         ));
 
+    // WebSocket route (no auth, but session must exist)
+    let ws_routes = Router::new()
+        .route(
+            "/ws/collab/{session_id}",
+            get(ws::ws_collab_handler),
+        )
+        .with_state(session_manager.clone());
+
     let app = Router::new()
         .merge(public_api)
         .merge(protected_api)
-        .fallback_service(frontend_service)
         .with_state(app_state)
+        .merge(ws_routes)
+        .fallback_service(frontend_service)
         .layer(CompressionLayer::new())
         .layer(
             CorsLayer::new()
@@ -115,6 +136,16 @@ async fn main() -> anyhow::Result<()> {
                 .allow_headers(Any),
         )
         .layer(TraceLayer::new_for_http());
+
+    // Spawn background task for session cleanup (every 60 seconds)
+    let cleanup_manager = session_manager.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            cleanup_manager.cleanup_expired().await;
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(&config.listen_addr).await?;
     tracing::info!("Listening on {}", config.listen_addr);

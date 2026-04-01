@@ -1,4 +1,4 @@
-import { Plugin, TFile, arrayBufferToBase64, Menu, Notice, App, PluginSettingTab, Setting, loadPdfJs } from 'obsidian';
+import { Plugin, TFile, arrayBufferToBase64, Menu, Notice, App, PluginSettingTab, Setting, loadPdfJs, Modal } from 'obsidian';
 
 const blobToBase64 = async (blob: Blob): Promise<string> => {
   const arrayBuffer = await blob.arrayBuffer();
@@ -111,12 +111,16 @@ interface ExcaliShareSettings {
   apiKey: string;
   baseUrl: string;
   pdfScale: number;
+  collabTimeoutSecs: number;
+  collabAutoOpenBrowser: boolean;
 }
 
 const DEFAULT_SETTINGS: ExcaliShareSettings = {
   apiKey: '',
   baseUrl: 'http://localhost:8184',
   pdfScale: 1.5,
+  collabTimeoutSecs: 7200,
+  collabAutoOpenBrowser: true,
 };
 
 interface DrawingMeta {
@@ -128,13 +132,21 @@ interface DrawingMeta {
 interface ExcalidrawPlugin {
   ea: {
     getSceneFromFile: (file: TFile) => Promise<{ elements: unknown[]; appState: unknown }>;
-    getExcalidrawAPI: () => { getFiles: () => Record<string, unknown> };
+    getExcalidrawAPI: () => {
+      getFiles: () => Record<string, unknown>;
+      updateScene: (data: { elements?: unknown[]; appState?: unknown }) => void;
+      getSceneElements: () => unknown[];
+    };
     isExcalidrawFile: (file: TFile) => boolean;
   };
 }
 
 export default class ExcaliSharePlugin extends Plugin {
   settings: ExcaliShareSettings = DEFAULT_SETTINGS;
+  activeCollabSessionId: string | null = null;
+  activeCollabDrawingId: string | null = null;
+  collabStatusBarItem: HTMLElement | null = null;
+  collabHealthInterval: ReturnType<typeof setInterval> | null = null;
 
   async onload() {
     await this.loadSettings();
@@ -237,6 +249,77 @@ export default class ExcaliSharePlugin extends Plugin {
       },
     });
 
+    // ── Collab Commands ──
+
+    // Start live collab
+    this.addCommand({
+      id: 'start-live-collab',
+      name: 'Start Live Collab Session',
+      checkCallback: (checking: boolean) => {
+        const file = this.app.workspace.getActiveFile();
+        if (file && this.isExcalidrawFile(file)) {
+          const publishedId = this.getPublishedId(file);
+          if (publishedId && !this.activeCollabSessionId) {
+            if (!checking) {
+              this.startCollabSession(file, publishedId);
+            }
+            return true;
+          }
+        }
+        return false;
+      },
+    });
+
+    // Stop live collab
+    this.addCommand({
+      id: 'stop-live-collab',
+      name: 'Stop Live Collab Session',
+      checkCallback: (checking: boolean) => {
+        if (this.activeCollabSessionId) {
+          if (!checking) {
+            this.stopCollabSession();
+          }
+          return true;
+        }
+        return false;
+      },
+    });
+
+    // Open live session in browser
+    this.addCommand({
+      id: 'open-live-session',
+      name: 'Open Live Session in Browser',
+      checkCallback: (checking: boolean) => {
+        if (this.activeCollabDrawingId) {
+          if (!checking) {
+            const url = `${this.settings.baseUrl}/d/${this.activeCollabDrawingId}`;
+            window.open(url, '_blank');
+          }
+          return true;
+        }
+        return false;
+      },
+    });
+
+    // Pull from ExcaliShare (sync back to vault)
+    this.addCommand({
+      id: 'pull-from-excalishare',
+      name: 'Pull from ExcaliShare',
+      checkCallback: (checking: boolean) => {
+        const file = this.app.workspace.getActiveFile();
+        if (file && this.isExcalidrawFile(file)) {
+          const publishedId = this.getPublishedId(file);
+          if (publishedId) {
+            if (!checking) {
+              this.pullFromServer(file, publishedId);
+            }
+            return true;
+          }
+        }
+        return false;
+      },
+    });
+
     // File context menu
     this.registerEvent(
       // @ts-ignore
@@ -261,6 +344,40 @@ export default class ExcaliSharePlugin extends Plugin {
                   new Notice('Share link copied to clipboard!');
                 });
             });
+
+            // Collab menu items
+            if (this.activeCollabSessionId && this.activeCollabDrawingId === publishedId) {
+              menu.addItem((item) => {
+                item
+                  .setTitle('Stop Live Collab')
+                  .setIcon('users')
+                  .onClick(() => this.stopCollabSession());
+              });
+              menu.addItem((item) => {
+                item
+                  .setTitle('Open Live Session')
+                  .setIcon('external-link')
+                  .onClick(() => {
+                    const url = `${this.settings.baseUrl}/d/${publishedId}`;
+                    window.open(url, '_blank');
+                  });
+              });
+            } else if (!this.activeCollabSessionId) {
+              menu.addItem((item) => {
+                item
+                  .setTitle('Start Live Collab')
+                  .setIcon('users')
+                  .onClick(() => this.startCollabSession(file, publishedId));
+              });
+            }
+
+            menu.addItem((item) => {
+              item
+                .setTitle('Pull from ExcaliShare')
+                .setIcon('download')
+                .onClick(() => this.pullFromServer(file, publishedId));
+            });
+
             menu.addSeparator();
             menu.addItem((item) => {
               item
@@ -281,6 +398,18 @@ export default class ExcaliSharePlugin extends Plugin {
     );
 
     this.addSettingTab(new ExcaliShareSettingTab(this.app, this));
+
+    // Status bar item for collab
+    this.collabStatusBarItem = this.addStatusBarItem();
+    this.collabStatusBarItem.setText('');
+    this.collabStatusBarItem.hide();
+  }
+
+  onunload() {
+    if (this.collabHealthInterval) {
+      clearInterval(this.collabHealthInterval);
+      this.collabHealthInterval = null;
+    }
   }
 
   private getExcalidrawPlugin(): ExcalidrawPlugin | null {
@@ -602,7 +731,259 @@ export default class ExcaliSharePlugin extends Plugin {
   async isDrawingPublished(file: TFile): Promise<boolean> {
     return this.getPublishedId(file) !== null;
   }
+
+  // ── Collab Methods ──
+
+  async startCollabSession(file: TFile, drawingId: string) {
+    if (!this.settings.apiKey) {
+      new Notice('Please configure API key in plugin settings');
+      return;
+    }
+
+    if (this.activeCollabSessionId) {
+      new Notice('A collab session is already active. Stop it first.');
+      return;
+    }
+
+    new Notice('Starting live collab session...');
+
+    try {
+      const response = await fetch(`${this.settings.baseUrl}/api/collab/start`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.settings.apiKey}`,
+        },
+        body: JSON.stringify({
+          drawing_id: drawingId,
+          timeout_secs: this.settings.collabTimeoutSecs,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Failed to start session: ${response.status}`);
+      }
+
+      const result = await response.json();
+      this.activeCollabSessionId = result.session_id;
+      this.activeCollabDrawingId = drawingId;
+
+      // Update status bar
+      if (this.collabStatusBarItem) {
+        this.collabStatusBarItem.setText('🔴 Live Collab');
+        this.collabStatusBarItem.show();
+      }
+
+      // Start health check interval
+      this.collabHealthInterval = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`${this.settings.baseUrl}/api/collab/status/${drawingId}`);
+          const status = await statusRes.json();
+          if (!status.active) {
+            // Session ended externally
+            this.cleanupCollabState();
+            new Notice('Collab session ended.');
+          }
+        } catch {
+          // Ignore health check errors
+        }
+      }, 30000);
+
+      const viewUrl = `${this.settings.baseUrl}/d/${drawingId}`;
+      new Notice(`Live collab session started! Session ID: ${result.session_id}`);
+
+      // Auto-open browser
+      if (this.settings.collabAutoOpenBrowser) {
+        window.open(viewUrl, '_blank');
+      }
+
+      console.log('ExcaliShare: Collab session started', result);
+    } catch (error) {
+      console.error('ExcaliShare: Failed to start collab session', error);
+      new Notice(`Failed to start collab: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async stopCollabSession() {
+    if (!this.activeCollabSessionId) {
+      new Notice('No active collab session.');
+      return;
+    }
+
+    if (!this.settings.apiKey) {
+      new Notice('Please configure API key in plugin settings');
+      return;
+    }
+
+    // Ask user whether to save or discard
+    const save = await new Promise<boolean | null>((resolve) => {
+      const modal = new CollabStopModal(this.app, resolve);
+      modal.open();
+    });
+
+    if (save === null) return; // User cancelled
+
+    new Notice(save ? 'Saving and stopping collab session...' : 'Discarding and stopping collab session...');
+
+    try {
+      const response = await fetch(`${this.settings.baseUrl}/api/collab/stop`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.settings.apiKey}`,
+        },
+        body: JSON.stringify({
+          session_id: this.activeCollabSessionId,
+          save: save,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to stop session: ${response.status}`);
+      }
+
+      const drawingId = this.activeCollabDrawingId;
+      this.cleanupCollabState();
+
+      if (save && drawingId) {
+        // Sync back to vault
+        const file = this.app.workspace.getActiveFile();
+        if (file && this.getPublishedId(file) === drawingId) {
+          await this.pullFromServer(file, drawingId);
+        } else {
+          new Notice('Collab session saved. Use "Pull from ExcaliShare" to sync changes to your vault.');
+        }
+      } else {
+        new Notice('Collab session ended. Changes discarded.');
+      }
+    } catch (error) {
+      console.error('ExcaliShare: Failed to stop collab session', error);
+      new Notice(`Failed to stop collab: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  private cleanupCollabState() {
+    this.activeCollabSessionId = null;
+    this.activeCollabDrawingId = null;
+
+    if (this.collabStatusBarItem) {
+      this.collabStatusBarItem.setText('');
+      this.collabStatusBarItem.hide();
+    }
+
+    if (this.collabHealthInterval) {
+      clearInterval(this.collabHealthInterval);
+      this.collabHealthInterval = null;
+    }
+  }
+
+  async pullFromServer(file: TFile, drawingId: string) {
+    new Notice('Pulling drawing from server...');
+
+    try {
+      const response = await fetch(`${this.settings.baseUrl}/api/view/${drawingId}`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch drawing: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      // Use Excalidraw plugin API to update the file
+      const excalidrawPlugin = this.getExcalidrawPlugin();
+      if (excalidrawPlugin?.ea) {
+        // Try to update via the Excalidraw API if the file is currently open
+        try {
+          const excalidrawAPI = excalidrawPlugin.ea.getExcalidrawAPI();
+          if (excalidrawAPI && typeof excalidrawAPI.updateScene === 'function') {
+            excalidrawAPI.updateScene({
+              elements: data.elements || [],
+              appState: data.appState || {},
+            });
+            new Notice('Drawing synced back to vault!');
+            return;
+          }
+        } catch {
+          // Fall through to manual file update
+        }
+      }
+
+      // Fallback: Read the file and update the JSON content manually
+      // This works for .excalidraw.md files
+      const content = await this.app.vault.read(file);
+
+      // Find the JSON block in the markdown file
+      const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/);
+      if (jsonMatch) {
+        const updatedJson = JSON.stringify({
+          type: data.type || 'excalidraw',
+          version: data.version || 2,
+          elements: data.elements || [],
+          appState: data.appState || {},
+        }, null, 2);
+
+        const newContent = content.replace(
+          /```json\n[\s\S]*?\n```/,
+          '```json\n' + updatedJson + '\n```'
+        );
+
+        await this.app.vault.modify(file, newContent);
+        new Notice('Drawing synced back to vault!');
+      } else {
+        new Notice('Could not update file format. Please manually sync.');
+      }
+    } catch (error) {
+      console.error('ExcaliShare: Pull failed', error);
+      new Notice(`Failed to pull: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
 }
+
+// Modal for stop collab confirmation
+class CollabStopModal extends Modal {
+  private resolve: (value: boolean | null) => void;
+
+  constructor(app: App, resolve: (value: boolean | null) => void) {
+    super(app);
+    this.resolve = resolve;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl('h2', { text: 'Stop Live Collab Session' });
+    contentEl.createEl('p', { text: 'Do you want to save the changes made during the collaboration session?' });
+
+    const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.gap = '8px';
+    buttonContainer.style.justifyContent = 'flex-end';
+    buttonContainer.style.marginTop = '16px';
+
+    const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
+    cancelBtn.addEventListener('click', () => {
+      this.resolve(null);
+      this.close();
+    });
+
+    const discardBtn = buttonContainer.createEl('button', { text: 'Discard Changes' });
+    discardBtn.style.backgroundColor = '#f44336';
+    discardBtn.style.color = '#fff';
+    discardBtn.addEventListener('click', () => {
+      this.resolve(false);
+      this.close();
+    });
+
+    const saveBtn = buttonContainer.createEl('button', { text: 'Save Changes', cls: 'mod-cta' });
+    saveBtn.addEventListener('click', () => {
+      this.resolve(true);
+      this.close();
+    });
+  }
+
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
 
 class ExcaliShareSettingTab extends PluginSettingTab {
   pluginRef: ExcaliSharePlugin;
@@ -649,6 +1030,32 @@ class ExcaliShareSettingTab extends PluginSettingTab {
           .setDynamicTooltip()
           .onChange(value => {
             this.pluginRef.settings.pdfScale = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    containerEl.createEl('h3', { text: 'Live Collaboration' });
+
+    new Setting(containerEl)
+      .setName('Session Timeout')
+      .setDesc('How long a collab session stays alive (in hours). Default: 2 hours.')
+      .addSlider(slider => {
+        slider.setValue(this.pluginRef.settings.collabTimeoutSecs / 3600)
+          .setLimits(0.5, 12, 0.5)
+          .setDynamicTooltip()
+          .onChange(value => {
+            this.pluginRef.settings.collabTimeoutSecs = value * 3600;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Auto-open Browser')
+      .setDesc('Automatically open the web viewer when starting a collab session.')
+      .addToggle(toggle => {
+        toggle.setValue(this.pluginRef.settings.collabAutoOpenBrowser)
+          .onChange(value => {
+            this.pluginRef.settings.collabAutoOpenBrowser = value;
             this.pluginRef.saveSettings();
           });
       });
