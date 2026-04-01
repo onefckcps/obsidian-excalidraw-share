@@ -26,11 +26,12 @@ export const styles = {
   /** Outer container — absolutely positioned within the Excalidraw view */
   container: {
     position: 'absolute',
-    zIndex: '50',
+    zIndex: '100',
     fontFamily: 'var(--font-interface, var(--default-font))',
     fontSize: '13px',
     userSelect: 'none',
     transition: 'all 0.2s ease',
+    pointerEvents: 'auto',
   } as Partial<CSSStyleDeclaration>,
 
   /** Collapsed pill button */

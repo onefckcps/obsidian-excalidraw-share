@@ -1,4 +1,4 @@
-import { Plugin, TFile, arrayBufferToBase64, Menu, Notice, App, Modal, loadPdfJs, WorkspaceLeaf } from 'obsidian';
+import { Plugin, TFile, arrayBufferToBase64, Menu, Notice, App, Modal, loadPdfJs, WorkspaceLeaf, requestUrl } from 'obsidian';
 import { ExcaliShareSettingTab, DEFAULT_SETTINGS } from './settings';
 import type { ExcaliShareSettings } from './settings';
 import { ExcaliShareToolbar } from './toolbar';
@@ -386,10 +386,14 @@ export default class ExcaliSharePlugin extends Plugin {
     );
 
     // Initial toolbar injection for the current view
+    // Use longer delay on mobile where Excalidraw may take longer to initialize
     setTimeout(() => {
       const leaf = this.app.workspace.activeLeaf;
-      if (leaf) this.handleLeafChange(leaf);
-    }, 500);
+      if (leaf) {
+        console.log('ExcaliShare: Initial leaf check, viewType:', leaf.view.getViewType());
+        this.handleLeafChange(leaf);
+      }
+    }, 1000);
   }
 
   onunload() {
@@ -424,10 +428,15 @@ export default class ExcaliSharePlugin extends Plugin {
     const viewType = view.getViewType();
     const leafId = (leaf as any).id || 'default';
 
+    console.log('ExcaliShare: handleLeafChange viewType:', viewType, 'leafId:', leafId);
+
     // Check if this is an Excalidraw view
     if (viewType === 'excalidraw') {
       const file = this.app.workspace.getActiveFile();
-      if (!file) return;
+      if (!file) {
+        console.log('ExcaliShare: No active file for Excalidraw view');
+        return;
+      }
 
       let toolbar = this.toolbarInstances.get(leafId);
       if (!toolbar) {
@@ -436,18 +445,8 @@ export default class ExcaliSharePlugin extends Plugin {
       }
 
       // Inject into the view's container
-      const containerEl = view.containerEl;
-      // Try to find the Excalidraw canvas container for better positioning
-      const excalidrawContainer = containerEl.querySelector('.excalidraw-wrapper')
-        || containerEl.querySelector('.excalidraw')
-        || containerEl;
-
-      if (!toolbar.isInjected()) {
-        toolbar.inject(excalidrawContainer as HTMLElement);
-      }
-
-      // Update toolbar state
-      this.updateToolbarState(toolbar, file);
+      // Use a retry mechanism for mobile where DOM may not be ready yet
+      this.injectToolbarWithRetry(toolbar, view.containerEl, file, 0);
     } else {
       // Not an Excalidraw view — remove toolbar for this leaf
       const toolbar = this.toolbarInstances.get(leafId);
@@ -455,6 +454,50 @@ export default class ExcaliSharePlugin extends Plugin {
         toolbar.remove();
         this.toolbarInstances.delete(leafId);
       }
+    }
+  }
+
+  /**
+   * Try to inject the toolbar into the Excalidraw container.
+   * On mobile/tablet, the DOM may not be ready immediately, so retry a few times.
+   */
+  private injectToolbarWithRetry(toolbar: ExcaliShareToolbar, containerEl: HTMLElement, file: TFile, attempt: number): void {
+    // Try to find the best container for the toolbar
+    // Search broadly for Excalidraw-related containers
+    const excalidrawContainer = containerEl.querySelector('.excalidraw-wrapper')
+      || containerEl.querySelector('.excalidraw')
+      || containerEl.querySelector('.view-content')
+      || containerEl;
+
+    console.log('ExcaliShare: Injecting toolbar attempt', attempt,
+      'container:', excalidrawContainer.className || excalidrawContainer.tagName,
+      'isFallback:', excalidrawContainer === containerEl);
+
+    if (!toolbar.isInjected()) {
+      toolbar.inject(excalidrawContainer as HTMLElement);
+    }
+
+    // Update toolbar state
+    this.updateToolbarState(toolbar, file);
+
+    // On mobile, the Excalidraw DOM might load asynchronously.
+    // If we injected into the fallback containerEl, retry to find a better container.
+    if (attempt < 8 && excalidrawContainer === containerEl) {
+      setTimeout(() => {
+        if (!toolbar.isInjected()) return; // Already removed
+        const betterContainer = containerEl.querySelector('.excalidraw-wrapper')
+          || containerEl.querySelector('.excalidraw')
+          || containerEl.querySelector('.view-content');
+        if (betterContainer && betterContainer !== containerEl) {
+          console.log('ExcaliShare: Found better container on retry', attempt + 1, betterContainer.className);
+          toolbar.remove();
+          toolbar.inject(betterContainer as HTMLElement);
+          this.updateToolbarState(toolbar, file);
+        } else {
+          // Keep retrying
+          this.injectToolbarWithRetry(toolbar, containerEl, file, attempt + 1);
+        }
+      }, 500 * (attempt + 1));
     }
   }
 
@@ -833,7 +876,8 @@ export default class ExcaliSharePlugin extends Plugin {
         bodyData.id = existingId;
       }
 
-      const response = await fetch(`${this.settings.baseUrl}/api/upload`, {
+      const response = await requestUrl({
+        url: `${this.settings.baseUrl}/api/upload`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -842,11 +886,11 @@ export default class ExcaliSharePlugin extends Plugin {
         body: JSON.stringify(bodyData),
       });
 
-      if (!response.ok) {
+      if (response.status >= 400) {
         throw new Error(`Upload failed: ${response.status}`);
       }
 
-      const result = await response.json();
+      const result = response.json;
 
       // @ts-ignore
       await this.app.fileManager.processFrontMatter(file, (frontmatter: any) => {
@@ -878,14 +922,16 @@ export default class ExcaliSharePlugin extends Plugin {
     }
 
     try {
-      const deleteResponse = await fetch(`${this.settings.baseUrl}/api/drawings/${idToDelete}`, {
+      const deleteResponse = await requestUrl({
+        url: `${this.settings.baseUrl}/api/drawings/${idToDelete}`,
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${this.settings.apiKey}`,
         },
+        throw: false,
       });
 
-      if (!deleteResponse.ok && deleteResponse.status !== 404) {
+      if (deleteResponse.status >= 400 && deleteResponse.status !== 404) {
         throw new Error('Delete failed');
       }
 
@@ -923,7 +969,8 @@ export default class ExcaliSharePlugin extends Plugin {
     new Notice('Starting live collab session...');
 
     try {
-      const response = await fetch(`${this.settings.baseUrl}/api/collab/start`, {
+      const response = await requestUrl({
+        url: `${this.settings.baseUrl}/api/collab/start`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -933,14 +980,16 @@ export default class ExcaliSharePlugin extends Plugin {
           drawing_id: drawingId,
           timeout_secs: this.settings.collabTimeoutSecs,
         }),
+        throw: false,
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
+      if (response.status >= 400) {
+        let errorData: any = {};
+        try { errorData = response.json; } catch { /* ignore */ }
         throw new Error(errorData.error || `Failed to start session: ${response.status}`);
       }
 
-      const result = await response.json();
+      const result = response.json;
       this.activeCollabSessionId = result.session_id;
       this.activeCollabDrawingId = drawingId;
 
@@ -951,8 +1000,12 @@ export default class ExcaliSharePlugin extends Plugin {
 
       this.collabHealthInterval = setInterval(async () => {
         try {
-          const statusRes = await fetch(`${this.settings.baseUrl}/api/collab/status/${drawingId}`);
-          const status = await statusRes.json();
+          const statusRes = await requestUrl({
+            url: `${this.settings.baseUrl}/api/collab/status/${drawingId}`,
+            method: 'GET',
+            throw: false,
+          });
+          const status = statusRes.json;
           if (!status.active) {
             this.cleanupCollabState();
             new Notice('Collab session ended.');
@@ -998,7 +1051,8 @@ export default class ExcaliSharePlugin extends Plugin {
     new Notice(save ? 'Saving and stopping collab session...' : 'Discarding and stopping collab session...');
 
     try {
-      const response = await fetch(`${this.settings.baseUrl}/api/collab/stop`, {
+      const response = await requestUrl({
+        url: `${this.settings.baseUrl}/api/collab/stop`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1010,7 +1064,7 @@ export default class ExcaliSharePlugin extends Plugin {
         }),
       });
 
-      if (!response.ok) {
+      if (response.status >= 400) {
         throw new Error(`Failed to stop session: ${response.status}`);
       }
 
@@ -1052,12 +1106,15 @@ export default class ExcaliSharePlugin extends Plugin {
     new Notice('Pulling drawing from server...');
 
     try {
-      const response = await fetch(`${this.settings.baseUrl}/api/view/${drawingId}`);
-      if (!response.ok) {
+      const response = await requestUrl({
+        url: `${this.settings.baseUrl}/api/view/${drawingId}`,
+        method: 'GET',
+      });
+      if (response.status >= 400) {
         throw new Error(`Failed to fetch drawing: ${response.status}`);
       }
 
-      const data = await response.json();
+      const data = response.json;
 
       const excalidrawPlugin = this.getExcalidrawPlugin();
       if (excalidrawPlugin?.ea) {
