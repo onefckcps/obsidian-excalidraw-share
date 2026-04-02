@@ -310,7 +310,7 @@ export default class ExcaliSharePlugin extends Plugin {
           const publishedId = this.getPublishedId(file);
           if (publishedId) {
             if (!checking) {
-              const url = `${this.settings.baseUrl}/d/${publishedId}`;
+              const url = this.buildShareUrl(publishedId, file);
               navigator.clipboard.writeText(url);
               new Notice('Share link copied to clipboard!');
             }
@@ -441,7 +441,7 @@ export default class ExcaliSharePlugin extends Plugin {
             menu.addItem((item) => {
               item.setTitle('Copy Share Link').setIcon('link')
                 .onClick(() => {
-                  const url = `${this.settings.baseUrl}/d/${publishedId}`;
+                  const url = this.buildShareUrl(publishedId, file);
                   navigator.clipboard.writeText(url);
                   new Notice('Share link copied to clipboard!');
                 });
@@ -860,7 +860,7 @@ export default class ExcaliSharePlugin extends Plugin {
         if (currentFile) {
           const publishedId = this.getPublishedId(currentFile);
           if (publishedId) {
-            const url = `${this.settings.baseUrl}/d/${publishedId}`;
+            const url = this.buildShareUrl(publishedId, currentFile);
             navigator.clipboard.writeText(url);
           }
         }
@@ -1086,6 +1086,21 @@ export default class ExcaliSharePlugin extends Plugin {
   private getLastSyncVersion(file: TFile): number {
     const cache = this.app.metadataCache.getFileCache(file);
     return cache?.frontmatter?.['excalishare-last-sync-version'] ?? 0;
+  }
+
+  /**
+   * Build the share URL for a published drawing.
+   * If the drawing has a stored password key (excalishare-password-key in frontmatter),
+   * appends it as a URL fragment (#key=...) so the recipient can view without entering a password.
+   */
+  private buildShareUrl(publishedId: string, file: TFile): string {
+    const url = `${this.settings.baseUrl}/d/${publishedId}`;
+    const cache = this.app.metadataCache.getFileCache(file);
+    const passwordKey = cache?.frontmatter?.['excalishare-password-key'];
+    if (passwordKey) {
+      return url + `#key=${encodeURIComponent(passwordKey)}`;
+    }
+    return url;
   }
 
   /** Element-level merge: server elements + local elements, highest version wins.
@@ -1339,6 +1354,15 @@ export default class ExcaliSharePlugin extends Plugin {
         frontmatter['excalishare-id'] = result.id;
         if (result.password_protected) {
           frontmatter['excalishare-password'] = true;
+          // Store the actual password value so "Copy Share Link" can include it inline.
+          // This is intentional: the admin set the password and needs it in the share URL.
+          if (drawingPassword) {
+            frontmatter['excalishare-password-key'] = drawingPassword;
+          }
+        } else {
+          // Clear stale password keys if re-publishing/syncing without a password
+          delete frontmatter['excalishare-password'];
+          delete frontmatter['excalishare-password-key'];
         }
       });
 
@@ -1390,7 +1414,23 @@ export default class ExcaliSharePlugin extends Plugin {
       // @ts-ignore
       await this.app.fileManager.processFrontMatter(file, (frontmatter: any) => {
         delete frontmatter['excalishare-id'];
+        delete frontmatter['excalishare-persistent-collab'];
+        delete frontmatter['excalishare-last-sync-version'];
+        delete frontmatter['excalishare-password'];
+        delete frontmatter['excalishare-password-key'];
       });
+
+      // Clear in-memory tracking for this file/drawing
+      this._persistentSyncedFiles.delete(file.path);
+      this._reconcileCache.delete(idToDelete);
+
+      // Disconnect native collab WebSocket if currently joined to this drawing's session.
+      // Without this, collabManager.isJoined stays true and the auto-join check in
+      // autoJoinPersistentCollab would be skipped if the user re-publishes and re-enables
+      // persistent collab on the same drawing (or a new drawing after unpublishing).
+      if (this.collabManager?.isJoined && this.activeCollabDrawingId === idToDelete) {
+        this.cleanupCollabState();
+      }
 
       new Notice('Drawing unpublished successfully');
       return true;
@@ -1808,9 +1848,13 @@ export default class ExcaliSharePlugin extends Plugin {
       new Notice('Persistent collaboration enabled! Anyone with the link can now collaborate.');
       this.refreshActiveToolbar();
 
-      // Immediately sync and auto-join the persistent session
-      // (without this, the user would need to close and reopen the tab)
-      this.syncPersistentCollabOnOpen(file, drawingId);
+      // Immediately auto-join the persistent session.
+      // We call autoJoinPersistentCollab directly (not syncPersistentCollabOnOpen) so that
+      // the join is NOT gated by the persistentCollabAutoSync setting — the user explicitly
+      // enabled persistent collab, so we always want to join immediately.
+      if (this.settings.collabJoinFromObsidian) {
+        this.autoJoinPersistentCollab(drawingId);
+      }
     } catch (error) {
       console.error('ExcaliShare: Failed to enable persistent collab', error);
       new Notice(`Failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -1853,6 +1897,20 @@ export default class ExcaliSharePlugin extends Plugin {
 
       // Remove from synced files tracking
       this._persistentSyncedFiles.delete(file.path);
+
+      // Disconnect native collab WebSocket if currently joined to this drawing's session.
+      // Without this, collabManager.isJoined stays true and the auto-join check in
+      // syncPersistentCollabOnOpen would be skipped if the user re-enables persistent collab.
+      if (this.collabManager?.isJoined && this.activeCollabDrawingId === drawingId) {
+        this.collabManager.destroy();
+        this.collabManager = null;
+        this.activeCollabSessionId = null;
+        this.activeCollabDrawingId = null;
+        if (this.collabStatusBarItem) {
+          this.collabStatusBarItem.setText('');
+          this.collabStatusBarItem.hide();
+        }
+      }
 
       // Pull final state from server
       await this.pullFromServer(file, drawingId);
@@ -2093,18 +2151,51 @@ export default class ExcaliSharePlugin extends Plugin {
 
     // ── Auto-join: always attempt if not already joined ──
     // This runs even on subsequent tab switches (not guarded by _persistentSyncedFiles)
-    if (this.settings.collabJoinFromObsidian && !this.collabManager?.isJoined) {
-      try {
-        const statusRes = await requestUrl({
-          url: `${this.settings.baseUrl}/api/collab/status/${drawingId}`,
-          method: 'GET',
+    if (this.settings.collabJoinFromObsidian) {
+      await this.autoJoinPersistentCollab(drawingId);
+    }
+  }
+
+  /**
+   * Attempt to auto-join a persistent collab session for the given drawing.
+   * Activates the session on demand if it doesn't exist yet.
+   * NOT gated by persistentCollabAutoSync — called both from syncPersistentCollabOnOpen
+   * and directly from enablePersistentCollab (where the user explicitly requested it).
+   */
+  private async autoJoinPersistentCollab(drawingId: string): Promise<void> {
+    if (this.collabManager?.isJoined) return; // Already joined
+
+    try {
+      const statusRes = await requestUrl({
+        url: `${this.settings.baseUrl}/api/collab/status/${drawingId}`,
+        method: 'GET',
+        throw: false,
+      });
+      const status = statusRes.json;
+
+      if (status.active && status.session_id) {
+        // Set active session tracking so the toolbar shows collaborator list + follow buttons
+        this.activeCollabSessionId = status.session_id;
+        this.activeCollabDrawingId = drawingId;
+
+        if (this.collabStatusBarItem) {
+          this.collabStatusBarItem.setText('🔴 Live Collab');
+          this.collabStatusBarItem.show();
+        }
+
+        // Join the persistent session (pass API key to bypass session password)
+        await this.joinCollabFromObsidian(drawingId, status.session_id, null);
+        this.refreshActiveToolbar();
+      } else if (status.persistent && !status.active) {
+        // Persistent collab but no active session — need to activate it first
+        const activateRes = await requestUrl({
+          url: `${this.settings.baseUrl}/api/persistent-collab/activate/${drawingId}`,
+          method: 'POST',
           throw: false,
         });
-        const status = statusRes.json;
-
-        if (status.active && status.session_id) {
-          // Set active session tracking so the toolbar shows collaborator list + follow buttons
-          this.activeCollabSessionId = status.session_id;
+        if (activateRes.status < 400 && activateRes.json?.session_id) {
+          const sessionId = activateRes.json.session_id;
+          this.activeCollabSessionId = sessionId;
           this.activeCollabDrawingId = drawingId;
 
           if (this.collabStatusBarItem) {
@@ -2112,34 +2203,13 @@ export default class ExcaliSharePlugin extends Plugin {
             this.collabStatusBarItem.show();
           }
 
-          // Join the persistent session (pass API key to bypass session password)
-          await this.joinCollabFromObsidian(drawingId, status.session_id, null);
+          // Join the activated session (pass API key to bypass session password)
+          await this.joinCollabFromObsidian(drawingId, sessionId, null);
           this.refreshActiveToolbar();
-        } else if (status.persistent && !status.active) {
-          // Persistent collab but no active session — need to activate it first
-          const activateRes = await requestUrl({
-            url: `${this.settings.baseUrl}/api/persistent-collab/activate/${drawingId}`,
-            method: 'POST',
-            throw: false,
-          });
-          if (activateRes.status < 400 && activateRes.json?.session_id) {
-            const sessionId = activateRes.json.session_id;
-            this.activeCollabSessionId = sessionId;
-            this.activeCollabDrawingId = drawingId;
-
-            if (this.collabStatusBarItem) {
-              this.collabStatusBarItem.setText('🔴 Live Collab');
-              this.collabStatusBarItem.show();
-            }
-
-            // Join the activated session (pass API key to bypass session password)
-            await this.joinCollabFromObsidian(drawingId, sessionId, null);
-            this.refreshActiveToolbar();
-          }
         }
-      } catch {
-        // Ignore — session may not be active
       }
+    } catch {
+      // Ignore — session may not be active
     }
   }
 

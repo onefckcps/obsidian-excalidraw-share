@@ -813,6 +813,15 @@ Fixes applied:
 - [x] Fixed plugin viewport broadcast in `collabManager.ts` to always run (not skip when DOM tracking active)
 - [x] Track last known cursor position in both frontend and plugin for viewport broadcast reuse
 
+**Persistent Collab Auto-Join After Unpublish/Republish Bug Fix (April 2026)**
+Fixed a bug where enabling persistent collab after unpublishing and republishing a drawing would not auto-join the new session. Root cause:
+
+- `unpublishDrawing()` cleared frontmatter and in-memory tracking but did **not** destroy the active `collabManager` WebSocket connection from the previous persistent collab session.
+- When the user republished and enabled persistent collab on the new drawing, `autoJoinPersistentCollab()` checked `this.collabManager?.isJoined` — which was still `true` from the old session — and returned early without joining.
+
+Fix applied:
+- [x] Added `collabManager` cleanup in `unpublishDrawing()` in `main.ts`: if the active `collabManager` is joined to the drawing being unpublished, `cleanupCollabState()` is called to destroy the WebSocket connection and clear all session tracking state.
+
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)
 - Persistent collab sessions are **auto-recreated from disk** on first visitor after server restart
