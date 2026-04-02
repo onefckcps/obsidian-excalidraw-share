@@ -11,13 +11,14 @@ pub struct DrawingMeta {
     pub created_at: DateTime<Utc>,
     pub size_bytes: u64,
     pub source_path: Option<String>,
+    pub password_protected: bool,
 }
 
 /// Trait abstracting drawing storage – implement this for different backends
 /// (filesystem, S3, SQLite, etc.).
 #[allow(async_fn_in_trait)]
 pub trait DrawingStorage: Send + Sync + 'static {
-    async fn save(&self, id: &str, data: &serde_json::Value, source_path: Option<&str>) -> Result<DrawingMeta, AppError>;
+    async fn save(&self, id: &str, data: &serde_json::Value, source_path: Option<&str>, password_hash: Option<&str>) -> Result<DrawingMeta, AppError>;
     async fn load(&self, id: &str) -> Result<serde_json::Value, AppError>;
     async fn delete(&self, id: &str) -> Result<(), AppError>;
     async fn list(&self) -> Result<Vec<DrawingMeta>, AppError>;
@@ -48,13 +49,19 @@ impl FileSystemStorage {
 }
 
 impl DrawingStorage for FileSystemStorage {
-    async fn save(&self, id: &str, data: &serde_json::Value, source_path: Option<&str>) -> Result<DrawingMeta, AppError> {
+    async fn save(&self, id: &str, data: &serde_json::Value, source_path: Option<&str>, password_hash: Option<&str>) -> Result<DrawingMeta, AppError> {
         let path = self.drawing_path(id);
         
         let mut data_with_meta = data.clone();
-        if let Some(sp) = source_path {
-            if let Some(obj) = data_with_meta.as_object_mut() {
+        if let Some(obj) = data_with_meta.as_object_mut() {
+            if let Some(sp) = source_path {
                 obj.insert("_source_path".to_string(), serde_json::Value::String(sp.to_string()));
+            }
+            // Store or remove password hash
+            if let Some(ph) = password_hash {
+                obj.insert("_password_hash".to_string(), serde_json::Value::String(ph.to_string()));
+            } else {
+                obj.remove("_password_hash");
             }
         }
         
@@ -68,6 +75,7 @@ impl DrawingStorage for FileSystemStorage {
             created_at: Utc::now(),
             size_bytes,
             source_path: source_path.map(String::from),
+            password_protected: password_hash.is_some(),
         })
     }
 
@@ -108,20 +116,25 @@ impl DrawingStorage for FileSystemStorage {
                     .created()
                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
-                let source_path = if path.exists() {
+                let (source_path, password_protected) = if path.exists() {
                     match fs::read_to_string(&path).await {
                         Ok(content) => {
                             match serde_json::from_str::<serde_json::Value>(&content) {
-                                Ok(json) => json.get("_source_path")
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from),
-                                Err(_) => None,
+                                Ok(json) => (
+                                    json.get("_source_path")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from),
+                                    json.get("_password_hash")
+                                        .and_then(|v| v.as_str())
+                                        .is_some(),
+                                ),
+                                Err(_) => (None, false),
                             }
                         }
-                        Err(_) => None,
+                        Err(_) => (None, false),
                     }
                 } else {
-                    None
+                    (None, false)
                 };
 
                 drawings.push(DrawingMeta {
@@ -129,6 +142,7 @@ impl DrawingStorage for FileSystemStorage {
                     created_at: DateTime::from(created_at),
                     size_bytes: metadata.len(),
                     source_path,
+                    password_protected,
                 });
             }
         }

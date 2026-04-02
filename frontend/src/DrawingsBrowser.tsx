@@ -33,6 +33,7 @@ interface PublicDrawing {
   id: string
   created_at: string
   source_path: string | null
+  password_protected?: boolean
 }
 
 interface TreeNode {
@@ -979,6 +980,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
                               ...(isMobile ? { height: '80px' } : {})
                             }}>
                               <span style={styles.cardIcon}>🎨</span>
+                              {drawing.password_protected && <span style={{ position: 'absolute', top: '4px', right: '4px', fontSize: '14px' }} title="Password protected">🔒</span>}
                             </div>
                             <div style={styles.cardContent}>
                               <h3 style={{
@@ -1421,6 +1423,7 @@ const getStyles = (theme: string): Record<string, React.CSSProperties> => {
       alignItems: 'center',
       justifyContent: 'center',
       borderBottom: `1px solid ${colors.border}`,
+      position: 'relative' as const,
     },
     cardIcon: {
       fontSize: '32px',

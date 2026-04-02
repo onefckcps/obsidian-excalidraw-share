@@ -1,6 +1,7 @@
 mod auth;
 mod collab;
 mod error;
+mod password;
 mod routes;
 mod storage;
 mod ws;
@@ -125,6 +126,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/collab/status/{drawing_id}",
             get(routes::collab_status),
+        )
+        .route(
+            "/api/collab/verify-password",
+            post(routes::verify_collab_password),
         )
         .layer(public_rate_limit);
 

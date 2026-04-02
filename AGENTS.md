@@ -20,6 +20,7 @@ Allow users to publish Excalidraw drawings from Obsidian to a self-hosted server
 - **View** drawings in a web-based Excalidraw viewer (with view, edit, present modes)
 - **Browse** all shared drawings (tree view, search, overlay mode)
 - **Live Collaboration** — real-time multi-user editing via WebSocket
+- **Password Protection** — optional Argon2id-hashed passwords for drawings and collab sessions
 - **PDF Embedding** — convert PDF pages to PNG for embedding in drawings
 - **Admin Panel** — manage drawings and collab sessions
 - **PWA Support** — installable web app with offline caching
@@ -128,17 +129,18 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| POST | `/api/upload` | Bearer | Upload/update drawing (supports `id` field for updates) |
-| GET | `/api/view/{id}` | Public | Get drawing by ID |
+| POST | `/api/upload` | Bearer | Upload/update drawing (supports `id`, `password` fields) |
+| GET | `/api/view/{id}?key=...` | Public | Get drawing by ID (requires `key` param if password-protected) |
 | DELETE | `/api/drawings/{id}` | Bearer | Delete drawing |
-| GET | `/api/drawings` | Bearer | List all drawings (includes `size_bytes`) |
-| GET | `/api/public/drawings` | Public | List drawings (id, created_at, source_path only) |
+| GET | `/api/drawings` | Bearer | List all drawings (includes `size_bytes`, `password_protected`) |
+| GET | `/api/public/drawings` | Public | List drawings (id, created_at, source_path, password_protected) |
 | GET | `/api/health` | Public | Health check |
-| POST | `/api/collab/start` | Bearer | Start collab session for a drawing |
+| POST | `/api/collab/start` | Bearer | Start collab session (supports `password` field) |
 | POST | `/api/collab/stop` | Bearer | End collab session (save or discard) |
-| GET | `/api/collab/status/{drawing_id}` | Public | Check collab status (returns session_id if active) |
-| GET | `/api/collab/sessions` | Bearer | List all active sessions (admin) |
-| WS | `/ws/collab/{session_id}?name=...` | Public | WebSocket for real-time collaboration |
+| GET | `/api/collab/status/{drawing_id}` | Public | Check collab status (returns session_id, password_required) |
+| POST | `/api/collab/verify-password` | Public | Verify collab session password before WS connection |
+| GET | `/api/collab/sessions` | Bearer | List all active sessions (admin, includes password_required) |
+| WS | `/ws/collab/{session_id}?name=...&password=...` | Public | WebSocket for real-time collaboration (password verified before upgrade) |
 
 ### Upload Request Format
 ```json
@@ -202,17 +204,18 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 
 **Module Structure**
 - `main.rs` — Entry point, CLI config (clap), route registration, CORS, rate limiting, background cleanup task
-- `routes.rs` — All HTTP handlers (upload, get, delete, list, collab start/stop/status/sessions)
+- `routes.rs` — All HTTP handlers (upload, get, delete, list, collab start/stop/status/sessions, password verification)
 - `storage.rs` — `DrawingStorage` trait + `FileSystemStorage` implementation
 - `auth.rs` — Bearer token middleware with constant-time comparison (`subtle` crate)
-- `error.rs` — `AppError` enum with `IntoResponse` impl
+- `error.rs` — `AppError` enum with `IntoResponse` impl (includes PasswordRequired, InvalidPassword)
+- `password.rs` — Argon2id password hashing and verification utilities
 - `collab.rs` — `SessionManager`, `CollabSession`, message types, version-based element merging
-- `ws.rs` — WebSocket upgrade handler, bidirectional message routing
+- `ws.rs` — WebSocket upgrade handler, bidirectional message routing, password verification before upgrade
 
 **Route Organization**
-- **Public routes** (no auth): `/api/health`, `/api/public/drawings`, `/api/view/{id}`, `/api/collab/status/{drawing_id}`
+- **Public routes** (no auth): `/api/health`, `/api/public/drawings`, `/api/view/{id}`, `/api/collab/status/{drawing_id}`, `/api/collab/verify-password`
 - **Protected routes** (Bearer token): `/api/upload`, `/api/drawings/{id}` (DELETE), `/api/drawings` (GET), `/api/collab/start`, `/api/collab/stop`, `/api/collab/sessions`
-- **WebSocket**: `/ws/collab/{session_id}` (no auth, but session must exist — security via unguessable UUID)
+- **WebSocket**: `/ws/collab/{session_id}` (no auth, but session must exist — security via unguessable UUID + optional password)
 
 **Rate Limiting**
 - Public: 120 req/sec per IP (burst)
@@ -239,6 +242,7 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 - `AdminPage.tsx` — Admin panel with drawing management and collab session management
 - `CollabStatus.tsx` — Pre-join banner and session-ended notification overlay
 - `CollabPopover.tsx` — In-session popover showing participants, follow mode controls
+- `PasswordDialog.tsx` — Reusable password input dialog for protected drawings and collab sessions
 - `AboutModal.tsx` — About dialog
 
 **Hooks**
@@ -352,6 +356,8 @@ interface ExcaliShareSettings {
 | `anyhow` | 1 | Application-level errors |
 | `futures` | 0.3 | Stream/Sink for WebSocket |
 | `subtle` | 2 | Constant-time comparison for auth |
+| `argon2` | 0.5 | Argon2id password hashing |
+| `rand` | 0.8 | Salt generation for password hashing |
 
 ### Frontend Dependencies (package.json)
 
@@ -476,6 +482,10 @@ pub enum AppError {
     Json(#[from] serde_json::Error),
     #[error("Internal error: {0}")]
     Internal(String),
+    #[error("Password required")]
+    PasswordRequired,
+    #[error("Invalid password")]
+    InvalidPassword,
 }
 ```
 
@@ -489,6 +499,7 @@ pub enum AppError {
 - `FileSystemStorage` implementation: each drawing is `<id>.json` in `DATA_DIR`
 - Path traversal protection via ID sanitization (alphanumeric, `-`, `_` only)
 - Source path stored as `_source_path` field inside the JSON file
+- Password hash stored as `_password_hash` field inside the JSON file (Argon2id, never exposed to clients)
 
 **Logging & Naming**
 - Use `tracing::info!` for operations, `tracing::error!` for errors

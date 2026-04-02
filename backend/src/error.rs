@@ -33,11 +33,23 @@ pub enum AppError {
 
     #[error("Collab session is full")]
     SessionFull,
+
+    #[error("Password required")]
+    PasswordRequired,
+
+    #[error("Invalid password")]
+    InvalidPassword,
 }
 
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(Serialize)]
+struct PasswordErrorResponse {
+    error: String,
+    password_protected: bool,
 }
 
 impl axum::response::IntoResponse for AppError {
@@ -64,6 +76,13 @@ impl axum::response::IntoResponse for AppError {
             AppError::SessionNotFound => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::SessionAlreadyExists => (StatusCode::CONFLICT, self.to_string()),
             AppError::SessionFull => (StatusCode::FORBIDDEN, self.to_string()),
+            AppError::PasswordRequired | AppError::InvalidPassword => {
+                let body = PasswordErrorResponse {
+                    error: self.to_string(),
+                    password_protected: true,
+                };
+                return (StatusCode::FORBIDDEN, axum::Json(body)).into_response();
+            }
         };
 
         let body = axum::Json(ErrorResponse { error: message });

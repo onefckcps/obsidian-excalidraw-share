@@ -8,6 +8,7 @@ interface Drawing {
   created_at: string
   size_bytes: number
   source_path: string | null
+  password_protected?: boolean
 }
 
 function AdminPage() {
@@ -276,7 +277,7 @@ function AdminPage() {
                 <tr key={drawing.id} style={styles.tr}>
                   <td style={styles.td}>
                     <Link to={`/d/${drawing.id}`} style={styles.idLink}>
-                      {drawing.id}
+                      {drawing.password_protected && '🔒 '}{drawing.id}
                     </Link>
                   </td>
                   <td style={styles.td}>{getFileName(drawing.source_path)}</td>

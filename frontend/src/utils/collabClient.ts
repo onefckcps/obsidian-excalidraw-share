@@ -20,9 +20,12 @@ export class CollabClient {
   private lastSentVersions: Map<string, number> = new Map();
   private localSeq: number = 0;
 
-  constructor(sessionId: string, displayName: string) {
+  private password?: string;
+
+  constructor(sessionId: string, displayName: string, password?: string) {
     this.sessionId = sessionId;
     this.displayName = displayName;
+    this.password = password;
   }
 
   connect(): void {
@@ -34,7 +37,10 @@ export class CollabClient {
   private _connect(): void {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const url = `${protocol}//${host}/ws/collab/${this.sessionId}?name=${encodeURIComponent(this.displayName)}`;
+    let url = `${protocol}//${host}/ws/collab/${this.sessionId}?name=${encodeURIComponent(this.displayName)}`;
+    if (this.password) {
+      url += `&password=${encodeURIComponent(this.password)}`;
+    }
 
     try {
       this.ws = new WebSocket(url);

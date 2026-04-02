@@ -19,6 +19,8 @@ export interface ToolbarState {
   collabSessionId: string | null;
   collabDrawingId: string | null;
   hasApiKey: boolean;
+  /** Whether the drawing is password-protected */
+  passwordProtected?: boolean;
   /** Number of participants in the active collab session (including self) */
   collabParticipantCount?: number;
   /** Whether the host is natively connected to the collab session from Obsidian */
@@ -463,7 +465,7 @@ export class ExcaliShareToolbar {
   private applyStatusBadge(badge: HTMLElement): void {
     switch (this.state.status) {
       case 'published':
-        badge.textContent = 'Published';
+        badge.textContent = this.state.passwordProtected ? '🔒 Published' : 'Published';
         badge.style.backgroundColor = 'rgba(76, 175, 80, 0.15)';
         badge.style.color = '#4caf50';
         break;

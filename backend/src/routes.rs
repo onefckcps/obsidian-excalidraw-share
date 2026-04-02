@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::collab::{SessionInfo, SessionManager};
 use crate::error::AppError;
+use crate::password;
 use crate::storage::{DrawingMeta, DrawingStorage, FileSystemStorage};
 
 #[derive(Clone)]
@@ -26,6 +27,7 @@ pub struct AppState {
 pub struct UploadResponse {
     pub id: String,
     pub url: String,
+    pub password_protected: bool,
 }
 
 #[derive(Serialize)]
@@ -43,6 +45,7 @@ pub struct PublicDrawingMeta {
     pub id: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub source_path: Option<String>,
+    pub password_protected: bool,
 }
 
 #[derive(Deserialize)]
@@ -53,6 +56,9 @@ pub struct UploadRequest {
     pub source_path: Option<String>,
     #[serde(default)]
     pub id: Option<String>,
+    /// Optional password for the drawing. Empty string removes password.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 // ──────────────────────────────────────────────
@@ -64,6 +70,9 @@ pub struct StartCollabRequest {
     pub drawing_id: String,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Optional password for the collab session
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -95,6 +104,8 @@ pub struct CollabStatusResponse {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub participant_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password_required: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -157,28 +168,79 @@ pub async fn upload_drawing(
         }
     };
 
-    state.storage.save(&id, &body.data, body.source_path.as_deref()).await?;
+    // Handle password: hash if provided, preserve existing if not specified on update
+    let password_hash = match &body.password {
+        Some(pw) if pw.is_empty() => None, // Empty string = remove password
+        Some(pw) => {
+            let hash = password::hash_password(pw)
+                .map_err(|e| AppError::Internal(format!("Failed to hash password: {e}")))?;
+            Some(hash)
+        }
+        None if is_update => {
+            // Preserve existing password hash on update when no password field is sent
+            state.storage.load(&id).await.ok()
+                .and_then(|existing| existing.get("_password_hash")
+                    .and_then(|v| v.as_str())
+                    .map(String::from))
+        }
+        None => None,
+    };
+
+    state.storage.save(&id, &body.data, body.source_path.as_deref(), password_hash.as_deref()).await?;
 
     let url = format!("{}/d/{}", state.base_url.trim_end_matches('/'), id);
+    let password_protected = password_hash.is_some();
 
     if is_update {
-        tracing::info!(id = %id, source_path = ?body.source_path, "Drawing updated");
+        tracing::info!(id = %id, source_path = ?body.source_path, password_protected, "Drawing updated");
     } else {
-        tracing::info!(id = %id, source_path = ?body.source_path, "Drawing uploaded");
+        tracing::info!(id = %id, source_path = ?body.source_path, password_protected, "Drawing uploaded");
     }
 
     Ok((
         if is_update { StatusCode::OK } else { StatusCode::CREATED },
-        Json(UploadResponse { id, url }),
+        Json(UploadResponse { id, url, password_protected }),
     ))
+}
+
+#[derive(Deserialize)]
+pub struct ViewQuery {
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 pub async fn get_drawing(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<ViewQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let data = state.storage.load(&id).await?;
-    Ok(Json(data))
+
+    // Check if drawing is password-protected
+    let password_hash = data.get("_password_hash")
+        .and_then(|v| v.as_str());
+
+    if let Some(hash) = password_hash {
+        match &query.key {
+            None => return Err(AppError::PasswordRequired),
+            Some(key) => {
+                let valid = password::verify_password(key, hash)
+                    .map_err(|e| AppError::Internal(format!("Password verification error: {e}")))?;
+                if !valid {
+                    return Err(AppError::InvalidPassword);
+                }
+            }
+        }
+    }
+
+    // Strip internal metadata fields from the response
+    let mut response_data = data;
+    if let Some(obj) = response_data.as_object_mut() {
+        obj.remove("_password_hash");
+        obj.remove("_source_path");
+    }
+
+    Ok(Json(response_data))
 }
 
 pub async fn delete_drawing(
@@ -207,6 +269,7 @@ pub async fn list_drawings_public(
             id: d.id,
             created_at: d.created_at,
             source_path: d.source_path,
+            password_protected: d.password_protected,
         })
         .collect();
     Ok(Json(PublicListResponse { drawings: public_drawings }))
@@ -233,9 +296,19 @@ pub async fn start_collab(
     const MAX_TIMEOUT: u64 = 86400;
     let timeout = body.timeout_secs.clamp(MIN_TIMEOUT, MAX_TIMEOUT);
 
+    // Hash the collab password if provided
+    let collab_password_hash = match &body.password {
+        Some(pw) if !pw.is_empty() => {
+            let hash = password::hash_password(pw)
+                .map_err(|e| AppError::Internal(format!("Failed to hash password: {e}")))?;
+            Some(hash)
+        }
+        _ => None,
+    };
+
     let session_id = state
         .session_manager
-        .create_session(&body.drawing_id, &drawing_data, timeout)
+        .create_session(&body.drawing_id, &drawing_data, timeout, collab_password_hash)
         .await?;
 
     let base = state.base_url.trim_end_matches('/');
@@ -272,19 +345,23 @@ pub async fn stop_collab(
         .await?;
 
     if let Some((drawing_id, data)) = result {
-        // Preserve the existing source_path from the stored drawing
-        // (collab session data doesn't include _source_path)
-        let source_path = match state.storage.load(&drawing_id).await {
-            Ok(existing) => existing
-                .get("_source_path")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            Err(_) => None,
+        // Preserve the existing source_path and password_hash from the stored drawing
+        // (collab session data doesn't include _source_path or _password_hash)
+        let (source_path, password_hash) = match state.storage.load(&drawing_id).await {
+            Ok(existing) => (
+                existing.get("_source_path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                existing.get("_password_hash")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+            ),
+            Err(_) => (None, None),
         };
 
         state
             .storage
-            .save(&drawing_id, &data, source_path.as_deref())
+            .save(&drawing_id, &data, source_path.as_deref(), password_hash.as_deref())
             .await?;
 
         tracing::info!(
@@ -304,17 +381,52 @@ pub async fn collab_status(
     Path(drawing_id): Path<String>,
 ) -> Json<CollabStatusResponse> {
     match state.session_manager.get_session_status(&drawing_id).await {
-        Some((session_id, participant_count)) => Json(CollabStatusResponse {
+        Some((session_id, participant_count, password_required)) => Json(CollabStatusResponse {
             active: true,
             session_id: Some(session_id),
             participant_count: Some(participant_count),
+            password_required: Some(password_required),
         }),
         None => Json(CollabStatusResponse {
             active: false,
             session_id: None,
             participant_count: None,
+            password_required: None,
         }),
     }
+}
+
+#[derive(Deserialize)]
+pub struct VerifyCollabPasswordRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct VerifyCollabPasswordResponse {
+    pub valid: bool,
+}
+
+/// Verify a collab session password (public, used before WebSocket connection).
+pub async fn verify_collab_password(
+    State(state): State<AppState>,
+    Json(body): Json<VerifyCollabPasswordRequest>,
+) -> Result<Json<VerifyCollabPasswordResponse>, AppError> {
+    let valid = state
+        .session_manager
+        .verify_session_password(&body.session_id, body.password.as_deref())
+        .await?;
+
+    if !valid {
+        return Err(if body.password.is_some() {
+            AppError::InvalidPassword
+        } else {
+            AppError::PasswordRequired
+        });
+    }
+
+    Ok(Json(VerifyCollabPasswordResponse { valid: true }))
 }
 
 /// List all active collab sessions (auth required, for admin).

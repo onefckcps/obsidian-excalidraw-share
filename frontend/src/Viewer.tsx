@@ -8,6 +8,7 @@ import { useCollab } from './hooks/useCollab'
 import CollabStatus from './CollabStatus'
 import CollabPopover from './CollabPopover'
 import AboutModal from './AboutModal'
+import PasswordDialog from './PasswordDialog'
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => {
@@ -64,6 +65,8 @@ function Viewer() {
   const [drawingsList, setDrawingsList] = useState<{id: string, created_at: string, source_path: string | null}[]>([])
   const [loadingDrawings, setLoadingDrawings] = useState(false)
   const [showCollabPopover, setShowCollabPopover] = useState(false)
+  const [passwordRequired, setPasswordRequired] = useState(false)
+  const [passwordError, setPasswordError] = useState<string | null>(null)
 
   const isMobile = useMediaQuery('(max-width: 730px)')
 
@@ -92,8 +95,28 @@ function Viewer() {
     return () => document.removeEventListener('excalishare:show-about', handleShowAbout)
   }, [])
 
+  // Helper: fetch drawing with optional password key
+  const fetchDrawing = useCallback(async (drawingId: string, key?: string, signal?: AbortSignal) => {
+    const url = key
+      ? `/api/view/${drawingId}?key=${encodeURIComponent(key)}`
+      : `/api/view/${drawingId}`
+    const res = await fetch(url, { signal })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      if (res.status === 403 && body.password_protected) {
+        return { passwordRequired: true, error: body.error as string }
+      }
+      throw new Error(res.status === 404 ? 'Drawing not found' : 'Failed to load drawing')
+    }
+    return { data: await res.json() }
+  }, [])
+
   useEffect(() => {
     if (!id) return
+
+    // Reset password state on ID change
+    setPasswordRequired(false)
+    setPasswordError(null)
 
     // Wenn sich die ID ändert, wollen wir vorherige noch laufende Fetches abbrechen
     const abortController = new AbortController()
@@ -110,26 +133,35 @@ function Viewer() {
     }
 
     setLoading(true)
-    fetch(`/api/view/${id}`, { signal: abortController.signal })
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error(res.status === 404 ? 'Drawing not found' : 'Failed to load drawing')
+
+    // Check for password in URL fragment (#key=...)
+    const hashParams = new URLSearchParams(window.location.hash.slice(1))
+    const fragmentKey = hashParams.get('key')
+
+    fetchDrawing(id, fragmentKey || undefined, abortController.signal)
+      .then((result) => {
+        if ('passwordRequired' in result && result.passwordRequired) {
+          // If we had a fragment key and it was wrong, show error
+          if (fragmentKey) {
+            setPasswordError('Invalid password from link')
+          }
+          setPasswordRequired(true)
+          setLoading(false)
+          return
         }
-        return res.json()
-      })
-      .then((data) => {
-        // Im Cache speichern für später
-        drawingCache.set(id, data)
-        
-        setSceneData(data)
-        setCurrentDataId(id)
-        setTheme(data.appState?.theme || 'light')
-        setLoading(false)
+        if (result.data) {
+          // Im Cache speichern für später
+          drawingCache.set(id, result.data)
+          setSceneData(result.data)
+          setCurrentDataId(id)
+          setTheme(result.data.appState?.theme || 'light')
+          setPasswordRequired(false)
+          setLoading(false)
+        }
       })
       .catch((err) => {
         // Ignoriere Abort-Errors, die wir selbst ausgelöst haben
         if (err.name === 'AbortError') return
-        
         setError(err.message)
         setLoading(false)
       })
@@ -139,7 +171,33 @@ function Viewer() {
     return () => {
       abortController.abort()
     }
-  }, [id])
+  }, [id, fetchDrawing])
+
+  // Handle password submission from PasswordDialog
+  const handlePasswordSubmit = useCallback(async (password: string) => {
+    if (!id) return
+    setPasswordError(null)
+    setLoading(true)
+    try {
+      const result = await fetchDrawing(id, password)
+      if ('passwordRequired' in result && result.passwordRequired) {
+        setPasswordError('Invalid password')
+        setLoading(false)
+        return
+      }
+      if (result.data) {
+        drawingCache.set(id, result.data)
+        setSceneData(result.data)
+        setCurrentDataId(id)
+        setTheme(result.data.appState?.theme || 'light')
+        setPasswordRequired(false)
+        setLoading(false)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load drawing')
+      setLoading(false)
+    }
+  }, [id, fetchDrawing])
 
   const handleExcalidrawChange = useCallback((elements: readonly ExcalidrawElement[], appState: { theme?: Theme }) => {
     setTheme(currentTheme => {
@@ -799,6 +857,18 @@ function Viewer() {
     }
   }, [])
 
+  // Show password dialog before loading check (passwordRequired drawings never set currentDataId)
+  if (passwordRequired && !loading) {
+    return (
+      <PasswordDialog
+        theme={theme}
+        error={passwordError}
+        onSubmit={handlePasswordSubmit}
+        onCancel={() => navigate('/')}
+      />
+    )
+  }
+
   // Zeige Loader, wenn explizit loading==true ODER wenn die sceneData noch zu einem alten Drawing gehören
   if (loading || currentDataId !== id) {
     return (
@@ -912,6 +982,8 @@ function Viewer() {
         participantCount={collab.participantCount}
         displayName={collab.displayName}
         sessionEnded={collab.sessionEnded}
+        passwordRequired={collab.collabPasswordRequired}
+        passwordError={collab.collabPasswordError}
         onJoin={collab.joinSession}
         onDismissSessionEnded={() => {
           collab.dismissSessionEnded()

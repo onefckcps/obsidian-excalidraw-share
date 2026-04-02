@@ -7,6 +7,79 @@ import { injectGlobalStyles, removeGlobalStyles } from './styles';
 import { CollabManager } from './collabManager';
 import type { ExcalidrawAPI } from './collabTypes';
 
+// ── Password Modal ──
+
+class PasswordModal extends Modal {
+  private resolve: (value: string | null) => void;
+  private title: string;
+  private description: string;
+
+  constructor(app: App, title: string, description: string, resolve: (value: string | null) => void) {
+    super(app);
+    this.title = title;
+    this.description = description;
+    this.resolve = resolve;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: this.title });
+    contentEl.createEl('p', { text: this.description, cls: 'setting-item-description' });
+
+    const inputContainer = contentEl.createDiv({ cls: 'setting-item' });
+    const input = inputContainer.createEl('input', {
+      type: 'password',
+      placeholder: 'Enter password (leave empty to skip)',
+    });
+    input.style.width = '100%';
+    input.style.padding = '8px';
+    input.style.marginBottom = '16px';
+
+    const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.gap = '8px';
+    buttonContainer.style.justifyContent = 'flex-end';
+
+    const skipBtn = buttonContainer.createEl('button', { text: 'Skip (no password)' });
+    skipBtn.addEventListener('click', () => {
+      this.resolve(null);
+      this.close();
+    });
+
+    const setBtn = buttonContainer.createEl('button', { text: 'Set Password', cls: 'mod-cta' });
+    setBtn.addEventListener('click', () => {
+      const value = input.value.trim();
+      this.resolve(value || null);
+      this.close();
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const value = input.value.trim();
+        this.resolve(value || null);
+        this.close();
+      } else if (e.key === 'Escape') {
+        this.resolve(null);
+        this.close();
+      }
+    });
+
+    input.focus();
+  }
+
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+}
+
+function promptPassword(app: App, title: string, description: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    new PasswordModal(app, title, description, resolve).open();
+  });
+}
+
 // ── Utility Functions ──
 
 const blobToBase64 = async (blob: Blob): Promise<string> => {
@@ -759,6 +832,10 @@ export default class ExcaliSharePlugin extends Plugin {
     const publishedId = this.getPublishedId(file);
     let status: ToolbarStatus = 'unpublished';
 
+    // Check if drawing is password-protected from frontmatter
+    const cache = this.app.metadataCache.getFileCache(file);
+    const passwordProtected = cache?.frontmatter?.['excalishare-password'] === true;
+
     if (publishedId) {
       if (this.activeCollabSessionId && this.activeCollabDrawingId === publishedId) {
         status = 'collabActive';
@@ -773,6 +850,7 @@ export default class ExcaliSharePlugin extends Plugin {
       collabSessionId: this.activeCollabSessionId,
       collabDrawingId: this.activeCollabDrawingId,
       hasApiKey: !!this.settings.apiKey,
+      passwordProtected,
       collabParticipantCount: this.collabManager?.participantCount,
       collabNativeJoined: this.collabManager?.isJoined,
       collabCollaborators: this.collabManager?.currentCollaborators,
@@ -1045,6 +1123,19 @@ export default class ExcaliSharePlugin extends Plugin {
         bodyData.id = existingId;
       }
 
+      // Prompt for password on first publish (not on sync/silent)
+      let drawingPassword: string | null = null;
+      if (!existingId && !silent) {
+        drawingPassword = await promptPassword(
+          this.app,
+          '🔒 Password Protection',
+          'Optionally set a password to protect this drawing. Only people with the password (or the share link) can view it.'
+        );
+        if (drawingPassword) {
+          bodyData.password = drawingPassword;
+        }
+      }
+
       const response = await requestUrl({
         url: `${this.settings.baseUrl}/api/upload`,
         method: 'POST',
@@ -1064,11 +1155,21 @@ export default class ExcaliSharePlugin extends Plugin {
       // @ts-ignore
       await this.app.fileManager.processFrontMatter(file, (frontmatter: any) => {
         frontmatter['excalishare-id'] = result.id;
+        if (result.password_protected) {
+          frontmatter['excalishare-password'] = true;
+        }
       });
 
-      await navigator.clipboard.writeText(result.url);
+      // Build share URL — include password in fragment if set
+      let shareUrl = result.url;
+      if (drawingPassword) {
+        shareUrl += `#key=${encodeURIComponent(drawingPassword)}`;
+      }
+
+      await navigator.clipboard.writeText(shareUrl);
       if (!silent) {
-        new Notice(`Drawing ${existingId ? 'synced' : 'published'}! URL copied to clipboard.`);
+        const pwNote = drawingPassword ? ' (password-protected 🔒)' : '';
+        new Notice(`Drawing ${existingId ? 'synced' : 'published'}${pwNote}! URL copied to clipboard.`);
       }
     } catch (error) {
       console.error('ExcaliShare: Publish error', error);
@@ -1135,9 +1236,24 @@ export default class ExcaliSharePlugin extends Plugin {
       return;
     }
 
+    // Prompt for collab session password
+    const collabPassword = await promptPassword(
+      this.app,
+      '🔒 Collab Password',
+      'Optionally set a password for this collab session. Users will need to enter it to join.'
+    );
+
     new Notice('Starting live collab session...');
 
     try {
+      const collabBody: any = {
+        drawing_id: drawingId,
+        timeout_secs: this.settings.collabTimeoutSecs,
+      };
+      if (collabPassword) {
+        collabBody.password = collabPassword;
+      }
+
       const response = await requestUrl({
         url: `${this.settings.baseUrl}/api/collab/start`,
         method: 'POST',
@@ -1145,10 +1261,7 @@ export default class ExcaliSharePlugin extends Plugin {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.settings.apiKey}`,
         },
-        body: JSON.stringify({
-          drawing_id: drawingId,
-          timeout_secs: this.settings.collabTimeoutSecs,
-        }),
+        body: JSON.stringify(collabBody),
         throw: false,
       });
 
@@ -1186,7 +1299,8 @@ export default class ExcaliSharePlugin extends Plugin {
       }, 30000);
 
       const viewUrl = `${this.settings.baseUrl}/d/${drawingId}`;
-      new Notice(`Live collab session started! Session ID: ${result.session_id}`);
+      const pwNote = collabPassword ? ' (password-protected 🔒)' : '';
+      new Notice(`Live collab session started${pwNote}! Session ID: ${result.session_id}`);
 
       // Auto-join from Obsidian if enabled
       if (this.settings.collabJoinFromObsidian) {

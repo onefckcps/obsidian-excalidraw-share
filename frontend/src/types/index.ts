@@ -13,6 +13,7 @@ export interface PublicDrawing {
   id: string
   created_at: string
   source_path: string | null
+  password_protected: boolean
 }
 
 // ──────────────────────────────────────────────
@@ -29,6 +30,7 @@ export interface CollabStatusResponse {
   active: boolean
   session_id?: string
   participant_count?: number
+  password_required?: boolean
 }
 
 export interface CollabSessionInfo {

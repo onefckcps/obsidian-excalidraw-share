@@ -144,6 +144,8 @@ pub struct CollabSession {
     pub next_color_index: u8,
     /// Broadcast channel for sending messages to all connected clients
     pub broadcast_tx: broadcast::Sender<ServerMessage>,
+    /// Optional password hash for session access control
+    pub password_hash: Option<String>,
 }
 
 impl CollabSession {
@@ -196,6 +198,7 @@ pub struct SessionInfo {
     pub created_at: DateTime<Utc>,
     pub participant_count: usize,
     pub participants: Vec<CollaboratorInfo>,
+    pub password_required: bool,
 }
 
 // ──────────────────────────────────────────────
@@ -225,6 +228,7 @@ impl SessionManager {
         drawing_id: &str,
         drawing_data: &serde_json::Value,
         timeout_secs: u64,
+        password_hash: Option<String>,
     ) -> Result<String, AppError> {
         let mut drawing_sessions = self.drawing_sessions.write().await;
 
@@ -269,6 +273,7 @@ impl SessionManager {
             participants: HashMap::new(),
             next_color_index: 0,
             broadcast_tx,
+            password_hash,
         };
 
         drawing_sessions.insert(drawing_id.to_string(), session_id.clone());
@@ -340,15 +345,40 @@ impl SessionManager {
     }
 
     /// Get session status for a drawing (public info).
-    pub async fn get_session_status(&self, drawing_id: &str) -> Option<(String, usize)> {
+    /// Returns (session_id, participant_count, password_required).
+    pub async fn get_session_status(&self, drawing_id: &str) -> Option<(String, usize, bool)> {
         let drawing_sessions = self.drawing_sessions.read().await;
         if let Some(session_id) = drawing_sessions.get(drawing_id) {
             let sessions = self.sessions.read().await;
             if let Some(session) = sessions.get(session_id) {
-                return Some((session_id.clone(), session.participants.len()));
+                return Some((
+                    session_id.clone(),
+                    session.participants.len(),
+                    session.password_hash.is_some(),
+                ));
             }
         }
         None
+    }
+
+    /// Verify a password against a session's password hash.
+    /// Returns Ok(true) if valid, Ok(false) if invalid, Err if session not found.
+    pub async fn verify_session_password(
+        &self,
+        session_id: &str,
+        password: Option<&str>,
+    ) -> Result<bool, AppError> {
+        let sessions = self.sessions.read().await;
+        let session = sessions.get(session_id).ok_or(AppError::SessionNotFound)?;
+
+        match &session.password_hash {
+            None => Ok(true), // No password required
+            Some(hash) => match password {
+                None => Ok(false), // Password required but not provided
+                Some(pw) => crate::password::verify_password(pw, hash)
+                    .map_err(|e| AppError::Internal(format!("Password verification error: {e}"))),
+            },
+        }
     }
 
     /// Add a participant to a session. Returns the broadcast receiver and snapshot data.
@@ -689,6 +719,7 @@ impl SessionManager {
                 created_at: s.created_at,
                 participant_count: s.participants.len(),
                 participants: s.collaborator_list(),
+                password_required: s.password_hash.is_some(),
             })
             .collect()
     }
@@ -713,15 +744,19 @@ impl SessionManager {
             tracing::info!(session_id = %session_id, "Cleaning up expired collab session (saving changes)");
             match self.end_session(&session_id, true).await {
                 Ok(Some((drawing_id, data))) => {
-                    // Preserve existing source_path from stored drawing
-                    let source_path: Option<String> = match storage.load(&drawing_id).await {
-                        Ok(existing) => existing
-                            .get("_source_path")
-                            .and_then(|v| v.as_str())
-                            .map(String::from),
-                        Err(_) => None,
+                    // Preserve existing source_path and password_hash from stored drawing
+                    let (source_path, password_hash): (Option<String>, Option<String>) = match storage.load(&drawing_id).await {
+                        Ok(existing) => (
+                            existing.get("_source_path")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            existing.get("_password_hash")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                        ),
+                        Err(_) => (None, None),
                     };
-                    if let Err(e) = storage.save(&drawing_id, &data, source_path.as_deref()).await {
+                    if let Err(e) = storage.save(&drawing_id, &data, source_path.as_deref(), password_hash.as_deref()).await {
                         tracing::error!(
                             drawing_id = %drawing_id,
                             error = %e,

@@ -8,7 +8,9 @@ interface CollabStatusProps {
   participantCount: number;
   displayName: string;
   sessionEnded: { saved: boolean } | null;
-  onJoin: (name: string) => void;
+  passwordRequired: boolean;
+  passwordError: string | null;
+  onJoin: (name: string, password?: string) => void;
   onDismissSessionEnded: () => void;
 }
 
@@ -19,19 +21,25 @@ function CollabStatus({
   participantCount,
   displayName,
   sessionEnded,
+  passwordRequired,
+  passwordError,
   onJoin,
   onDismissSessionEnded,
 }: CollabStatusProps) {
   const [showJoinDialog, setShowJoinDialog] = useState(false);
   const [nameInput, setNameInput] = useState(displayName);
+  const [passwordInput, setPasswordInput] = useState('');
 
   const isDark = theme === 'dark';
 
   const handleJoin = useCallback(() => {
     const name = nameInput.trim() || 'Anonymous';
-    onJoin(name);
-    setShowJoinDialog(false);
-  }, [nameInput, onJoin]);
+    onJoin(name, passwordRequired ? passwordInput : undefined);
+    // Only close dialog if no password is required (password errors keep dialog open)
+    if (!passwordRequired) {
+      setShowJoinDialog(false);
+    }
+  }, [nameInput, passwordInput, passwordRequired, onJoin]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -121,6 +129,31 @@ function CollabStatus({
               borderColor: isDark ? '#444' : '#ddd',
             }}
           />
+          {passwordRequired && (
+            <>
+              <p style={{ margin: '0 0 8px 0', color: isDark ? '#aaa' : '#666', fontSize: '13px' }}>
+                🔒 This session requires a password.
+              </p>
+              {passwordError && (
+                <p style={{ margin: '0 0 8px 0', color: '#f44336', fontSize: '13px' }}>
+                  ❌ {passwordError}
+                </p>
+              )}
+              <input
+                type="password"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Session password..."
+                style={{
+                  ...styles.input,
+                  backgroundColor: isDark ? '#1e1e1e' : '#f5f5f5',
+                  color: isDark ? '#e0e0e0' : '#333',
+                  borderColor: isDark ? '#444' : '#ddd',
+                }}
+              />
+            </>
+          )}
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
             <button
               style={{

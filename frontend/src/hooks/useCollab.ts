@@ -61,8 +61,12 @@ interface UseCollabReturn {
   sessionEnded: { saved: boolean } | null;
   /** The user ID we are currently following (null if not following anyone) */
   followingUserId: string | null;
+  /** Whether the collab session requires a password */
+  collabPasswordRequired: boolean;
+  /** Error message from collab password verification */
+  collabPasswordError: string | null;
   /** Join the collab session */
-  joinSession: (name: string) => void;
+  joinSession: (name: string, password?: string) => void;
   /** Leave the collab session */
   leaveSession: () => void;
   /** Send a scene update */
@@ -95,6 +99,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const [displayName, setDisplayNameState] = useState(getStoredName);
   const [sessionEnded, setSessionEnded] = useState<{ saved: boolean } | null>(null);
   const [followingUserId, setFollowingUserId] = useState<string | null>(null);
+  const [collabPasswordRequired, setCollabPasswordRequired] = useState(false);
+  const [collabPasswordError, setCollabPasswordError] = useState<string | null>(null);
 
   const clientRef = useRef<CollabClient | null>(null);
   const excalidrawAPIRef = useRef(excalidrawAPI);
@@ -169,6 +175,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         setIsCollabActive(data.active);
         setSessionId(data.session_id || null);
         setParticipantCount(data.participant_count || 0);
+        setCollabPasswordRequired(data.password_required || false);
       })
       .catch((err) => {
         console.error('ExcaliShare Collab: Failed to check status', err);
@@ -318,9 +325,29 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
 
   // Join session
   const joinSession = useCallback(
-    (name: string) => {
+    async (name: string, password?: string) => {
       if (!sessionId || clientRef.current) return;
 
+      // Pre-verify password via HTTP before attempting WebSocket connection
+      if (collabPasswordRequired) {
+        try {
+          const verifyRes = await fetch('/api/collab/verify-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, password: password || null }),
+          });
+          if (!verifyRes.ok) {
+            const body = await verifyRes.json().catch(() => ({}));
+            setCollabPasswordError(body.error || 'Invalid password');
+            return;
+          }
+        } catch (err) {
+          setCollabPasswordError('Failed to verify password');
+          return;
+        }
+      }
+
+      setCollabPasswordError(null);
       const finalName = name || 'Anonymous';
       setDisplayNameState(finalName);
       storeName(finalName);
@@ -328,7 +355,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       // Track which drawing this collab session belongs to
       collabDrawingIdRef.current = drawingId || null;
 
-      const client = new CollabClient(sessionId, finalName);
+      const client = new CollabClient(sessionId, finalName, password);
 
       // Handle snapshot (initial state)
       client.on('snapshot', (msg: ServerMessage) => {
@@ -714,6 +741,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     displayName,
     sessionEnded,
     followingUserId,
+    collabPasswordRequired,
+    collabPasswordError,
     joinSession,
     leaveSession,
     sendSceneUpdate,

@@ -10,11 +10,14 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::collab::{ClientMessage, ServerMessage, SessionManager};
+use crate::error::AppError;
 
 #[derive(Deserialize)]
 pub struct WsQuery {
     #[serde(default = "default_name")]
     pub name: String,
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 fn default_name() -> String {
@@ -35,12 +38,26 @@ fn rand_index(max: usize) -> usize {
 }
 
 /// WebSocket upgrade handler for collab sessions.
+/// Verifies session password BEFORE upgrading the connection.
 pub async fn ws_collab_handler(
     ws: WebSocketUpgrade,
     Path(session_id): Path<String>,
     Query(query): Query<WsQuery>,
     State(session_manager): State<SessionManager>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
+    // Verify password before upgrading to WebSocket
+    let password_valid = session_manager
+        .verify_session_password(&session_id, query.password.as_deref())
+        .await?;
+
+    if !password_valid {
+        return Err(if query.password.is_some() {
+            AppError::InvalidPassword
+        } else {
+            AppError::PasswordRequired
+        });
+    }
+
     let name = if query.name.is_empty() {
         default_name()
     } else if query.name.len() > 50 {
@@ -49,7 +66,7 @@ pub async fn ws_collab_handler(
         query.name
     };
 
-    ws.on_upgrade(move |socket| handle_ws_connection(socket, session_id, name, session_manager))
+    Ok(ws.on_upgrade(move |socket| handle_ws_connection(socket, session_id, name, session_manager)))
 }
 
 async fn handle_ws_connection(
