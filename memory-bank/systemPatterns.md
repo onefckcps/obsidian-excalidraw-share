@@ -91,11 +91,26 @@
 ## Obsidian Plugin Architecture
 
 ### File Structure (Modular)
-- `main.ts` — Plugin class, commands, context menu, toolbar management, API methods
+- `main.ts` — Plugin class, commands, context menu, toolbar management, API methods, collab wiring
 - `settings.ts` — `ExcaliShareSettings` interface, `ExcaliShareSettingTab`, defaults
 - `toolbar.ts` — `ExcaliShareToolbar` class (floating toolbar DOM management)
 - `styles.ts` — CSS-in-JS styles, icons, colors, position helpers, global style injection
 - `pdfUtils.ts` — PDF-to-PNG conversion utilities
+- `collabClient.ts` — WebSocket client for native collab (adapted from frontend)
+- `collabManager.ts` — Session lifecycle, polling-based change detection, deferred updates, cursor display
+- `collabTypes.ts` — Shared types for WebSocket protocol (ClientMessage, ServerMessage, ExcalidrawAPI)
+
+### Native Collab Architecture
+The plugin can participate in collab sessions directly within Obsidian (no browser needed):
+- **CollabClient** — WebSocket wrapper with reconnect, delta tracking, debounce (mirrors frontend's `collabClient.ts`)
+- **CollabManager** — Orchestrates the full collab lifecycle:
+  - Connects via WebSocket to `/ws/collab/{session_id}`
+  - **Polling-based change detection** — Polls `getSceneElements()` every 250ms, compares element versions
+  - **Deferred remote updates** — Queues incoming updates while user is drawing (`draggingElement/resizingElement/editingElement`), flushes via 300ms interval when user stops
+  - **Cached API reference** — Stores `getExcalidrawAPI()` result, validates with quick `getSceneElements()` call, avoids expensive `ea.setView('active')` on every cycle
+  - **Collaborator cursors** — Receives pointer updates, builds Excalidraw collaborator Map, pushes via `updateScene({ collaborators })`
+  - **Echo prevention** — Sets `isApplyingRemoteUpdate` flag during remote updates, skips next poll cycle
+- **No backend changes needed** — Uses the same WebSocket endpoint and protocol as the frontend
 
 ### Plugin Settings
 ```typescript
@@ -105,6 +120,9 @@ interface ExcaliShareSettings {
   pdfScale: number;                    // 0.5 - 5.0
   collabTimeoutSecs: number;           // default 7200 (2h)
   collabAutoOpenBrowser: boolean;      // auto-open browser on collab start
+  collabJoinFromObsidian: boolean;     // auto-join collab from Obsidian (default: true)
+  collabDisplayName: string;           // display name for collab (default: 'Host')
+  collabPollIntervalMs: number;        // change detection interval (default: 250)
   showFloatingToolbar: boolean;        // toggle floating toolbar
   toolbarPosition: ToolbarPosition;    // top-right, top-left, bottom-right, bottom-left
   autoSyncOnSave: boolean;             // auto-sync on file modify
@@ -134,3 +152,5 @@ interface ExcaliShareSettings {
 5. **Unguessable session IDs** — Full 128-bit UUIDs for session security (no auth on WebSocket)
 6. **Constant-time auth** — `subtle::ConstantTimeEq` for API key comparison
 7. **Expired session auto-save** — Background task saves expired sessions to storage before cleanup
+8. **Native collab via polling** — Obsidian plugin uses polling-based change detection (250ms) since the Excalidraw Obsidian wrapper doesn't expose `onChange`/`onPointerUpdate` React props. Remote updates are deferred during active drawing to prevent stutter.
+9. **Cached Excalidraw API** — Plugin caches the `getExcalidrawAPI()` reference and validates it cheaply, avoiding expensive `ea.setView('active')` calls on every poll cycle

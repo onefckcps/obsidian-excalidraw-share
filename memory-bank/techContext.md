@@ -137,9 +137,17 @@ All config via CLI args with env var fallbacks:
 obsidian-excalidraw-share/
 ├── backend/src/          # Rust source (main, routes, storage, auth, error, collab, ws)
 ├── frontend/src/         # React source (App, Viewer, Admin, Collab*, hooks, utils, types)
-├── obsidian-plugin/      # Plugin source (main, settings, toolbar, styles, pdfUtils)
+├── obsidian-plugin/      # Plugin source:
+│   ├── main.ts           # Plugin class, commands, toolbar management, collab wiring
+│   ├── settings.ts       # Settings interface + settings tab UI
+│   ├── toolbar.ts        # Floating toolbar DOM management
+│   ├── styles.ts         # CSS-in-JS styles, icons, colors
+│   ├── pdfUtils.ts       # PDF-to-PNG conversion
+│   ├── collabClient.ts   # WebSocket client for native collab
+│   ├── collabManager.ts  # Collab session lifecycle, change detection, cursor display
+│   └── collabTypes.ts    # Shared types for WS protocol
 ├── nixos/module.nix      # NixOS service module
-├── plans/                # Implementation plans (collab, security, UI)
+├── plans/                # Implementation plans (collab, security, UI, native-collab)
 ├── memory-bank/          # This documentation
 ├── AGENTS.md             # Agent guidelines
 ├── DEPLOYMENT.md         # Deployment guide

@@ -36,13 +36,21 @@ The entire real-time collaboration feature was designed and implemented across a
 - **`CollabPopover`** — In-session UI: participant list with color dots, follow/unfollow toggle, leave button, following banner
 - **Viewer integration** — `LiveCollaborationTrigger` from Excalidraw, `isCollaborating` prop, `onPointerUpdate` handler, click-to-follow on native user badges, CSS outline on followed user's avatar
 
-#### Obsidian Plugin (`main.ts`)
+#### Obsidian Plugin (`main.ts`, `collabManager.ts`, `collabClient.ts`, `collabTypes.ts`)
 - **Start/Stop Collab** commands and context menu items
 - **CollabStopModal** — Save/Discard/Cancel dialog when stopping a session
 - **Health check polling** — Every 30 seconds to detect if session ended externally
-- **Status bar indicator** — "🔴 Live Collab" when session is active
+- **Status bar indicator** — "🔴 Live Collab (N)" when session is active, showing participant count
 - **Auto-open browser** — Optionally opens the web viewer when starting a collab session
 - **Pull from server** — Syncs collab changes back to the vault (via Excalidraw API or manual JSON replacement)
+- **Native collab participation** — Host can participate directly in the Obsidian Excalidraw canvas via WebSocket:
+  - `CollabClient` — WebSocket client adapted from frontend (same protocol, delta tracking, debounce)
+  - `CollabManager` — Orchestrates session lifecycle, change detection, cursor display
+  - **Polling-based change detection** — Polls `getSceneElements()` every 250ms, compares element versions
+  - **Deferred remote updates** — Queues incoming updates while user is drawing (checks `draggingElement/resizingElement/editingElement`), flushes when user stops (300ms interval)
+  - **Cached API reference** — Avoids expensive `ea.setView('active')` calls on every poll cycle
+  - **Collaborator cursor display** — Other users' cursors visible in Obsidian via `updateScene({ collaborators })`
+  - **Auto-sync disabled during collab** — Prevents uploading mid-session state
 
 ### 2. Collaboration Bug Fixes (Iterative Refinement)
 Multiple rounds of bug fixes documented in `plans/collab-bugfixes.md`:

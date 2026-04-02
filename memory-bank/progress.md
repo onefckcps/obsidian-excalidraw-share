@@ -43,9 +43,18 @@
 - [x] Plugin: Start/Stop collab commands
 - [x] Plugin: CollabStopModal (save/discard/cancel)
 - [x] Plugin: Health check polling (30s interval)
-- [x] Plugin: Status bar indicator
+- [x] Plugin: Status bar indicator with participant count
 - [x] Plugin: Auto-open browser on collab start
 - [x] Plugin: Pull from server (sync changes back to vault)
+- [x] Plugin: Native collab participation (WebSocket from Obsidian)
+- [x] Plugin: CollabClient WebSocket wrapper (adapted from frontend)
+- [x] Plugin: CollabManager (session lifecycle, change detection, cursor display)
+- [x] Plugin: Polling-based change detection (250ms interval, version comparison)
+- [x] Plugin: Deferred remote updates during active drawing (prevents stutter)
+- [x] Plugin: Cached Excalidraw API reference (avoids expensive setView calls)
+- [x] Plugin: Collaborator cursor display in Obsidian Excalidraw view
+- [x] Plugin: Auto-sync disabled during active collab session
+- [x] Plugin: Toolbar shows participant count and native connection status
 
 ### Security
 - [x] Constant-time API key comparison (`subtle` crate)
@@ -91,6 +100,8 @@
 - Drawing interruption deferral provides smooth editing experience during collab
 - Floating toolbar in Obsidian provides quick access to all actions
 - PWA caching makes the viewer fast for repeat visits
+- Native collab from Obsidian — host can participate without opening a browser
+- Deferred remote updates prevent stutter during active drawing in Obsidian
 
 ## Known Issues / Potential Improvements
 - No automated tests (all manual testing)
@@ -101,3 +112,5 @@
 - Viewer.tsx is very large (42K+ chars) — could benefit from splitting
 - No conflict resolution UI (server always picks highest version)
 - No undo/redo sync across collaborators
+- Obsidian host cannot broadcast cursor position (no `onPointerUpdate` hook available in Excalidraw Obsidian plugin)
+- Polling-based change detection adds ~250ms latency for outgoing changes from Obsidian (vs. instant in browser)
