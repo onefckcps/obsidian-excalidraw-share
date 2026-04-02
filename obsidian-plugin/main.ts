@@ -1241,6 +1241,9 @@ export default class ExcaliSharePlugin extends Plugin {
 
     new Notice(save ? 'Saving and stopping collab session...' : 'Discarding and stopping collab session...');
 
+    // Check if native collab was active (changes already synced locally via WebSocket)
+    const wasNativeCollabActive = this.collabManager?.isJoined ?? false;
+
     // Disconnect native collab WebSocket before sending stop request
     if (this.collabManager) {
       this.collabManager.leave();
@@ -1270,11 +1273,18 @@ export default class ExcaliSharePlugin extends Plugin {
       this.cleanupCollabState();
 
       if (save && drawingId) {
-        const file = this.app.workspace.getActiveFile();
-        if (file && this.getPublishedId(file) === drawingId) {
-          await this.pullFromServer(file, drawingId);
+        if (wasNativeCollabActive) {
+          // Native collab was active — local scene already has all changes via live sync.
+          // Skip pulling from server to avoid duplicate/buggy elements.
+          console.log('ExcaliShare: Skipping pull — native collab was active, local state is up-to-date.');
+          new Notice('Collab session saved! Changes already synced locally.');
         } else {
-          new Notice('Collab session saved. Use "Pull from ExcaliShare" to sync changes to your vault.');
+          const file = this.app.workspace.getActiveFile();
+          if (file && this.getPublishedId(file) === drawingId) {
+            await this.pullFromServer(file, drawingId);
+          } else {
+            new Notice('Collab session saved. Use "Pull from ExcaliShare" to sync changes to your vault.');
+          }
         }
       } else {
         // Restore the pre-collab scene state so the drawing reverts to before the session
@@ -1425,11 +1435,11 @@ export default class ExcaliSharePlugin extends Plugin {
             this.refreshActiveToolbar();
 
             if (saved) {
-              // Try to pull the saved state
-              const file = this.app.workspace.getActiveFile();
-              if (file && this.getPublishedId(file) === drawingId) {
-                this.pullFromServer(file, drawingId);
-              }
+              // Native collab was active (this callback only fires from joinCollabFromObsidian),
+              // so the local scene already has all changes via live sync.
+              // Skip pulling from server to avoid duplicate/buggy elements.
+              console.log('ExcaliShare: Session ended with save — skipping pull, native collab kept local state up-to-date.');
+              new Notice('Collab session ended and saved. Changes already synced locally.');
             } else {
               // Restore the pre-collab scene state
               this.restorePreCollabSnapshot(snapshot);
