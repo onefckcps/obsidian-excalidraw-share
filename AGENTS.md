@@ -20,6 +20,7 @@ Allow users to publish Excalidraw drawings from Obsidian to a self-hosted server
 - **View** drawings in a web-based Excalidraw viewer (with view, edit, present modes)
 - **Browse** all shared drawings (tree view, search, overlay mode)
 - **Live Collaboration** — real-time multi-user editing via WebSocket
+- **Persistent Collaboration** — always-on collab mode per drawing; guests can edit without admin being online, server is source of truth, auto-saves to disk
 - **Password Protection** — optional Argon2id-hashed passwords for drawings and collab sessions
 - **PDF Embedding** — convert PDF pages to PNG for embedding in drawings
 - **Admin Panel** — manage drawings and collab sessions
@@ -137,9 +138,12 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 | GET | `/api/health` | Public | Health check |
 | POST | `/api/collab/start` | Bearer | Start collab session (supports `password` field) |
 | POST | `/api/collab/stop` | Bearer | End collab session (save or discard) |
-| GET | `/api/collab/status/{drawing_id}` | Public | Check collab status (returns session_id, password_required) |
+| GET | `/api/collab/status/{drawing_id}` | Public | Check collab status (returns session_id, password_required, persistent) |
 | POST | `/api/collab/verify-password` | Public | Verify collab session password before WS connection |
-| GET | `/api/collab/sessions` | Bearer | List all active sessions (admin, includes password_required) |
+| GET | `/api/collab/sessions` | Bearer | List all active sessions (admin, includes password_required, persistent) |
+| POST | `/api/persistent-collab/enable` | Bearer | Enable persistent collab for a drawing (supports `password` field) |
+| POST | `/api/persistent-collab/disable` | Bearer | Disable persistent collab for a drawing |
+| POST | `/api/persistent-collab/activate/{drawing_id}` | Public | Activate (create on demand) persistent collab session for a drawing |
 | WS | `/ws/collab/{session_id}?name=...&password=...` | Public | WebSocket for real-time collaboration (password verified before upgrade) |
 
 ### Upload Request Format
@@ -213,8 +217,8 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 - `ws.rs` — WebSocket upgrade handler, bidirectional message routing, password verification before upgrade
 
 **Route Organization**
-- **Public routes** (no auth): `/api/health`, `/api/public/drawings`, `/api/view/{id}`, `/api/collab/status/{drawing_id}`, `/api/collab/verify-password`
-- **Protected routes** (Bearer token): `/api/upload`, `/api/drawings/{id}` (DELETE), `/api/drawings` (GET), `/api/collab/start`, `/api/collab/stop`, `/api/collab/sessions`
+- **Public routes** (no auth): `/api/health`, `/api/public/drawings`, `/api/view/{id}`, `/api/collab/status/{drawing_id}`, `/api/collab/verify-password`, `/api/persistent-collab/activate/{drawing_id}`
+- **Protected routes** (Bearer token): `/api/upload`, `/api/drawings/{id}` (DELETE), `/api/drawings` (GET), `/api/collab/start`, `/api/collab/stop`, `/api/collab/sessions`, `/api/persistent-collab/enable`, `/api/persistent-collab/disable`
 - **WebSocket**: `/ws/collab/{session_id}` (no auth, but session must exist — security via unguessable UUID + optional password)
 
 **Rate Limiting**
@@ -307,6 +311,7 @@ interface ExcaliShareSettings {
   autoSyncOnSave: boolean;             // auto-sync on file modify
   autoSyncDelaySecs: number;           // debounce delay (1-30s)
   toolbarCollapsedByDefault: boolean;  // start collapsed
+  persistentCollabAutoSync: boolean;   // auto-pull server changes on open (default: true)
 }
 ```
 
@@ -321,6 +326,7 @@ interface ExcaliShareSettings {
 - Stored in Obsidian frontmatter as `excalishare-id`
 - Read via `app.metadataCache.getFileCache(file).frontmatter['excalishare-id']`
 - Written via `app.fileManager.processFrontMatter()`
+- Persistent collab tracked via `excalishare-persistent-collab: true` and `excalishare-last-sync-version: N` in frontmatter
 
 ### Key Design Decisions
 
@@ -333,6 +339,7 @@ interface ExcaliShareSettings {
 7. **Expired session auto-save** — Background task saves expired sessions to storage before cleanup
 8. **Event-driven native collab** — Obsidian plugin uses `excalidrawAPI.onChange()` imperative subscription for instant, zero-waste change detection. Falls back to 2s polling for older Excalidraw versions. Host cursor is broadcast via DOM `pointermove` listener with screen→scene coordinate conversion. Laser pointer detected via `appState.activeTool.type`. Follow mode uses lerp-based viewport interpolation (same algorithm as frontend). Adaptive debouncing: 16ms idle / 50ms batch / 80ms during drawing. Version-based echo suppression via `remoteAppliedVersions` map + double-`requestAnimationFrame` cooldown.
 9. **Cached Excalidraw API** — Plugin caches the `getExcalidrawAPI()` reference and validates it cheaply, avoiding expensive `ea.setView('active')` calls on every cycle
+10. **Persistent Collaboration** — Always-on collab mode per drawing. Server is source of truth with debounced auto-save (2s). Sessions are created on demand when visitors arrive and cleaned up after 30 min idle (no participants). Element-level merge with version-based conflict resolution for offline admin sync. Frontmatter tracks `excalishare-persistent-collab` and `excalishare-last-sync-version`.
 
 ---
 
@@ -703,6 +710,26 @@ The project is feature-complete with the live collaboration system fully impleme
 - [x] Plugin: Auto-sync disabled during active collab session
 - [x] Plugin: Toolbar shows participant count and native connection status
 
+**Persistent Collaboration**
+- [x] Backend: Persistent collab flag per drawing (`_persistent_collab` in JSON, sidecar metadata)
+- [x] Backend: `save_persistent()` with atomic writes and version tracking
+- [x] Backend: Persistent sessions with idle-based cleanup (30 min no participants)
+- [x] Backend: On-demand session creation via `/api/persistent-collab/activate/{id}`
+- [x] Backend: Enable/disable endpoints with password support
+- [x] Backend: Auto-save background task (2s debounce) for dirty persistent sessions
+- [x] Backend: Server startup scan for persistent collab drawings
+- [x] Frontend: Auto-activation of persistent sessions in `useCollab` hook
+- [x] Frontend: Auto-join with stored name for persistent collab (no banner)
+- [x] Frontend: Visual "Collaborative" badge in Viewer
+- [x] Frontend: "🔄 Live" badge in DrawingsBrowser
+- [x] Frontend: "Persistent" badge in AdminPage session list
+- [x] Plugin: Enable/disable persistent collab via toolbar, commands, context menu
+- [x] Plugin: Element-level merge with version-based conflict resolution
+- [x] Plugin: Auto-sync on file open (once per file, elements only)
+- [x] Plugin: Frontmatter tracking (`excalishare-persistent-collab`, `excalishare-last-sync-version`)
+- [x] Plugin: Auto-join persistent sessions from Obsidian
+- [x] Plugin: Settings toggle for `persistentCollabAutoSync`
+
 **Security**
 - [x] Constant-time API key comparison (`subtle` crate)
 - [x] Rate limiting (tower_governor, per-IP)
@@ -758,7 +785,8 @@ Fixes applied:
 - [x] Improved `getCanvasContainer` in `main.ts` to search `.excalidraw-wrapper`, `[class*="excalidraw"]`, and all workspace leaves of type `'excalidraw'`
 
 ### Active Decisions
-- Collab sessions are **in-memory only** — no persistence across server restarts (by design)
+- Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)
+- Persistent collab sessions are **auto-recreated from disk** on first visitor after server restart
 - Frontend uses **Excalidraw 0.17.6** — specific version pinned for API compatibility
 - Plugin uses `requestUrl` from Obsidian API (not `fetch`) for cross-platform compatibility
 - Drawing IDs stored in Obsidian frontmatter (`excalishare-id`)
@@ -774,3 +802,4 @@ Fixes applied:
 - `Viewer.tsx` is very large (42K+ chars) — could benefit from splitting
 - No conflict resolution UI (server always picks highest version)
 - No undo/redo sync across collaborators
+- Persistent collab auto-save writes full drawing JSON every 2s (no delta-only saves yet)
