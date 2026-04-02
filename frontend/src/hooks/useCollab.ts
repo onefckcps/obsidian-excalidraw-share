@@ -108,13 +108,16 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const pendingSceneUpdatesRef = useRef<ExcalidrawElement[][]>([]);
   /** Timer for safety flush of pending scene updates */
   const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  /** rAF handle for batched pointer + viewport updates */
+  /** rAF handle for batched pointer/collaborator updates */
   const pointerRafRef = useRef<number | null>(null);
-  /** Pending batched update data for next rAF frame */
-  const pendingPointerUpdateRef = useRef<{
-    collaborators: Map<string, Collaborator> | null;
-    appState: Record<string, unknown> | null;
-  }>({ collaborators: null, appState: null });
+  /** Pending batched collaborator data for next rAF frame */
+  const pendingCollabUpdateRef = useRef<Map<string, Collaborator> | null>(null);
+  /** Follow mode: target viewport for lerp interpolation */
+  const followTargetRef = useRef<{ scrollX: number; scrollY: number; zoom: number | null } | null>(null);
+  /** Follow mode: rAF handle for the viewport interpolation loop */
+  const followLerpRafRef = useRef<number | null>(null);
+  /** Follow mode: lerp factor (0-1, higher = faster convergence) */
+  const FOLLOW_LERP_FACTOR = 0.25;
 
   // Keep refs in sync
   useEffect(() => {
@@ -407,8 +410,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       });
 
       // Handle pointer updates from other users
-      // Uses requestAnimationFrame to batch collaborator + viewport updates into a single
-      // updateScene() call per frame, preventing double re-renders on large drawings.
+      // Collaborator cursors are batched via rAF for efficiency.
+      // Follow mode viewport uses lerp interpolation for smooth scrolling.
       client.on('pointer_update', (msg: ServerMessage) => {
         if (msg.type !== 'pointer_update') return;
 
@@ -426,40 +429,90 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         });
 
         // Stage collaborator map for the next rAF frame
-        pendingPointerUpdateRef.current.collaborators = new Map(collaboratorMapRef.current);
+        pendingCollabUpdateRef.current = new Map(collaboratorMapRef.current);
 
-        // Follow mode: stage viewport update for the same rAF frame
+        // Follow mode: update the lerp target (the interpolation loop handles the actual scrolling)
         if (followingUserIdRef.current === msg.userId && msg.scrollX !== undefined && msg.scrollY !== undefined) {
-          pendingPointerUpdateRef.current.appState = {
+          const newTarget = {
             scrollX: msg.scrollX,
             scrollY: msg.scrollY,
-            ...(msg.zoom !== undefined ? { zoom: { value: msg.zoom } } : {}),
+            zoom: msg.zoom !== undefined ? msg.zoom : null,
           };
+          followTargetRef.current = newTarget;
+
+          // Start the lerp loop if not already running
+          if (followLerpRafRef.current === null) {
+            const lerpLoop = () => {
+              const api = excalidrawAPIRef.current as {
+                updateScene: (data: unknown) => void;
+                getAppState: () => { scrollX: number; scrollY: number; zoom: { value: number } };
+              } | null;
+              const target = followTargetRef.current;
+
+              if (!api || !target || !followingUserIdRef.current) {
+                followLerpRafRef.current = null;
+                return;
+              }
+
+              const appState = api.getAppState();
+              const currentX = appState.scrollX;
+              const currentY = appState.scrollY;
+              const currentZoom = appState.zoom?.value ?? 1;
+
+              // Lerp toward target
+              const dx = target.scrollX - currentX;
+              const dy = target.scrollY - currentY;
+              const dz = target.zoom !== null ? target.zoom - currentZoom : 0;
+
+              // Check if close enough to snap
+              const threshold = 0.5;
+              const isClose = Math.abs(dx) < threshold && Math.abs(dy) < threshold && Math.abs(dz) < 0.005;
+
+              if (isClose) {
+                // Snap to exact target and stop the loop
+                // (a new pointer_update will restart it if needed)
+                const finalState: Record<string, unknown> = {
+                  scrollX: target.scrollX,
+                  scrollY: target.scrollY,
+                };
+                if (target.zoom !== null) {
+                  finalState.zoom = { value: target.zoom };
+                }
+                api.updateScene({ appState: finalState });
+                followLerpRafRef.current = null;
+              } else {
+                // Interpolate
+                const newX = currentX + dx * FOLLOW_LERP_FACTOR;
+                const newY = currentY + dy * FOLLOW_LERP_FACTOR;
+                const lerpState: Record<string, unknown> = {
+                  scrollX: newX,
+                  scrollY: newY,
+                };
+                if (target.zoom !== null) {
+                  lerpState.zoom = { value: currentZoom + dz * FOLLOW_LERP_FACTOR };
+                }
+                api.updateScene({ appState: lerpState });
+                followLerpRafRef.current = requestAnimationFrame(lerpLoop);
+              }
+            };
+            followLerpRafRef.current = requestAnimationFrame(lerpLoop);
+          }
         }
 
-        // Schedule a single batched updateScene() call on the next animation frame
+        // Schedule a single batched updateScene() call for collaborator cursors
         if (pointerRafRef.current === null) {
           pointerRafRef.current = requestAnimationFrame(() => {
             pointerRafRef.current = null;
-            const pending = pendingPointerUpdateRef.current;
+            const pendingCollabs = pendingCollabUpdateRef.current;
             const api = excalidrawAPIRef.current as {
               updateScene: (data: unknown) => void;
             } | null;
 
-            if (api && pending.collaborators) {
-              // Merge collaborators + appState into a single updateScene call
-              const sceneUpdate: Record<string, unknown> = {
-                collaborators: pending.collaborators,
-              };
-              if (pending.appState) {
-                sceneUpdate.appState = pending.appState;
-              }
-              api.updateScene(sceneUpdate);
+            if (api && pendingCollabs) {
+              api.updateScene({ collaborators: pendingCollabs });
             }
 
-            // Reset pending state
-            pending.collaborators = null;
-            pending.appState = null;
+            pendingCollabUpdateRef.current = null;
           });
         }
       });
@@ -537,12 +590,17 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       clientRef.current.disconnect();
       clientRef.current = null;
     }
-    // Cancel any pending rAF pointer update
+    // Cancel any pending rAF updates
     if (pointerRafRef.current !== null) {
       cancelAnimationFrame(pointerRafRef.current);
       pointerRafRef.current = null;
     }
-    pendingPointerUpdateRef.current = { collaborators: null, appState: null };
+    if (followLerpRafRef.current !== null) {
+      cancelAnimationFrame(followLerpRafRef.current);
+      followLerpRafRef.current = null;
+    }
+    pendingCollabUpdateRef.current = null;
+    followTargetRef.current = null;
     collabDrawingIdRef.current = null;
     setIsJoined(false);
     setIsConnected(false);
@@ -596,6 +654,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
 
   const stopFollowing = useCallback(() => {
     setFollowingUserId(null);
+    // Stop the lerp loop immediately
+    followTargetRef.current = null;
+    if (followLerpRafRef.current !== null) {
+      cancelAnimationFrame(followLerpRafRef.current);
+      followLerpRafRef.current = null;
+    }
   }, []);
 
   // Get collaborator IDs in the same order as the Excalidraw collaborator Map
@@ -614,6 +678,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       if (pointerRafRef.current !== null) {
         cancelAnimationFrame(pointerRafRef.current);
         pointerRafRef.current = null;
+      }
+      if (followLerpRafRef.current !== null) {
+        cancelAnimationFrame(followLerpRafRef.current);
+        followLerpRafRef.current = null;
       }
     };
   }, []);
