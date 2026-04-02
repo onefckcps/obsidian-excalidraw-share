@@ -108,6 +108,13 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const pendingSceneUpdatesRef = useRef<ExcalidrawElement[][]>([]);
   /** Timer for safety flush of pending scene updates */
   const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** rAF handle for batched pointer + viewport updates */
+  const pointerRafRef = useRef<number | null>(null);
+  /** Pending batched update data for next rAF frame */
+  const pendingPointerUpdateRef = useRef<{
+    collaborators: Map<string, Collaborator> | null;
+    appState: Record<string, unknown> | null;
+  }>({ collaborators: null, appState: null });
 
   // Keep refs in sync
   useEffect(() => {
@@ -399,41 +406,61 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         }
       });
 
-      // Handle pointer updates from other users — THIS IS THE KEY FIX
+      // Handle pointer updates from other users
+      // Uses requestAnimationFrame to batch collaborator + viewport updates into a single
+      // updateScene() call per frame, preventing double re-renders on large drawings.
       client.on('pointer_update', (msg: ServerMessage) => {
         if (msg.type !== 'pointer_update') return;
 
-        const api = excalidrawAPIRef.current as {
-          updateScene: (data: unknown) => void;
-        } | null;
+        const color = getCollaboratorColor(msg.colorIndex);
 
-        if (api) {
-          const color = getCollaboratorColor(msg.colorIndex);
+        // Update the specific collaborator's full state including pointer
+        const pointerTool = (msg.tool === 'laser' ? 'laser' : 'pointer') as 'pointer' | 'laser';
+        collaboratorMapRef.current.set(msg.userId, {
+          ...collaboratorMapRef.current.get(msg.userId),
+          pointer: { x: msg.x, y: msg.y, tool: pointerTool },
+          button: msg.button as 'up' | 'down',
+          username: msg.name,
+          color,
+          id: msg.userId,
+        });
 
-          // Update the specific collaborator's full state including pointer
-          const pointerTool = (msg.tool === 'laser' ? 'laser' : 'pointer') as 'pointer' | 'laser';
-          collaboratorMapRef.current.set(msg.userId, {
-            ...collaboratorMapRef.current.get(msg.userId),
-            pointer: { x: msg.x, y: msg.y, tool: pointerTool },
-            button: msg.button as 'up' | 'down',
-            username: msg.name,
-            color,
-            id: msg.userId,
+        // Stage collaborator map for the next rAF frame
+        pendingPointerUpdateRef.current.collaborators = new Map(collaboratorMapRef.current);
+
+        // Follow mode: stage viewport update for the same rAF frame
+        if (followingUserIdRef.current === msg.userId && msg.scrollX !== undefined && msg.scrollY !== undefined) {
+          pendingPointerUpdateRef.current.appState = {
+            scrollX: msg.scrollX,
+            scrollY: msg.scrollY,
+            ...(msg.zoom !== undefined ? { zoom: { value: msg.zoom } } : {}),
+          };
+        }
+
+        // Schedule a single batched updateScene() call on the next animation frame
+        if (pointerRafRef.current === null) {
+          pointerRafRef.current = requestAnimationFrame(() => {
+            pointerRafRef.current = null;
+            const pending = pendingPointerUpdateRef.current;
+            const api = excalidrawAPIRef.current as {
+              updateScene: (data: unknown) => void;
+            } | null;
+
+            if (api && pending.collaborators) {
+              // Merge collaborators + appState into a single updateScene call
+              const sceneUpdate: Record<string, unknown> = {
+                collaborators: pending.collaborators,
+              };
+              if (pending.appState) {
+                sceneUpdate.appState = pending.appState;
+              }
+              api.updateScene(sceneUpdate);
+            }
+
+            // Reset pending state
+            pending.collaborators = null;
+            pending.appState = null;
           });
-
-          // Push updated map to Excalidraw — this makes cursors visible!
-          syncCollaboratorsToExcalidraw();
-
-          // Follow mode: sync viewport if we're following this user
-          if (followingUserIdRef.current === msg.userId && msg.scrollX !== undefined && msg.scrollY !== undefined) {
-            api.updateScene({
-              appState: {
-                scrollX: msg.scrollX,
-                scrollY: msg.scrollY,
-                ...(msg.zoom !== undefined ? { zoom: { value: msg.zoom } } : {}),
-              },
-            });
-          }
         }
       });
 
@@ -510,6 +537,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       clientRef.current.disconnect();
       clientRef.current = null;
     }
+    // Cancel any pending rAF pointer update
+    if (pointerRafRef.current !== null) {
+      cancelAnimationFrame(pointerRafRef.current);
+      pointerRafRef.current = null;
+    }
+    pendingPointerUpdateRef.current = { collaborators: null, appState: null };
     collabDrawingIdRef.current = null;
     setIsJoined(false);
     setIsConnected(false);
@@ -577,6 +610,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       if (clientRef.current) {
         clientRef.current.disconnect();
         clientRef.current = null;
+      }
+      if (pointerRafRef.current !== null) {
+        cancelAnimationFrame(pointerRafRef.current);
+        pointerRafRef.current = null;
       }
     };
   }, []);
