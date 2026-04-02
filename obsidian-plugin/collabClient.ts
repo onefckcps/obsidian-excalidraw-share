@@ -9,7 +9,17 @@ import type { ClientMessage, ServerMessage, ExcalidrawElement } from './collabTy
 type MessageHandler = (msg: ServerMessage) => void;
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
-const SCENE_UPDATE_DEBOUNCE_MS = 100;
+
+// ── Adaptive debounce intervals ──
+// During active drawing we batch more aggressively to reduce WS traffic.
+// For idle single-element changes we send almost immediately.
+const DEBOUNCE_IDLE_MS = 16;            // Single change while idle (~1 frame)
+const DEBOUNCE_BATCH_MS = 50;           // Multiple rapid changes
+const DEBOUNCE_ACTIVE_DRAWING_MS = 80;  // During active drawing strokes
+
+// Pointer updates are throttled at the caller (CollabManager), but we
+// still guard against bursts here.
+const POINTER_THROTTLE_MS = 50;
 
 export class CollabClient {
   private ws: WebSocket | null = null;
@@ -24,6 +34,11 @@ export class CollabClient {
   private pendingSceneUpdate: ClientMessage | null = null;
   private lastSentVersions: Map<string, number> = new Map();
   private localSeq: number = 0;
+
+  // ── Pointer throttle state ──
+  private lastPointerSendTime = 0;
+  private pendingPointerUpdate: ClientMessage | null = null;
+  private pointerTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(baseUrl: string, sessionId: string, displayName: string) {
     this.baseUrl = baseUrl;
@@ -109,12 +124,18 @@ export class CollabClient {
       clearTimeout(this.sceneUpdateTimer);
       this.sceneUpdateTimer = null;
     }
+    if (this.pointerTimer) {
+      clearTimeout(this.pointerTimer);
+      this.pointerTimer = null;
+    }
     if (this.ws) {
       this.ws.close(1000, 'User disconnected');
       this.ws = null;
     }
     this.lastSentVersions.clear();
     this.localSeq = 0;
+    this.lastPointerSendTime = 0;
+    this.pendingPointerUpdate = null;
     this.handlers.clear();
   }
 
@@ -123,10 +144,15 @@ export class CollabClient {
   }
 
   // ──────────────────────────────────────────────
-  // Send methods (with debounce)
+  // Send methods (with adaptive debounce)
   // ──────────────────────────────────────────────
 
-  sendSceneUpdate(elements: ExcalidrawElement[]): void {
+  /**
+   * Send a scene update with adaptive debouncing.
+   * @param elements  All current scene elements
+   * @param isDrawing Whether the user is actively drawing (longer debounce)
+   */
+  sendSceneUpdate(elements: ExcalidrawElement[], isDrawing: boolean = false): void {
     // Compute delta: find elements that changed since last send
     const changedElements: ExcalidrawElement[] = [];
     for (const el of elements) {
@@ -166,16 +192,78 @@ export class CollabClient {
       }
     }
 
-    // Debounce: batch scene updates
+    // ── Adaptive debounce based on context ──
+    const debounceMs = isDrawing
+      ? DEBOUNCE_ACTIVE_DRAWING_MS
+      : changedElements.length > 3
+        ? DEBOUNCE_BATCH_MS
+        : DEBOUNCE_IDLE_MS;
+
+    // Always replace the pending update with the latest
     this.pendingSceneUpdate = msg;
-    if (!this.sceneUpdateTimer) {
-      this.sceneUpdateTimer = setTimeout(() => {
-        this.sceneUpdateTimer = null;
-        if (this.pendingSceneUpdate) {
-          this._send(this.pendingSceneUpdate);
-          this.pendingSceneUpdate = null;
-        }
-      }, SCENE_UPDATE_DEBOUNCE_MS);
+
+    // Clear existing timer and set a new one with the appropriate delay
+    if (this.sceneUpdateTimer) {
+      clearTimeout(this.sceneUpdateTimer);
+    }
+    this.sceneUpdateTimer = setTimeout(() => {
+      this.sceneUpdateTimer = null;
+      if (this.pendingSceneUpdate) {
+        this._send(this.pendingSceneUpdate);
+        this.pendingSceneUpdate = null;
+      }
+    }, debounceMs);
+  }
+
+  /**
+   * Send a pointer position update, throttled to avoid flooding.
+   */
+  sendPointerUpdate(
+    x: number,
+    y: number,
+    button: 'down' | 'up',
+    tool: 'pointer' | 'laser' = 'pointer',
+    scrollX?: number,
+    scrollY?: number,
+    zoom?: number,
+  ): void {
+    const msg: ClientMessage = {
+      type: 'pointer_update',
+      x,
+      y,
+      button,
+      tool,
+      scrollX,
+      scrollY,
+      zoom,
+    };
+
+    const now = Date.now();
+    const elapsed = now - this.lastPointerSendTime;
+
+    if (elapsed >= POINTER_THROTTLE_MS) {
+      // Enough time has passed — send immediately
+      this.lastPointerSendTime = now;
+      this._send(msg);
+      // Clear any pending pointer update
+      if (this.pointerTimer) {
+        clearTimeout(this.pointerTimer);
+        this.pointerTimer = null;
+      }
+      this.pendingPointerUpdate = null;
+    } else {
+      // Too soon — queue for later
+      this.pendingPointerUpdate = msg;
+      if (!this.pointerTimer) {
+        this.pointerTimer = setTimeout(() => {
+          this.pointerTimer = null;
+          if (this.pendingPointerUpdate) {
+            this.lastPointerSendTime = Date.now();
+            this._send(this.pendingPointerUpdate);
+            this.pendingPointerUpdate = null;
+          }
+        }, POINTER_THROTTLE_MS - elapsed);
+      }
     }
   }
 

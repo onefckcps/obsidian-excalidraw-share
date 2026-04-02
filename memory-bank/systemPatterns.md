@@ -152,5 +152,5 @@ interface ExcaliShareSettings {
 5. **Unguessable session IDs** — Full 128-bit UUIDs for session security (no auth on WebSocket)
 6. **Constant-time auth** — `subtle::ConstantTimeEq` for API key comparison
 7. **Expired session auto-save** — Background task saves expired sessions to storage before cleanup
-8. **Native collab via polling** — Obsidian plugin uses polling-based change detection (250ms) since the Excalidraw Obsidian wrapper doesn't expose `onChange`/`onPointerUpdate` React props. Remote updates are deferred during active drawing to prevent stutter.
-9. **Cached Excalidraw API** — Plugin caches the `getExcalidrawAPI()` reference and validates it cheaply, avoiding expensive `ea.setView('active')` calls on every poll cycle
+8. **Event-driven native collab** — Obsidian plugin uses `excalidrawAPI.onChange()` imperative subscription for instant, zero-waste change detection. Falls back to 2s polling for older Excalidraw versions. Host cursor is broadcast via DOM `pointermove` listener with screen→scene coordinate conversion. Laser pointer detected via `appState.activeTool.type`. Follow mode uses lerp-based viewport interpolation (same algorithm as frontend). Adaptive debouncing: 16ms idle / 50ms batch / 80ms during drawing. Version-based echo suppression via `remoteAppliedVersions` map + double-`requestAnimationFrame` cooldown.
+9. **Cached Excalidraw API** — Plugin caches the `getExcalidrawAPI()` reference and validates it cheaply, avoiding expensive `ea.setView('active')` calls on every cycle

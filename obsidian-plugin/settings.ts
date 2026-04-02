@@ -10,7 +10,6 @@ export interface ExcaliShareSettings {
   // Native collab (in-Obsidian participation)
   collabJoinFromObsidian: boolean;
   collabDisplayName: string;
-  collabPollIntervalMs: number;
   // Toolbar settings
   showFloatingToolbar: boolean;
   toolbarPosition: ToolbarPosition;
@@ -27,7 +26,6 @@ export const DEFAULT_SETTINGS: ExcaliShareSettings = {
   collabAutoOpenBrowser: true,
   collabJoinFromObsidian: true,
   collabDisplayName: 'Host',
-  collabPollIntervalMs: 250,
   showFloatingToolbar: true,
   toolbarPosition: 'top-left',
   autoSyncOnSave: false,

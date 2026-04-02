@@ -1304,7 +1304,6 @@ export default class ExcaliSharePlugin extends Plugin {
       this.collabManager = new CollabManager({
         baseUrl: this.settings.baseUrl,
         displayName: this.settings.collabDisplayName || 'Host',
-        pollIntervalMs: this.settings.collabPollIntervalMs || 250,
         getExcalidrawAPI: () => {
           try {
             const plugin = this.getExcalidrawPlugin();
@@ -1312,6 +1311,16 @@ export default class ExcaliSharePlugin extends Plugin {
             plugin.ea.setView('active');
             const api = plugin.ea.getExcalidrawAPI();
             return api as ExcalidrawAPI;
+          } catch {
+            return null;
+          }
+        },
+        getCanvasContainer: () => {
+          // Find the active Excalidraw view's container element for pointer tracking
+          try {
+            const activeLeaf = this.app.workspace.activeLeaf;
+            if (!activeLeaf?.view?.containerEl) return null;
+            return activeLeaf.view.containerEl.querySelector<HTMLElement>('.excalidraw') || null;
           } catch {
             return null;
           }

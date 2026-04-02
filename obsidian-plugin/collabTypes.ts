@@ -100,6 +100,30 @@ export interface ExcalidrawAPI {
   getSceneElementsIncludingDeleted?: () => ExcalidrawElement[];
   getFiles: () => Record<string, unknown>;
   getAppState: () => Record<string, unknown>;
+
+  // ── Event subscription methods (Excalidraw imperative API) ──
+  // These return an unsubscribe function. Available on newer Excalidraw versions.
+  onChange?: (
+    callback: (
+      elements: readonly ExcalidrawElement[],
+      appState: Record<string, unknown>,
+      files: Record<string, unknown>,
+    ) => void,
+  ) => () => void;
+  onPointerDown?: (
+    callback: (
+      activeTool: unknown,
+      pointerDownState: unknown,
+      event: PointerEvent,
+    ) => void,
+  ) => () => void;
+  onPointerUp?: (
+    callback: (
+      activeTool: unknown,
+      pointerDownState: unknown,
+      event: PointerEvent,
+    ) => void,
+  ) => () => void;
 }
 
 // ──────────────────────────────────────────────

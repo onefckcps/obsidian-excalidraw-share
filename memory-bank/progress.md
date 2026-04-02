@@ -48,8 +48,15 @@
 - [x] Plugin: Pull from server (sync changes back to vault)
 - [x] Plugin: Native collab participation (WebSocket from Obsidian)
 - [x] Plugin: CollabClient WebSocket wrapper (adapted from frontend)
-- [x] Plugin: CollabManager (session lifecycle, change detection, cursor display)
-- [x] Plugin: Polling-based change detection (250ms interval, version comparison)
+- [x] Plugin: CollabManager (session lifecycle, change detection, cursor display, follow mode)
+- [x] Plugin: Event-driven change detection via `excalidrawAPI.onChange()` (instant, zero-waste)
+- [x] Plugin: Fallback polling at 2s for older Excalidraw versions (was 250ms)
+- [x] Plugin: Adaptive debouncing (16ms idle / 50ms batch / 80ms drawing)
+- [x] Plugin: Version-based echo suppression (remoteAppliedVersions + double-rAF)
+- [x] Plugin: Host cursor broadcasting via DOM pointermove (50ms throttled)
+- [x] Plugin: Laser pointer detection (reads appState.activeTool.type)
+- [x] Plugin: Follow mode with lerp-based viewport interpolation (same as frontend)
+- [x] Plugin: Drawing state tracking via onPointerDown/onPointerUp subscriptions
 - [x] Plugin: Deferred remote updates during active drawing (prevents stutter)
 - [x] Plugin: Cached Excalidraw API reference (avoids expensive setView calls)
 - [x] Plugin: Collaborator cursor display in Obsidian Excalidraw view
@@ -112,5 +119,5 @@
 - Viewer.tsx is very large (42K+ chars) — could benefit from splitting
 - No conflict resolution UI (server always picks highest version)
 - No undo/redo sync across collaborators
-- Obsidian host cannot broadcast cursor position (no `onPointerUpdate` hook available in Excalidraw Obsidian plugin)
-- Polling-based change detection adds ~250ms latency for outgoing changes from Obsidian (vs. instant in browser)
+- ~~Obsidian host cannot broadcast cursor position~~ — FIXED: DOM pointermove listener with coordinate conversion
+- ~~Polling-based change detection adds ~250ms latency~~ — FIXED: Event-driven via excalidrawAPI.onChange() (instant)

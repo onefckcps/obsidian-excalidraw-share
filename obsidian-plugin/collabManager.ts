@@ -4,9 +4,12 @@
 //
 // Responsibilities:
 // - WebSocket lifecycle (connect, reconnect, disconnect)
-// - Polling-based change detection (since we can't hook onChange)
+// - Event-driven change detection via excalidrawAPI.onChange()
+//   with lightweight polling fallback for older Excalidraw versions
+// - Pointer tracking via DOM pointermove listener
 // - Remote update application with merge logic
 // - Deferred updates during active drawing (prevents stutter)
+// - Version-based echo suppression (no timing hacks)
 // - Collaborator cursor display
 // - Status notifications
 // ──────────────────────────────────────────────
@@ -31,6 +34,9 @@ export interface CollabManagerCallbacks {
   onSessionEnded?: (saved: boolean) => void;
 }
 
+/** Detection strategy currently in use */
+type DetectionStrategy = 'event-driven' | 'polling' | 'none';
+
 export class CollabManager {
   // ── State ──
   private client: CollabClient | null = null;
@@ -38,7 +44,6 @@ export class CollabManager {
   private drawingId: string | null = null;
   private baseUrl: string;
   private displayName: string;
-  private pollIntervalMs: number;
   private callbacks: CollabManagerCallbacks;
 
   // ── Excalidraw API ──
@@ -46,11 +51,28 @@ export class CollabManager {
   /** Cached API reference — avoids calling ea.setView('active') on every cycle */
   private cachedAPI: ExcalidrawAPI | null = null;
 
-  // ── Change detection ──
+  // ── Change detection strategy ──
+  private detectionStrategy: DetectionStrategy = 'none';
+
+  // ── Event-driven subscriptions (preferred) ──
+  private onChangeUnsubscribe: (() => void) | null = null;
+  private onPointerDownUnsubscribe: (() => void) | null = null;
+  private onPointerUpUnsubscribe: (() => void) | null = null;
+
+  // ── Pointer tracking via DOM ──
+  private pointerMoveCleanup: (() => void) | null = null;
+
+  // ── Fallback polling (only used when onChange is unavailable) ──
+  private static readonly FALLBACK_POLL_INTERVAL_MS = 2000;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  // ── Version tracking & echo suppression ──
   private lastKnownVersions: Map<string, number> = new Map();
+  private remoteAppliedVersions: Map<string, number> = new Map();
   private isApplyingRemoteUpdate = false;
-  private remoteUpdateCooldownTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // ── Drawing state (event-driven via onPointerDown/Up) ──
+  private isUserActivelyDrawing = false;
 
   // ── Deferred remote updates (prevents stutter during drawing) ──
   private pendingRemoteUpdates: ExcalidrawElement[][] = [];
@@ -65,18 +87,29 @@ export class CollabManager {
   private _isConnected = false;
   private _isJoined = false;
 
+  // ── Follow mode (lerp-based viewport interpolation) ──
+  private followingUserId: string | null = null;
+  private followTarget: { scrollX: number; scrollY: number; zoom: number | null } | null = null;
+  private followCurrent: { scrollX: number; scrollY: number; zoom: number } | null = null;
+  private followLerpRaf: ReturnType<typeof requestAnimationFrame> | null = null;
+  private static readonly FOLLOW_LERP_FACTOR = 0.25;
+
+  // ── Canvas element finder (for pointer tracking) ──
+  private getCanvasContainerFn: (() => HTMLElement | null) | null = null;
+
   constructor(options: {
     baseUrl: string;
     displayName: string;
-    pollIntervalMs: number;
     getExcalidrawAPI: () => ExcalidrawAPI | null;
     callbacks?: CollabManagerCallbacks;
+    /** Optional: function to find the Excalidraw canvas container element for pointer tracking */
+    getCanvasContainer?: () => HTMLElement | null;
   }) {
     this.baseUrl = options.baseUrl;
     this.displayName = options.displayName;
-    this.pollIntervalMs = options.pollIntervalMs;
     this.getExcalidrawAPIFn = options.getExcalidrawAPI;
     this.callbacks = options.callbacks || {};
+    this.getCanvasContainerFn = options.getCanvasContainer || null;
   }
 
   // ──────────────────────────────────────────────
@@ -97,6 +130,39 @@ export class CollabManager {
 
   get participantCount(): number {
     return this.collaborators.length;
+  }
+
+  /** Which change detection strategy is currently active */
+  get activeDetectionStrategy(): DetectionStrategy {
+    return this.detectionStrategy;
+  }
+
+  /** The user ID we are currently following (null if not following anyone) */
+  get currentFollowingUserId(): string | null {
+    return this.followingUserId;
+  }
+
+  /**
+   * Start following a user's viewport (smooth lerp interpolation).
+   * The host's viewport will smoothly track the followed user's scroll/zoom.
+   */
+  startFollowing(userId: string): void {
+    this.followingUserId = userId;
+    console.log(`ExcaliShare Collab: Now following user ${userId}`);
+  }
+
+  /**
+   * Stop following a user's viewport.
+   */
+  stopFollowing(): void {
+    this.followingUserId = null;
+    this.followTarget = null;
+    this.followCurrent = null;
+    if (this.followLerpRaf !== null) {
+      cancelAnimationFrame(this.followLerpRaf);
+      this.followLerpRaf = null;
+    }
+    console.log('ExcaliShare Collab: Stopped following');
   }
 
   /**
@@ -215,13 +281,19 @@ export class CollabManager {
     this.collaborators = [];
     this.collaboratorMap.clear();
     this.lastKnownVersions.clear();
+    this.remoteAppliedVersions.clear();
     this.isApplyingRemoteUpdate = false;
+    this.isUserActivelyDrawing = false;
     this.pendingRemoteUpdates = [];
     this.cachedAPI = null;
 
-    if (this.remoteUpdateCooldownTimer) {
-      clearTimeout(this.remoteUpdateCooldownTimer);
-      this.remoteUpdateCooldownTimer = null;
+    // Clean up follow mode
+    this.followingUserId = null;
+    this.followTarget = null;
+    this.followCurrent = null;
+    if (this.followLerpRaf !== null) {
+      cancelAnimationFrame(this.followLerpRaf);
+      this.followLerpRaf = null;
     }
 
     this.callbacks.onConnectionChanged?.(false);
@@ -267,10 +339,16 @@ export class CollabManager {
 
   /**
    * Check if the user is actively drawing, resizing, or editing an element.
-   * When true, we defer remote updates to avoid interrupting the stroke.
-   * This is the same check the frontend uses in useCollab.ts.
+   * In event-driven mode, this uses the flag set by onPointerDown/Up.
+   * In polling mode, falls back to checking appState.
    */
   private isUserDrawing(): boolean {
+    // In event-driven mode, use the flag set by onPointerDown/Up
+    if (this.detectionStrategy === 'event-driven') {
+      return this.isUserActivelyDrawing;
+    }
+
+    // Fallback: check appState directly (polling mode)
     const api = this.getAPI();
     if (!api?.getAppState) return false;
     try {
@@ -318,7 +396,7 @@ export class CollabManager {
     // Initialize version tracking from the snapshot
     this.initializeVersionTracking(msg.elements as ExcalidrawElement[]);
 
-    // Start polling for local changes
+    // Start change detection (event-driven or polling fallback)
     this.startChangeDetection();
 
     // Start the flush timer for deferred updates
@@ -338,6 +416,7 @@ export class CollabManager {
     for (const el of remoteElements) {
       if (el.id) {
         this.lastKnownVersions.set(el.id, el.version);
+        this.remoteAppliedVersions.set(el.id, el.version);
       }
     }
 
@@ -459,6 +538,39 @@ export class CollabManager {
     // Push updated collaborator map to Excalidraw
     // Cursor updates are lightweight and should not cause stutter
     this.syncCollaboratorsToExcalidraw();
+
+    // ── Follow mode: update the lerp target ──
+    if (this.followingUserId === msg.userId && msg.scrollX !== undefined && msg.scrollY !== undefined) {
+      this.followTarget = {
+        scrollX: msg.scrollX,
+        scrollY: msg.scrollY,
+        zoom: msg.zoom !== undefined ? msg.zoom : null,
+      };
+
+      // Initialize current position from Excalidraw's state on first target
+      if (this.followCurrent === null) {
+        const api = this.getAPI();
+        if (api?.getAppState) {
+          try {
+            const appState = api.getAppState() as {
+              scrollX: number;
+              scrollY: number;
+              zoom: { value: number };
+            };
+            this.followCurrent = {
+              scrollX: appState.scrollX,
+              scrollY: appState.scrollY,
+              zoom: appState.zoom?.value ?? 1,
+            };
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Start the lerp loop if not already running
+      if (this.followLerpRaf === null) {
+        this.startFollowLerpLoop();
+      }
+    }
   }
 
   private handleUserJoined(msg: Extract<ServerMessage, { type: 'user_joined' }>): void {
@@ -476,6 +588,12 @@ export class CollabManager {
     this.buildCollaboratorMap(msg.collaborators);
     this.syncCollaboratorsToExcalidraw();
     this.callbacks.onCollaboratorsChanged?.(this.collaborators);
+
+    // If we were following this user, stop following
+    if (this.followingUserId === msg.userId) {
+      this.stopFollowing();
+    }
+
     new Notice(`ExcaliShare: ${msg.name} left the session`);
   }
 
@@ -490,26 +608,139 @@ export class CollabManager {
   }
 
   // ──────────────────────────────────────────────
-  // Change Detection (Polling)
+  // Change Detection (Event-Driven + Polling Fallback)
   // ──────────────────────────────────────────────
 
+  /**
+   * Start change detection using the best available strategy:
+   * 1. Event-driven via excalidrawAPI.onChange() (preferred — zero-latency, zero-waste)
+   * 2. Lightweight polling fallback (2s interval) if onChange is unavailable
+   */
   private startChangeDetection(): void {
-    if (this.pollTimer) return;
+    if (this.detectionStrategy !== 'none') return;
 
-    console.log(`ExcaliShare Collab: Starting change detection (${this.pollIntervalMs}ms interval)`);
+    const api = this.getAPI();
+    if (!api) return;
 
-    this.pollTimer = setInterval(() => {
-      this.detectAndSendChanges();
-    }, this.pollIntervalMs);
-  }
-
-  private stopChangeDetection(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
+    // Try event-driven detection first (preferred)
+    if (typeof api.onChange === 'function') {
+      this.startEventDrivenDetection(api);
+    } else {
+      // Fallback to lightweight polling
+      this.startPollingDetection();
     }
   }
 
+  /**
+   * Event-driven change detection using Excalidraw's imperative API.
+   * - onChange: fires on every scene change (elements, appState, files)
+   * - onPointerDown/Up: tracks drawing state for deferred updates
+   * - DOM pointermove: tracks cursor position for broadcasting
+   */
+  private startEventDrivenDetection(api: ExcalidrawAPI): void {
+    this.detectionStrategy = 'event-driven';
+    console.log('ExcaliShare Collab: Using event-driven change detection (onChange API)');
+
+    // ── Subscribe to scene changes ──
+    this.onChangeUnsubscribe = api.onChange!(
+      (elements: readonly ExcalidrawElement[], _appState: Record<string, unknown>, _files: Record<string, unknown>) => {
+        this.handleLocalSceneChange(elements);
+      }
+    );
+
+    // ── Subscribe to pointer down (track drawing state) ──
+    if (typeof api.onPointerDown === 'function') {
+      this.onPointerDownUnsubscribe = api.onPointerDown(
+        (_activeTool: unknown, _pointerDownState: unknown, _event: PointerEvent) => {
+          this.isUserActivelyDrawing = true;
+        }
+      );
+    }
+
+    // ── Subscribe to pointer up (flush deferred updates) ──
+    if (typeof api.onPointerUp === 'function') {
+      this.onPointerUpUnsubscribe = api.onPointerUp(
+        (_activeTool: unknown, _pointerDownState: unknown, _event: PointerEvent) => {
+          this.isUserActivelyDrawing = false;
+          // Flush any deferred remote updates now that drawing ended
+          if (this.pendingRemoteUpdates.length > 0) {
+            this.flushPendingRemoteUpdates();
+          }
+        }
+      );
+    }
+
+    // ── Set up pointer tracking via DOM listener ──
+    this.startPointerTracking();
+  }
+
+  /**
+   * Handle a local scene change detected via onChange callback.
+   * Performs version-diff filtering to avoid echoing remote changes back.
+   */
+  private handleLocalSceneChange(elements: readonly ExcalidrawElement[]): void {
+    // Skip if we're in the middle of applying a remote update
+    if (this.isApplyingRemoteUpdate) return;
+
+    // Skip if not connected
+    if (!this.client?.isConnected) return;
+
+    // Fast version-diff: only collect elements whose version exceeds our tracking
+    const changedElements: ExcalidrawElement[] = [];
+    for (const el of elements) {
+      if (!el.id) continue;
+
+      const lastVersion = this.lastKnownVersions.get(el.id) ?? -1;
+      if (el.version > lastVersion) {
+        // Check if this is an echo of a remote update we applied
+        const remoteVersion = this.remoteAppliedVersions.get(el.id);
+        if (remoteVersion !== undefined && el.version <= remoteVersion) {
+          // This is an echo — skip it but update tracking
+          this.lastKnownVersions.set(el.id, el.version);
+          continue;
+        }
+
+        changedElements.push(el);
+        this.lastKnownVersions.set(el.id, el.version);
+      }
+    }
+
+    // Clean up stale remote version entries for elements that have been locally modified
+    for (const el of changedElements) {
+      this.remoteAppliedVersions.delete(el.id);
+    }
+
+    if (changedElements.length === 0) return;
+
+    // Send changes via WebSocket (CollabClient handles delta vs full + debouncing)
+    // Pass the full elements array so CollabClient can compute delta/full correctly
+    // The isDrawing flag enables adaptive debouncing
+    this.client.sendSceneUpdate(
+      elements as ExcalidrawElement[],
+      this.isUserActivelyDrawing,
+    );
+  }
+
+  /**
+   * Fallback: lightweight polling for older Excalidraw versions
+   * that don't expose the onChange imperative API.
+   * Polls at 2s intervals (much less aggressive than the old 250ms).
+   */
+  private startPollingDetection(): void {
+    if (this.pollTimer) return;
+
+    this.detectionStrategy = 'polling';
+    console.log(`ExcaliShare Collab: onChange API not available, using fallback polling (${CollabManager.FALLBACK_POLL_INTERVAL_MS}ms)`);
+
+    this.pollTimer = setInterval(() => {
+      this.detectAndSendChanges();
+    }, CollabManager.FALLBACK_POLL_INTERVAL_MS);
+  }
+
+  /**
+   * Polling-based change detection (fallback only).
+   * Same logic as before but runs much less frequently.
+   */
   private detectAndSendChanges(): void {
     // Skip if we just applied a remote update (avoid echo)
     if (this.isApplyingRemoteUpdate) return;
@@ -548,7 +779,223 @@ export class CollabManager {
     }
 
     // Send changes via WebSocket
-    this.client.sendSceneUpdate(currentElements);
+    this.client.sendSceneUpdate(currentElements, this.isUserDrawing());
+  }
+
+  /**
+   * Stop all change detection (event subscriptions + polling + pointer tracking).
+   */
+  private stopChangeDetection(): void {
+    // Unsubscribe from Excalidraw event-driven API
+    if (this.onChangeUnsubscribe) {
+      try { this.onChangeUnsubscribe(); } catch { /* ignore */ }
+      this.onChangeUnsubscribe = null;
+    }
+    if (this.onPointerDownUnsubscribe) {
+      try { this.onPointerDownUnsubscribe(); } catch { /* ignore */ }
+      this.onPointerDownUnsubscribe = null;
+    }
+    if (this.onPointerUpUnsubscribe) {
+      try { this.onPointerUpUnsubscribe(); } catch { /* ignore */ }
+      this.onPointerUpUnsubscribe = null;
+    }
+
+    // Stop pointer tracking
+    if (this.pointerMoveCleanup) {
+      try { this.pointerMoveCleanup(); } catch { /* ignore */ }
+      this.pointerMoveCleanup = null;
+    }
+
+    // Stop fallback polling
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+
+    // Clear version tracking
+    this.remoteAppliedVersions.clear();
+    this.detectionStrategy = 'none';
+  }
+
+  // ──────────────────────────────────────────────
+  // Pointer Tracking (DOM-based)
+  // ──────────────────────────────────────────────
+
+  /**
+   * Set up pointer tracking by attaching a pointermove listener
+   * to the Excalidraw canvas element. This enables the host's cursor
+   * to be visible to other participants.
+   *
+   * The listener is throttled to 50ms to avoid flooding the WebSocket.
+   * Screen coordinates are converted to Excalidraw scene coordinates.
+   */
+  private startPointerTracking(): void {
+    const canvasEl = this.findExcalidrawCanvas();
+    if (!canvasEl) {
+      console.log('ExcaliShare Collab: Canvas element not found, pointer tracking disabled');
+      // Retry after a short delay (canvas might not be rendered yet)
+      setTimeout(() => {
+        if (this.detectionStrategy === 'event-driven' && !this.pointerMoveCleanup) {
+          const retryCanvas = this.findExcalidrawCanvas();
+          if (retryCanvas) {
+            this.attachPointerListener(retryCanvas);
+          } else {
+            console.log('ExcaliShare Collab: Canvas still not found after retry, pointer tracking disabled');
+          }
+        }
+      }, 1000);
+      return;
+    }
+
+    this.attachPointerListener(canvasEl);
+  }
+
+  private attachPointerListener(canvasEl: HTMLElement): void {
+    let lastSendTime = 0;
+    const THROTTLE_MS = 50;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const now = Date.now();
+      if (now - lastSendTime < THROTTLE_MS) return;
+      lastSendTime = now;
+
+      if (!this.client?.isConnected) return;
+
+      // Convert screen coordinates to Excalidraw scene coordinates
+      const api = this.getAPI();
+      if (!api?.getAppState) return;
+
+      try {
+        const appState = api.getAppState() as {
+          scrollX: number;
+          scrollY: number;
+          zoom: { value: number };
+          activeTool?: { type: string };
+        };
+
+        const zoom = appState.zoom?.value || 1;
+        const rect = canvasEl.getBoundingClientRect();
+        const sceneX = (event.clientX - rect.left) / zoom - appState.scrollX;
+        const sceneY = (event.clientY - rect.top) / zoom - appState.scrollY;
+
+        const button: 'down' | 'up' = event.buttons > 0 ? 'down' : 'up';
+
+        // Detect active tool: laser pointer vs regular pointer
+        const tool: 'pointer' | 'laser' =
+          appState.activeTool?.type === 'laser' ? 'laser' : 'pointer';
+
+        this.client.sendPointerUpdate(
+          sceneX, sceneY, button, tool,
+          appState.scrollX, appState.scrollY, zoom,
+        );
+      } catch {
+        // Silently ignore — API might be stale
+      }
+    };
+
+    canvasEl.addEventListener('pointermove', handlePointerMove, { passive: true });
+    this.pointerMoveCleanup = () => {
+      canvasEl.removeEventListener('pointermove', handlePointerMove);
+    };
+
+    console.log('ExcaliShare Collab: Pointer tracking enabled on canvas element');
+  }
+
+  /**
+   * Find the Excalidraw canvas element in the DOM.
+   * Uses the provided getCanvasContainer function or falls back to
+   * searching the active workspace leaf.
+   */
+  private findExcalidrawCanvas(): HTMLElement | null {
+    // Try the provided canvas container finder first
+    if (this.getCanvasContainerFn) {
+      const container = this.getCanvasContainerFn();
+      if (container) {
+        // Look for the interactive canvas within the container
+        return container.querySelector<HTMLElement>(
+          '.excalidraw__canvas'
+        ) || container.querySelector<HTMLElement>(
+          'canvas'
+        ) || container;
+      }
+    }
+
+    // Fallback: search the document for the Excalidraw canvas
+    return document.querySelector<HTMLElement>(
+      '.excalidraw__canvas'
+    ) || document.querySelector<HTMLElement>(
+      '.excalidraw canvas'
+    );
+  }
+
+  // ──────────────────────────────────────────────
+  // Follow Mode (Lerp-based Viewport Interpolation)
+  // ──────────────────────────────────────────────
+
+  /**
+   * Start the follow mode lerp loop. Smoothly interpolates the host's
+   * viewport toward the followed user's viewport using requestAnimationFrame.
+   * Same algorithm as the frontend's useCollab.ts follow mode.
+   */
+  private startFollowLerpLoop(): void {
+    const lerpLoop = () => {
+      const api = this.getAPI();
+      const target = this.followTarget;
+      const current = this.followCurrent;
+
+      if (!api || !target || !current || !this.followingUserId) {
+        this.followLerpRaf = null;
+        return;
+      }
+
+      // Lerp toward target using self-tracked position
+      const dx = target.scrollX - current.scrollX;
+      const dy = target.scrollY - current.scrollY;
+      const dz = target.zoom !== null ? target.zoom - current.zoom : 0;
+
+      // Check if close enough to snap
+      const threshold = 0.5;
+      const isClose = Math.abs(dx) < threshold && Math.abs(dy) < threshold && Math.abs(dz) < 0.005;
+
+      try {
+        if (isClose) {
+          // Snap to exact target and stop the loop
+          current.scrollX = target.scrollX;
+          current.scrollY = target.scrollY;
+          if (target.zoom !== null) current.zoom = target.zoom;
+
+          const finalState: Record<string, unknown> = {
+            scrollX: target.scrollX,
+            scrollY: target.scrollY,
+          };
+          if (target.zoom !== null) {
+            finalState.zoom = { value: target.zoom };
+          }
+          api.updateScene({ appState: finalState });
+          this.followLerpRaf = null;
+        } else {
+          // Interpolate and update self-tracked position
+          current.scrollX += dx * CollabManager.FOLLOW_LERP_FACTOR;
+          current.scrollY += dy * CollabManager.FOLLOW_LERP_FACTOR;
+          if (target.zoom !== null) current.zoom += dz * CollabManager.FOLLOW_LERP_FACTOR;
+
+          const lerpState: Record<string, unknown> = {
+            scrollX: current.scrollX,
+            scrollY: current.scrollY,
+          };
+          if (target.zoom !== null) {
+            lerpState.zoom = { value: current.zoom };
+          }
+          api.updateScene({ appState: lerpState });
+          this.followLerpRaf = requestAnimationFrame(lerpLoop);
+        }
+      } catch {
+        // API might be stale — stop the loop
+        this.followLerpRaf = null;
+      }
+    };
+
+    this.followLerpRaf = requestAnimationFrame(lerpLoop);
   }
 
   // ──────────────────────────────────────────────
@@ -578,11 +1025,12 @@ export class CollabManager {
   }
 
   // ──────────────────────────────────────────────
-  // Version Tracking
+  // Version Tracking & Echo Suppression
   // ──────────────────────────────────────────────
 
   private initializeVersionTracking(elements: ExcalidrawElement[]): void {
     this.lastKnownVersions.clear();
+    this.remoteAppliedVersions.clear();
     for (const el of elements) {
       if (el.id) {
         this.lastKnownVersions.set(el.id, el.version);
@@ -590,15 +1038,28 @@ export class CollabManager {
     }
   }
 
+  /**
+   * Schedule clearing the isApplyingRemoteUpdate flag.
+   * Uses requestAnimationFrame to ensure React has processed the updateScene
+   * call before we start listening for changes again.
+   */
   private scheduleRemoteUpdateCooldown(): void {
-    // Keep the flag set for a short period to skip the next poll cycle
-    if (this.remoteUpdateCooldownTimer) {
-      clearTimeout(this.remoteUpdateCooldownTimer);
+    // Use requestAnimationFrame for precise timing — clears the flag
+    // after the browser has had a chance to process the React update.
+    // This is more reliable than the old fixed-timeout approach.
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        // Double-rAF to ensure React's commit phase has completed
+        requestAnimationFrame(() => {
+          this.isApplyingRemoteUpdate = false;
+        });
+      });
+    } else {
+      // Fallback for environments without rAF (shouldn't happen in Electron)
+      setTimeout(() => {
+        this.isApplyingRemoteUpdate = false;
+      }, 50);
     }
-    this.remoteUpdateCooldownTimer = setTimeout(() => {
-      this.isApplyingRemoteUpdate = false;
-      this.remoteUpdateCooldownTimer = null;
-    }, 100);
   }
 
   // ──────────────────────────────────────────────

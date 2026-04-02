@@ -44,11 +44,17 @@ The entire real-time collaboration feature was designed and implemented across a
 - **Auto-open browser** — Optionally opens the web viewer when starting a collab session
 - **Pull from server** — Syncs collab changes back to the vault (via Excalidraw API or manual JSON replacement)
 - **Native collab participation** — Host can participate directly in the Obsidian Excalidraw canvas via WebSocket:
-  - `CollabClient` — WebSocket client adapted from frontend (same protocol, delta tracking, debounce)
-  - `CollabManager` — Orchestrates session lifecycle, change detection, cursor display
-  - **Polling-based change detection** — Polls `getSceneElements()` every 250ms, compares element versions
-  - **Deferred remote updates** — Queues incoming updates while user is drawing (checks `draggingElement/resizingElement/editingElement`), flushes when user stops (300ms interval)
-  - **Cached API reference** — Avoids expensive `ea.setView('active')` calls on every poll cycle
+  - `CollabClient` — WebSocket client adapted from frontend (same protocol, delta tracking, adaptive debounce)
+  - `CollabManager` — Orchestrates session lifecycle, change detection, cursor display, follow mode
+  - **Event-driven change detection** — Uses `excalidrawAPI.onChange()` subscription for instant, zero-waste change detection (with 2s polling fallback for older Excalidraw versions)
+  - **Adaptive debouncing** — 16ms idle / 50ms batch / 80ms during active drawing (context-aware)
+  - **Version-based echo suppression** — `remoteAppliedVersions` map + double-`requestAnimationFrame` cooldown (replaces fragile timing-based approach)
+  - **Host cursor broadcasting** — DOM `pointermove` listener on Excalidraw canvas, throttled to 50ms, with screen→scene coordinate conversion
+  - **Laser pointer support** — Reads `appState.activeTool.type` to detect laser vs pointer tool
+  - **Follow mode** — Lerp-based viewport interpolation (scrollX/scrollY/zoom) via `requestAnimationFrame`, same algorithm as frontend
+  - **Drawing state tracking** — `onPointerDown`/`onPointerUp` subscriptions for precise drawing state detection
+  - **Deferred remote updates** — Queues incoming updates while user is drawing, flushes when user stops (300ms interval + onPointerUp)
+  - **Cached API reference** — Avoids expensive `ea.setView('active')` calls on every cycle
   - **Collaborator cursor display** — Other users' cursors visible in Obsidian via `updateScene({ collaborators })`
   - **Auto-sync disabled during collab** — Prevents uploading mid-session state
 
