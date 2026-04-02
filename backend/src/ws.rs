@@ -7,10 +7,17 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::collab::{ClientMessage, ServerMessage, SessionManager};
 use crate::error::AppError;
+
+#[derive(Clone)]
+pub struct WsState {
+    pub session_manager: SessionManager,
+    pub api_key: String,
+}
 
 #[derive(Deserialize)]
 pub struct WsQuery {
@@ -18,6 +25,9 @@ pub struct WsQuery {
     pub name: String,
     #[serde(default)]
     pub password: Option<String>,
+    /// Optional API key for admin bypass of session password
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 fn default_name() -> String {
@@ -59,23 +69,33 @@ fn sanitize_display_name(name: &str, max_len: usize) -> String {
 
 /// WebSocket upgrade handler for collab sessions.
 /// Verifies session password BEFORE upgrading the connection.
+/// Admin (valid API key) bypasses the session password.
 pub async fn ws_collab_handler(
     ws: WebSocketUpgrade,
     Path(session_id): Path<String>,
     Query(query): Query<WsQuery>,
-    State(session_manager): State<SessionManager>,
+    State(ws_state): State<WsState>,
 ) -> Result<impl IntoResponse, AppError> {
-    // Verify password before upgrading to WebSocket
-    let password_valid = session_manager
-        .verify_session_password(&session_id, query.password.as_deref())
-        .await?;
+    // Check if the request carries a valid API key (admin bypass)
+    let has_valid_api_key = query.api_key.as_ref().map_or(false, |key| {
+        let key_bytes = key.as_bytes();
+        let expected_bytes = ws_state.api_key.as_bytes();
+        key_bytes.len() == expected_bytes.len() && key_bytes.ct_eq(expected_bytes).into()
+    });
 
-    if !password_valid {
-        return Err(if query.password.is_some() {
-            AppError::InvalidPassword
-        } else {
-            AppError::PasswordRequired
-        });
+    // Verify password before upgrading to WebSocket (admin bypasses)
+    if !has_valid_api_key {
+        let password_valid = ws_state.session_manager
+            .verify_session_password(&session_id, query.password.as_deref())
+            .await?;
+
+        if !password_valid {
+            return Err(if query.password.is_some() {
+                AppError::InvalidPassword
+            } else {
+                AppError::PasswordRequired
+            });
+        }
     }
 
     let name = if query.name.is_empty() {
@@ -84,6 +104,7 @@ pub async fn ws_collab_handler(
         sanitize_display_name(&query.name, 50)
     };
 
+    let session_manager = ws_state.session_manager.clone();
     Ok(ws.on_upgrade(move |socket| handle_ws_connection(socket, session_id, name, session_manager)))
 }
 

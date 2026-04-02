@@ -28,6 +28,8 @@ export class CollabClient {
   private sessionId: string;
   private displayName: string;
   private password: string | null;
+  /** Optional API key for admin bypass of session password */
+  private apiKey: string | null;
   private handlers: Map<string, MessageHandler[]> = new Map();
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -48,11 +50,12 @@ export class CollabClient {
   private filesUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingFilesUpdate: Record<string, unknown> | null = null;
 
-  constructor(baseUrl: string, sessionId: string, displayName: string, password?: string | null) {
+  constructor(baseUrl: string, sessionId: string, displayName: string, password?: string | null, apiKey?: string | null) {
     this.baseUrl = baseUrl;
     this.sessionId = sessionId;
     this.displayName = displayName;
     this.password = password ?? null;
+    this.apiKey = apiKey ?? null;
   }
 
   connect(): void {
@@ -69,6 +72,9 @@ export class CollabClient {
     let url = `${wsProtocol}//${host}/ws/collab/${this.sessionId}?name=${encodeURIComponent(this.displayName)}`;
     if (this.password) {
       url += `&password=${encodeURIComponent(this.password)}`;
+    }
+    if (this.apiKey) {
+      url += `&api_key=${encodeURIComponent(this.apiKey)}`;
     }
 
     try {

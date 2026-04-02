@@ -1,9 +1,10 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     Json,
 };
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::collab::{SessionInfo, SessionManager};
@@ -16,8 +17,27 @@ pub struct AppState {
     pub storage: FileSystemStorage,
     pub base_url: String,
     pub session_manager: SessionManager,
+    pub api_key: String,
 }
 
+
+/// Check if the request carries a valid API key via `Authorization: Bearer <key>`.
+/// Uses constant-time comparison to prevent timing attacks.
+fn is_valid_api_key(headers: &HeaderMap, api_key: &str) -> bool {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|value| {
+            if let Some(token) = value.strip_prefix("Bearer ") {
+                let token_bytes = token.as_bytes();
+                let key_bytes = api_key.as_bytes();
+                token_bytes.len() == key_bytes.len() && token_bytes.ct_eq(key_bytes).into()
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false)
+}
 
 // ──────────────────────────────────────────────
 // Request / Response types
@@ -255,21 +275,28 @@ pub async fn get_drawing(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<ViewQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let data = state.storage.load(&id).await?;
 
+    // Check if the request carries a valid API key (admin bypass)
+    let has_valid_api_key = is_valid_api_key(&headers, &state.api_key);
+
     // Check if drawing is password-protected
+    // Admin (valid API key) bypasses the drawing password
     let password_hash = data.get("_password_hash")
         .and_then(|v| v.as_str());
 
     if let Some(hash) = password_hash {
-        match &query.key {
-            None => return Err(AppError::PasswordRequired),
-            Some(key) => {
-                let valid = password::verify_password(key, hash)
-                    .map_err(|e| AppError::Internal(format!("Password verification error: {e}")))?;
-                if !valid {
-                    return Err(AppError::InvalidPassword);
+        if !has_valid_api_key {
+            match &query.key {
+                None => return Err(AppError::PasswordRequired),
+                Some(key) => {
+                    let valid = password::verify_password(key, hash)
+                        .map_err(|e| AppError::Internal(format!("Password verification error: {e}")))?;
+                    if !valid {
+                        return Err(AppError::InvalidPassword);
+                    }
                 }
             }
         }

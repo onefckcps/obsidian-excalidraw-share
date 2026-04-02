@@ -102,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         storage: storage.clone(),
         base_url: config.base_url.clone(),
         session_manager: session_manager.clone(),
+        api_key: config.api_key.clone(),
     };
 
     let api_key = ApiKey(config.api_key.clone());
@@ -198,13 +199,17 @@ async fn main() -> anyhow::Result<()> {
         ));
 
     // WebSocket route (rate limited, no auth but session must exist)
+    let ws_state = ws::WsState {
+        session_manager: session_manager.clone(),
+        api_key: config.api_key.clone(),
+    };
     let ws_routes = Router::new()
         .route(
             "/ws/collab/{session_id}",
             get(ws::ws_collab_handler),
         )
         .layer(ws_rate_limit)
-        .with_state(session_manager.clone());
+        .with_state(ws_state);
 
     // Restrict CORS to the configured BASE_URL origin and Obsidian's app origin.
     // This prevents arbitrary websites from making cross-origin requests while

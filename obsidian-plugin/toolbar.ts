@@ -286,7 +286,8 @@ export class ExcaliShareToolbar {
       panel.appendChild(sep1);
 
       // Collab actions
-      if (this.state.collabSessionId && this.state.collabDrawingId === this.state.publishedId) {
+      const hasActiveSessionForThisDrawing = this.state.collabSessionId && this.state.collabDrawingId === this.state.publishedId;
+      if (hasActiveSessionForThisDrawing) {
         // Show participant count header
         const count = this.state.collabParticipantCount;
         const nativeJoined = this.state.collabNativeJoined;
@@ -331,7 +332,9 @@ export class ExcaliShareToolbar {
           'Open in Browser',
           () => this.callbacks.onOpenInBrowser(),
         ));
-      } else if (!this.state.collabSessionId) {
+      } else {
+        // No active session for this drawing — show Start button
+        // (even if another drawing has an active session; the callback handles the guard)
         panel.appendChild(this.createActionButton(
           ICONS.users,
           'Start Live Collab',

@@ -342,7 +342,7 @@ export default class ExcaliSharePlugin extends Plugin {
         const file = this.app.workspace.getActiveFile();
         if (file && this.isExcalidrawFile(file)) {
           const publishedId = this.getPublishedId(file);
-          if (publishedId && !this.activeCollabSessionId) {
+          if (publishedId && !(this.activeCollabSessionId && this.activeCollabDrawingId === publishedId)) {
             if (!checking) this.startCollabSession(file, publishedId);
             return true;
           }
@@ -459,7 +459,7 @@ export default class ExcaliSharePlugin extends Plugin {
                     window.open(url, '_blank');
                   });
               });
-            } else if (!this.activeCollabSessionId) {
+            } else if (!this.activeCollabSessionId || this.activeCollabDrawingId !== publishedId) {
               menu.addItem((item) => {
                 item.setTitle('Start Live Collab').setIcon('users')
                   .onClick(() => this.startCollabSession(file, publishedId));
@@ -659,6 +659,12 @@ export default class ExcaliSharePlugin extends Plugin {
       const existingFilePath = this._leafFilePaths.get(leafId);
       if (existingToolbar && existingToolbar.isInjected() && existingFilePath === file.path) {
         this.updateToolbarState(existingToolbar, file);
+        // Still reconcile server state even when toolbar is reused
+        // (ensures persistent collab auto-join works on tab switches)
+        const publishedId = this.getPublishedId(file);
+        if (publishedId) {
+          this.reconcileServerState(file, publishedId);
+        }
         return;
       }
 
@@ -692,6 +698,30 @@ export default class ExcaliSharePlugin extends Plugin {
         this.toolbarInstances.delete(leafId);
       }
       this._leafFilePaths.delete(leafId);
+
+      // If we had an active persistent collab session, disconnect gracefully
+      // so it can auto-rejoin when the drawing is reopened.
+      // For persistent collab, the session stays alive on the server — we just leave the WS.
+      if (this.collabManager?.isJoined && this.activeCollabDrawingId) {
+        // Check if this is a persistent session (don't auto-disconnect regular live collab)
+        const drawingFile = this.activeCollabDrawingId
+          ? this.app.vault.getFiles().find(f => {
+              const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+              return fm?.['excalishare-id'] === this.activeCollabDrawingId;
+            })
+          : null;
+        if (drawingFile && this.isPersistentCollabEnabled(drawingFile)) {
+          // Disconnect from persistent collab — will auto-rejoin on next open
+          this.collabManager.destroy();
+          this.collabManager = null;
+          // Keep activeCollabSessionId/activeCollabDrawingId so toolbar shows session exists
+          // but clear the status bar since we're not actively connected
+          if (this.collabStatusBarItem) {
+            this.collabStatusBarItem.setText('');
+            this.collabStatusBarItem.hide();
+          }
+        }
+      }
     }
   }
 
@@ -1383,8 +1413,8 @@ export default class ExcaliSharePlugin extends Plugin {
       return;
     }
 
-    if (this.activeCollabSessionId) {
-      new Notice('A collab session is already active. Stop it first.');
+    if (this.activeCollabSessionId && this.activeCollabDrawingId === drawingId) {
+      new Notice('A collab session is already active for this drawing. Stop it first.');
       return;
     }
 
@@ -1718,7 +1748,7 @@ export default class ExcaliSharePlugin extends Plugin {
         },
       });
 
-      await this.collabManager.startAndJoin(drawingId, sessionId, password);
+      await this.collabManager.startAndJoin(drawingId, sessionId, password, this.settings.apiKey || null);
     } catch (error) {
       console.error('ExcaliShare: Failed to join collab from Obsidian', error);
       new Notice('Failed to join collab session from Obsidian. You can still use the browser.');
@@ -1860,9 +1890,16 @@ export default class ExcaliSharePlugin extends Plugin {
     this._reconcileInFlight.add(drawingId);
 
     try {
+      // Build request headers — include API key to bypass drawing password for admin
+      const headers: Record<string, string> = {};
+      if (this.settings.apiKey) {
+        headers['Authorization'] = `Bearer ${this.settings.apiKey}`;
+      }
+
       const response = await requestUrl({
         url: `${this.settings.baseUrl}/api/view/${drawingId}`,
         method: 'GET',
+        headers,
         throw: false,
       });
 
@@ -1881,41 +1918,42 @@ export default class ExcaliSharePlugin extends Plugin {
         return;
       }
 
-      if (response.status >= 400) {
-        // Network error or server issue — skip reconciliation silently
-        return;
+      if (response.status < 400) {
+        // Success — full reconciliation with drawing data
+        const serverData = response.json;
+        const serverPersistent = serverData.persistent_collab === true;
+        const localPersistent = this.isPersistentCollabEnabled(file);
+
+        // Update cache
+        this._reconcileCache.set(drawingId, { timestamp: Date.now(), persistent: serverPersistent });
+
+        // ── Reconcile persistent collab state ──
+        if (serverPersistent && !localPersistent) {
+          // Server has persistent collab enabled, but local doesn't know
+          // @ts-ignore
+          await this.app.fileManager.processFrontMatter(file, (fm: any) => {
+            fm['excalishare-persistent-collab'] = true;
+            fm['excalishare-last-sync-version'] = serverData.persistent_collab_version ?? 0;
+          });
+          console.log(`ExcaliShare: Reconciled persistent collab state for ${file.path} (server=enabled, local=disabled → updated local)`);
+          new Notice('Persistent collaboration was enabled externally. Syncing...');
+          this.refreshActiveToolbar();
+        } else if (!serverPersistent && localPersistent) {
+          // Server says persistent collab is disabled, but local thinks it's enabled
+          // @ts-ignore
+          await this.app.fileManager.processFrontMatter(file, (fm: any) => {
+            delete fm['excalishare-persistent-collab'];
+            delete fm['excalishare-last-sync-version'];
+          });
+          this._persistentSyncedFiles.delete(file.path);
+          console.log(`ExcaliShare: Reconciled persistent collab state for ${file.path} (server=disabled, local=enabled → updated local)`);
+          new Notice('Persistent collaboration was disabled externally.');
+          this.refreshActiveToolbar();
+        }
       }
-
-      const serverData = response.json;
-      const serverPersistent = serverData.persistent_collab === true;
-      const localPersistent = this.isPersistentCollabEnabled(file);
-
-      // Update cache
-      this._reconcileCache.set(drawingId, { timestamp: Date.now(), persistent: serverPersistent });
-
-      // ── Reconcile persistent collab state ──
-      if (serverPersistent && !localPersistent) {
-        // Server has persistent collab enabled, but local doesn't know
-        // @ts-ignore
-        await this.app.fileManager.processFrontMatter(file, (fm: any) => {
-          fm['excalishare-persistent-collab'] = true;
-          fm['excalishare-last-sync-version'] = serverData.persistent_collab_version ?? 0;
-        });
-        console.log(`ExcaliShare: Reconciled persistent collab state for ${file.path} (server=enabled, local=disabled → updated local)`);
-        new Notice('Persistent collaboration was enabled externally. Syncing...');
-        this.refreshActiveToolbar();
-      } else if (!serverPersistent && localPersistent) {
-        // Server says persistent collab is disabled, but local thinks it's enabled
-        // @ts-ignore
-        await this.app.fileManager.processFrontMatter(file, (fm: any) => {
-          delete fm['excalishare-persistent-collab'];
-          delete fm['excalishare-last-sync-version'];
-        });
-        this._persistentSyncedFiles.delete(file.path);
-        console.log(`ExcaliShare: Reconciled persistent collab state for ${file.path} (server=disabled, local=enabled → updated local)`);
-        new Notice('Persistent collaboration was disabled externally.');
-        this.refreshActiveToolbar();
-      }
+      // For any non-404 error (e.g. 403 without API key, 500, etc.),
+      // we still proceed to check collab status below — it's a public endpoint
+      // that doesn't require drawing password.
 
       // ── Recover collab session tracking ──
       // Check if there's an active collab session on the server that we should know about.
@@ -1929,6 +1967,12 @@ export default class ExcaliSharePlugin extends Plugin {
         });
         if (statusRes.status < 400) {
           const status = statusRes.json;
+
+          // Update cache with persistent info from collab status (fallback if /api/view failed)
+          if (!this._reconcileCache.has(drawingId) && status.persistent !== undefined) {
+            this._reconcileCache.set(drawingId, { timestamp: Date.now(), persistent: status.persistent });
+          }
+
           if (status.active && status.session_id && !status.persistent) {
             // Server has an active NON-persistent session — restore tracking if we lost it
             if (!this.activeCollabSessionId || this.activeCollabDrawingId !== drawingId) {
@@ -1981,78 +2025,106 @@ export default class ExcaliSharePlugin extends Plugin {
   async syncPersistentCollabOnOpen(file: TFile, drawingId: string) {
     if (!this.settings.persistentCollabAutoSync) return;
 
-    // Guard: only sync once per file path to avoid repeated syncs on leaf-change/layout-change
-    if (this._persistentSyncedFiles.has(file.path)) {
-      return;
-    }
-    this._persistentSyncedFiles.add(file.path);
+    // Element sync is guarded to run only once per file per session.
+    // Auto-join is NOT guarded — it should always attempt to (re)join if not connected.
+    const needsElementSync = !this._persistentSyncedFiles.has(file.path);
 
-    // Small delay to let Excalidraw fully initialize the view before we touch the scene
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    if (needsElementSync) {
+      this._persistentSyncedFiles.add(file.path);
 
-    try {
-      const response = await requestUrl({
-        url: `${this.settings.baseUrl}/api/view/${drawingId}`,
-        method: 'GET',
-        throw: false,
-      });
+      // Small delay to let Excalidraw fully initialize the view before we touch the scene
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
-      if (response.status >= 400) {
-        console.warn('ExcaliShare: Failed to fetch persistent collab drawing for sync');
-        return;
-      }
+      try {
+        // Include API key to bypass drawing password for admin
+        const headers: Record<string, string> = {};
+        if (this.settings.apiKey) {
+          headers['Authorization'] = `Bearer ${this.settings.apiKey}`;
+        }
 
-      const serverData = response.json;
-      if (!serverData.persistent_collab) return;
+        const response = await requestUrl({
+          url: `${this.settings.baseUrl}/api/view/${drawingId}`,
+          method: 'GET',
+          headers,
+          throw: false,
+        });
 
-      const localVersion = this.getLastSyncVersion(file);
-      const serverVersion = serverData.persistent_collab_version ?? 0;
+        if (response.status < 400) {
+          const serverData = response.json;
+          if (serverData.persistent_collab) {
+            const localVersion = this.getLastSyncVersion(file);
+            const serverVersion = serverData.persistent_collab_version ?? 0;
 
-      if (serverVersion > localVersion) {
-        // Server has newer changes — merge elements only (do NOT override appState)
-        const excalidrawPlugin = this.getExcalidrawPlugin();
-        if (excalidrawPlugin?.ea) {
-          try {
-            excalidrawPlugin.ea.setView('active');
-            const api = excalidrawPlugin.ea.getExcalidrawAPI();
-            if (api) {
-              const localElements = api.getSceneElements() || [];
-              const serverElements = serverData.elements || [];
-              const merged = this.mergeElements(localElements, serverElements);
+            if (serverVersion > localVersion) {
+              // Server has newer changes — merge elements only (do NOT override appState)
+              const excalidrawPlugin = this.getExcalidrawPlugin();
+              if (excalidrawPlugin?.ea) {
+                try {
+                  excalidrawPlugin.ea.setView('active');
+                  const api = excalidrawPlugin.ea.getExcalidrawAPI();
+                  if (api) {
+                    const localElements = api.getSceneElements() || [];
+                    const serverElements = serverData.elements || [];
+                    const merged = this.mergeElements(localElements, serverElements);
 
-              // Only update elements — preserve local appState to avoid
-              // corrupting text editing state or other local UI state
-              api.updateScene({
-                elements: merged,
-              });
+                    api.updateScene({
+                      elements: merged,
+                    });
 
-              // Update version tracking
-              // @ts-ignore
-              await this.app.fileManager.processFrontMatter(file, (fm: any) => {
-                fm['excalishare-last-sync-version'] = serverVersion;
-              });
+                    // @ts-ignore
+                    await this.app.fileManager.processFrontMatter(file, (fm: any) => {
+                      fm['excalishare-last-sync-version'] = serverVersion;
+                    });
 
-              console.log(`ExcaliShare: Persistent collab synced ${serverVersion - localVersion} version(s) from server for ${file.path}`);
-              new Notice(`Persistent collab: synced ${serverVersion - localVersion} version(s) from server`);
+                    console.log(`ExcaliShare: Persistent collab synced ${serverVersion - localVersion} version(s) from server for ${file.path}`);
+                    new Notice(`Persistent collab: synced ${serverVersion - localVersion} version(s) from server`);
+                  }
+                } catch (e) {
+                  console.error('ExcaliShare: Failed to merge persistent collab changes', e);
+                }
+              }
             }
-          } catch (e) {
-            console.error('ExcaliShare: Failed to merge persistent collab changes', e);
           }
         }
+      } catch (error) {
+        console.error('ExcaliShare: Persistent collab element sync failed', error);
       }
+    }
 
-      // If collabJoinFromObsidian is enabled, check if there's an active session to join
-      if (this.settings.collabJoinFromObsidian && !this.collabManager?.isJoined) {
-        try {
-          const statusRes = await requestUrl({
-            url: `${this.settings.baseUrl}/api/collab/status/${drawingId}`,
-            method: 'GET',
+    // ── Auto-join: always attempt if not already joined ──
+    // This runs even on subsequent tab switches (not guarded by _persistentSyncedFiles)
+    if (this.settings.collabJoinFromObsidian && !this.collabManager?.isJoined) {
+      try {
+        const statusRes = await requestUrl({
+          url: `${this.settings.baseUrl}/api/collab/status/${drawingId}`,
+          method: 'GET',
+          throw: false,
+        });
+        const status = statusRes.json;
+
+        if (status.active && status.session_id) {
+          // Set active session tracking so the toolbar shows collaborator list + follow buttons
+          this.activeCollabSessionId = status.session_id;
+          this.activeCollabDrawingId = drawingId;
+
+          if (this.collabStatusBarItem) {
+            this.collabStatusBarItem.setText('🔴 Live Collab');
+            this.collabStatusBarItem.show();
+          }
+
+          // Join the persistent session (pass API key to bypass session password)
+          await this.joinCollabFromObsidian(drawingId, status.session_id, null);
+          this.refreshActiveToolbar();
+        } else if (status.persistent && !status.active) {
+          // Persistent collab but no active session — need to activate it first
+          const activateRes = await requestUrl({
+            url: `${this.settings.baseUrl}/api/persistent-collab/activate/${drawingId}`,
+            method: 'POST',
             throw: false,
           });
-          const status = statusRes.json;
-          if (status.active && status.session_id) {
-            // Set active session tracking so the toolbar shows collaborator list + follow buttons
-            this.activeCollabSessionId = status.session_id;
+          if (activateRes.status < 400 && activateRes.json?.session_id) {
+            const sessionId = activateRes.json.session_id;
+            this.activeCollabSessionId = sessionId;
             this.activeCollabDrawingId = drawingId;
 
             if (this.collabStatusBarItem) {
@@ -2060,16 +2132,14 @@ export default class ExcaliSharePlugin extends Plugin {
               this.collabStatusBarItem.show();
             }
 
-            // Join the persistent session
-            await this.joinCollabFromObsidian(drawingId, status.session_id, null);
+            // Join the activated session (pass API key to bypass session password)
+            await this.joinCollabFromObsidian(drawingId, sessionId, null);
             this.refreshActiveToolbar();
           }
-        } catch {
-          // Ignore — session may not be active
         }
+      } catch {
+        // Ignore — session may not be active
       }
-    } catch (error) {
-      console.error('ExcaliShare: Persistent collab sync failed', error);
     }
   }
 
@@ -2077,9 +2147,14 @@ export default class ExcaliSharePlugin extends Plugin {
     new Notice('Pulling drawing from server...');
 
     try {
+      const headers: Record<string, string> = {};
+      if (this.settings.apiKey) {
+        headers['Authorization'] = `Bearer ${this.settings.apiKey}`;
+      }
       const response = await requestUrl({
         url: `${this.settings.baseUrl}/api/view/${drawingId}`,
         method: 'GET',
+        headers,
       });
       if (response.status >= 400) {
         throw new Error(`Failed to fetch drawing: ${response.status}`);
