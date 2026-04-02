@@ -61,6 +61,13 @@ export class CollabManager {
 
   // ── Pointer tracking via DOM ──
   private pointerMoveCleanup: (() => void) | null = null;
+  private pointerTrackingRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private pointerTrackingRetryCount = 0;
+  private static readonly POINTER_TRACKING_RETRY_DELAYS = [500, 1000, 2000, 4000];
+
+  // ── Viewport broadcast fallback (ensures follow mode works even without pointer tracking) ──
+  private viewportBroadcastTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly VIEWPORT_BROADCAST_INTERVAL_MS = 500;
 
   // ── Fallback polling (only used when onChange is unavailable) ──
   private static readonly FALLBACK_POLL_INTERVAL_MS = 2000;
@@ -629,6 +636,16 @@ export class CollabManager {
       // Fallback to lightweight polling
       this.startPollingDetection();
     }
+
+    // Always start pointer tracking regardless of detection strategy.
+    // Previously this was only called inside startEventDrivenDetection(),
+    // which meant pointer tracking was never started when using polling fallback.
+    this.startPointerTracking();
+
+    // Start viewport broadcast as a fallback for follow mode.
+    // This ensures the host's viewport data (scrollX, scrollY, zoom) is
+    // periodically sent even if DOM pointer tracking fails.
+    this.startViewportBroadcast();
   }
 
   /**
@@ -670,8 +687,8 @@ export class CollabManager {
       );
     }
 
-    // ── Set up pointer tracking via DOM listener ──
-    this.startPointerTracking();
+    // Note: pointer tracking is now started in startChangeDetection() so it
+    // runs regardless of whether event-driven or polling detection is used.
   }
 
   /**
@@ -806,6 +823,19 @@ export class CollabManager {
       this.pointerMoveCleanup = null;
     }
 
+    // Stop pointer tracking retry timer
+    if (this.pointerTrackingRetryTimer) {
+      clearTimeout(this.pointerTrackingRetryTimer);
+      this.pointerTrackingRetryTimer = null;
+    }
+    this.pointerTrackingRetryCount = 0;
+
+    // Stop viewport broadcast fallback
+    if (this.viewportBroadcastTimer) {
+      clearInterval(this.viewportBroadcastTimer);
+      this.viewportBroadcastTimer = null;
+    }
+
     // Stop fallback polling
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
@@ -828,26 +858,43 @@ export class CollabManager {
    *
    * The listener is throttled to 50ms to avoid flooding the WebSocket.
    * Screen coordinates are converted to Excalidraw scene coordinates.
+   *
+   * Uses exponential backoff retry (500ms, 1s, 2s, 4s) if the canvas
+   * element is not found immediately (it may not be rendered yet).
    */
   private startPointerTracking(): void {
+    // Don't start if already tracking
+    if (this.pointerMoveCleanup) return;
+
+    this.pointerTrackingRetryCount = 0;
+    this.attemptPointerTracking();
+  }
+
+  /**
+   * Attempt to find the canvas and attach the pointer listener.
+   * Retries with exponential backoff if the canvas is not found.
+   */
+  private attemptPointerTracking(): void {
     const canvasEl = this.findExcalidrawCanvas();
-    if (!canvasEl) {
-      console.log('ExcaliShare Collab: Canvas element not found, pointer tracking disabled');
-      // Retry after a short delay (canvas might not be rendered yet)
-      setTimeout(() => {
-        if (this.detectionStrategy === 'event-driven' && !this.pointerMoveCleanup) {
-          const retryCanvas = this.findExcalidrawCanvas();
-          if (retryCanvas) {
-            this.attachPointerListener(retryCanvas);
-          } else {
-            console.log('ExcaliShare Collab: Canvas still not found after retry, pointer tracking disabled');
-          }
-        }
-      }, 1000);
+    if (canvasEl) {
+      this.attachPointerListener(canvasEl);
       return;
     }
 
-    this.attachPointerListener(canvasEl);
+    // Schedule retry with exponential backoff
+    if (this.pointerTrackingRetryCount < CollabManager.POINTER_TRACKING_RETRY_DELAYS.length) {
+      const delay = CollabManager.POINTER_TRACKING_RETRY_DELAYS[this.pointerTrackingRetryCount];
+      console.log(`ExcaliShare Collab: Canvas not found, retrying pointer tracking in ${delay}ms (attempt ${this.pointerTrackingRetryCount + 1}/${CollabManager.POINTER_TRACKING_RETRY_DELAYS.length})`);
+      this.pointerTrackingRetryTimer = setTimeout(() => {
+        this.pointerTrackingRetryTimer = null;
+        if (this.detectionStrategy !== 'none' && !this.pointerMoveCleanup) {
+          this.pointerTrackingRetryCount++;
+          this.attemptPointerTracking();
+        }
+      }, delay);
+    } else {
+      console.warn('ExcaliShare Collab: Canvas element not found after all retries. Pointer tracking disabled — host cursor will not be visible to other participants. Viewport broadcast fallback is still active for follow mode.');
+    }
   }
 
   private attachPointerListener(canvasEl: HTMLElement): void {
@@ -902,30 +949,79 @@ export class CollabManager {
   }
 
   /**
+   * Canvas selectors to try, in priority order.
+   * Covers different Excalidraw versions and the Obsidian Excalidraw plugin's DOM structure.
+   */
+  private static readonly CANVAS_SELECTORS = [
+    '.excalidraw__canvas.interactive',   // Newer Excalidraw (interactive layer)
+    '.excalidraw__canvas',               // Standard Excalidraw canvas
+    '.excalidraw canvas',                // Generic: any canvas inside .excalidraw
+    'canvas.interactive',                // Canvas with interactive class (no parent prefix)
+    'canvas',                            // Last resort: any canvas element
+  ];
+
+  /**
    * Find the Excalidraw canvas element in the DOM.
    * Uses the provided getCanvasContainer function or falls back to
-   * searching the active workspace leaf.
+   * searching the active workspace leaf and then the full document.
+   *
+   * Tries multiple selectors to handle different Excalidraw versions
+   * and the Obsidian Excalidraw plugin's DOM structure.
    */
   private findExcalidrawCanvas(): HTMLElement | null {
-    // Try the provided canvas container finder first
+    // Strategy 1: Use the provided canvas container finder
     if (this.getCanvasContainerFn) {
       const container = this.getCanvasContainerFn();
       if (container) {
-        // Look for the interactive canvas within the container
-        return container.querySelector<HTMLElement>(
-          '.excalidraw__canvas'
-        ) || container.querySelector<HTMLElement>(
-          'canvas'
-        ) || container;
+        for (const selector of CollabManager.CANVAS_SELECTORS) {
+          const el = container.querySelector<HTMLElement>(selector);
+          if (el) {
+            console.log(`ExcaliShare Collab: Found canvas via container + selector '${selector}' (tag=${el.tagName}, class=${el.className}, size=${el.offsetWidth}x${el.offsetHeight})`);
+            return el;
+          }
+        }
+        // If no child matched, use the container itself (it might be the canvas)
+        if (container.tagName === 'CANVAS') {
+          console.log(`ExcaliShare Collab: Using container element directly as canvas (class=${container.className})`);
+          return container;
+        }
+        console.log(`ExcaliShare Collab: Container found but no canvas element inside (container tag=${container.tagName}, class=${container.className}, children=${container.children.length})`);
       }
     }
 
-    // Fallback: search the document for the Excalidraw canvas
-    return document.querySelector<HTMLElement>(
-      '.excalidraw__canvas'
-    ) || document.querySelector<HTMLElement>(
-      '.excalidraw canvas'
-    );
+    // Strategy 2: Search the full document
+    for (const selector of CollabManager.CANVAS_SELECTORS) {
+      const el = document.querySelector<HTMLElement>(selector);
+      if (el) {
+        console.log(`ExcaliShare Collab: Found canvas via document selector '${selector}' (tag=${el.tagName}, class=${el.className}, size=${el.offsetWidth}x${el.offsetHeight})`);
+        return el;
+      }
+    }
+
+    // Strategy 3: Search inside iframes (some Excalidraw setups use iframes)
+    try {
+      const iframes = document.querySelectorAll('iframe');
+      for (const iframe of iframes) {
+        try {
+          const iframeDoc = iframe.contentDocument;
+          if (!iframeDoc) continue;
+          for (const selector of CollabManager.CANVAS_SELECTORS) {
+            const el = iframeDoc.querySelector<HTMLElement>(selector);
+            if (el) {
+              console.log(`ExcaliShare Collab: Found canvas inside iframe via selector '${selector}'`);
+              return el;
+            }
+          }
+        } catch {
+          // Cross-origin iframe — skip
+        }
+      }
+    } catch {
+      // Ignore iframe search errors
+    }
+
+    console.log('ExcaliShare Collab: No canvas element found in DOM');
+    return null;
   }
 
   // ──────────────────────────────────────────────
@@ -1099,5 +1195,66 @@ export class CollabManager {
     } catch {
       // Silently ignore — view might have been closed
     }
+  }
+
+  // ──────────────────────────────────────────────
+  // Viewport Broadcast Fallback
+  // ──────────────────────────────────────────────
+
+  /**
+   * Start a periodic viewport broadcast that sends the host's current
+   * viewport state (scrollX, scrollY, zoom) even without pointer movement.
+   *
+   * This is a fallback that ensures follow mode works for browser users
+   * even if DOM-based pointer tracking fails (e.g., canvas element not found).
+   * It sends a pointer_update with the last known or center-of-viewport position.
+   */
+  private startViewportBroadcast(): void {
+    if (this.viewportBroadcastTimer) return;
+
+    this.viewportBroadcastTimer = setInterval(() => {
+      if (!this.client?.isConnected) return;
+
+      const api = this.getAPI();
+      if (!api?.getAppState) return;
+
+      try {
+        const appState = api.getAppState() as {
+          scrollX: number;
+          scrollY: number;
+          zoom: { value: number };
+          width?: number;
+          height?: number;
+          activeTool?: { type: string };
+          cursorButton?: string;
+        };
+
+        const zoom = appState.zoom?.value || 1;
+        const button: 'down' | 'up' = appState.cursorButton === 'down' ? 'down' : 'up';
+        const tool: 'pointer' | 'laser' =
+          appState.activeTool?.type === 'laser' ? 'laser' : 'pointer';
+
+        // If DOM pointer tracking is active, only send viewport data (no position override)
+        // The DOM listener handles position. This just ensures viewport is periodically sent.
+        if (this.pointerMoveCleanup) {
+          // DOM tracking is active — skip, the pointermove handler already sends viewport data
+          return;
+        }
+
+        // DOM tracking failed — send a viewport-only update with center-of-screen position
+        // This enables follow mode even without cursor position
+        const viewportCenterX = (appState.width || 800) / 2 / zoom - appState.scrollX;
+        const viewportCenterY = (appState.height || 600) / 2 / zoom - appState.scrollY;
+
+        this.client.sendPointerUpdate(
+          viewportCenterX, viewportCenterY, button, tool,
+          appState.scrollX, appState.scrollY, zoom,
+        );
+      } catch {
+        // Silently ignore — API might be stale
+      }
+    }, CollabManager.VIEWPORT_BROADCAST_INTERVAL_MS);
+
+    console.log('ExcaliShare Collab: Viewport broadcast fallback started');
   }
 }

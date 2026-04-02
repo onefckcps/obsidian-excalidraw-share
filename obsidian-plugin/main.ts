@@ -1316,11 +1316,41 @@ export default class ExcaliSharePlugin extends Plugin {
           }
         },
         getCanvasContainer: () => {
-          // Find the active Excalidraw view's container element for pointer tracking
+          // Find the active Excalidraw view's container element for pointer tracking.
+          // Tries multiple strategies to handle different Excalidraw plugin versions.
           try {
+            // Strategy 1: Active leaf's container
             const activeLeaf = this.app.workspace.activeLeaf;
-            if (!activeLeaf?.view?.containerEl) return null;
-            return activeLeaf.view.containerEl.querySelector<HTMLElement>('.excalidraw') || null;
+            if (activeLeaf?.view?.containerEl) {
+              // Try multiple selectors for the Excalidraw container
+              const container =
+                activeLeaf.view.containerEl.querySelector<HTMLElement>('.excalidraw') ||
+                activeLeaf.view.containerEl.querySelector<HTMLElement>('.excalidraw-wrapper') ||
+                activeLeaf.view.containerEl.querySelector<HTMLElement>('[class*="excalidraw"]');
+              if (container) return container;
+
+              // If the view itself contains a canvas, return the view container
+              if (activeLeaf.view.containerEl.querySelector('canvas')) {
+                return activeLeaf.view.containerEl;
+              }
+            }
+
+            // Strategy 2: Search all workspace leaves for an Excalidraw view
+            const leaves = this.app.workspace.getLeavesOfType('excalidraw');
+            for (const leaf of leaves) {
+              if (leaf.view?.containerEl) {
+                const container =
+                  leaf.view.containerEl.querySelector<HTMLElement>('.excalidraw') ||
+                  leaf.view.containerEl.querySelector<HTMLElement>('.excalidraw-wrapper') ||
+                  leaf.view.containerEl.querySelector<HTMLElement>('[class*="excalidraw"]');
+                if (container) return container;
+                if (leaf.view.containerEl.querySelector('canvas')) {
+                  return leaf.view.containerEl;
+                }
+              }
+            }
+
+            return null;
           } catch {
             return null;
           }
