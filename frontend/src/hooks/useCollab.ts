@@ -5,8 +5,9 @@ import type {
   CollabStatusResponse,
   ServerMessage,
 } from '../types';
-import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
-import type { Collaborator, UserIdleState } from '@excalidraw/excalidraw/types/types';
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
+import type { Collaborator } from '@excalidraw/excalidraw/types';
+import { UserIdleState } from '@excalidraw/excalidraw';
 
 const DISPLAY_NAME_KEY = 'excalishare-collab-name';
 

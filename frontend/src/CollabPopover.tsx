@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { Theme } from '@excalidraw/excalidraw/types/element/types';
+import type { Theme } from '@excalidraw/excalidraw/element/types';
 import type { CollaboratorInfo } from './types';
 
 // Replicate Excalidraw's getClientColor algorithm so our popover colors

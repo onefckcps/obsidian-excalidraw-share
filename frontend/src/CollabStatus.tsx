@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Theme } from '@excalidraw/excalidraw/types/element/types';
+import type { Theme } from '@excalidraw/excalidraw/element/types';
 
 interface CollabStatusProps {
   theme: Theme;

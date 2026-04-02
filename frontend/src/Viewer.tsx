@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Excalidraw, LiveCollaborationTrigger } from '@excalidraw/excalidraw'
-import type { Theme, ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types'
+import type { Theme, ExcalidrawElement } from '@excalidraw/excalidraw/element/types'
 import type { ExcalidrawData } from './types'
 import { drawingCache } from './utils/cache'
 import { useCollab } from './hooks/useCollab'
