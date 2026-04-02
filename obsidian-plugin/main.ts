@@ -1752,6 +1752,10 @@ export default class ExcaliSharePlugin extends Plugin {
 
       new Notice('Persistent collaboration enabled! Anyone with the link can now collaborate.');
       this.refreshActiveToolbar();
+
+      // Immediately sync and auto-join the persistent session
+      // (without this, the user would need to close and reopen the tab)
+      this.syncPersistentCollabOnOpen(file, drawingId);
     } catch (error) {
       console.error('ExcaliShare: Failed to enable persistent collab', error);
       new Notice(`Failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -1882,8 +1886,18 @@ export default class ExcaliSharePlugin extends Plugin {
           });
           const status = statusRes.json;
           if (status.active && status.session_id) {
+            // Set active session tracking so the toolbar shows collaborator list + follow buttons
+            this.activeCollabSessionId = status.session_id;
+            this.activeCollabDrawingId = drawingId;
+
+            if (this.collabStatusBarItem) {
+              this.collabStatusBarItem.setText('🔴 Live Collab');
+              this.collabStatusBarItem.show();
+            }
+
             // Join the persistent session
             await this.joinCollabFromObsidian(drawingId, status.session_id, null);
+            this.refreshActiveToolbar();
           }
         } catch {
           // Ignore — session may not be active

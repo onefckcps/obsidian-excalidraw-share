@@ -978,36 +978,6 @@ function Viewer() {
         }
       />
 
-      {/* Persistent collab badge */}
-      {collab.isPersistentCollab && (
-        <div style={{
-          position: 'absolute',
-          top: 12,
-          left: 60,
-          zIndex: 5,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '4px 10px',
-          borderRadius: 12,
-          background: theme === 'dark' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(34, 197, 94, 0.1)',
-          border: `1px solid ${theme === 'dark' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(34, 197, 94, 0.2)'}`,
-          fontSize: 12,
-          color: theme === 'dark' ? '#4ade80' : '#16a34a',
-          pointerEvents: 'none',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-        }}>
-          <span style={{
-            width: 6,
-            height: 6,
-            borderRadius: '50%',
-            background: '#22c55e',
-            display: 'inline-block',
-          }} />
-          Collaborative
-        </div>
-      )}
-
       {/* Collaboration Status — pre-join banner + session ended only */}
       <CollabStatus
         theme={theme}
@@ -1064,7 +1034,34 @@ function Viewer() {
       {/* Floating Action Buttons - hidden on mobile, use Obsidian ribbon instead */}
       {!isMobile && (
       <div style={styles.floatingButtons}>
-        <button 
+        {/* Persistent collab badge — placed next to floating buttons */}
+        {collab.isPersistentCollab && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '4px 10px',
+            borderRadius: 12,
+            background: theme === 'dark' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(34, 197, 94, 0.1)',
+            border: `1px solid ${theme === 'dark' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(34, 197, 94, 0.2)'}`,
+            fontSize: 12,
+            color: theme === 'dark' ? '#4ade80' : '#16a34a',
+            pointerEvents: 'none' as const,
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            height: 36,
+            boxSizing: 'border-box' as const,
+          }}>
+            <span style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: '#22c55e',
+              display: 'inline-block',
+            }} />
+            Collaborative
+          </div>
+        )}
+        <button
           style={{
             ...styles.floatingButton,
             backgroundColor: mode === 'present' ? '#2196F3' : (theme === 'dark' ? '#1e1e1e' : '#fff'),
