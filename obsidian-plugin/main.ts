@@ -229,6 +229,18 @@ export default class ExcaliSharePlugin extends Plugin {
   /** Debounce timer for layout-change events */
   private _layoutChangeTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // ── Server State Reconciliation ──
+  /** Dedup guard: drawing IDs currently being reconciled */
+  private _reconcileInFlight: Set<string> = new Set();
+  /** TTL cache for reconciliation results to avoid redundant server calls on tab switching */
+  private _reconcileCache: Map<string, { timestamp: number; persistent: boolean }> = new Map();
+  /** Background reconciliation interval (checks active drawing against server periodically) */
+  private _backgroundReconcileInterval: ReturnType<typeof setInterval> | null = null;
+  /** TTL for reconciliation cache entries (30 seconds) */
+  private static RECONCILE_CACHE_TTL = 30_000;
+  /** Background reconciliation interval (60 seconds) */
+  private static BACKGROUND_RECONCILE_INTERVAL = 60_000;
+
   async onload() {
     await this.loadSettings();
     console.log('ExcaliShare: Plugin loaded');
@@ -539,6 +551,11 @@ export default class ExcaliSharePlugin extends Plugin {
         this.handleLeafChange(leaf);
       }
     }, 1000);
+
+    // ── Background Reconciliation: periodically check active drawing against server ──
+    this._backgroundReconcileInterval = setInterval(() => {
+      this.backgroundReconcile();
+    }, ExcaliSharePlugin.BACKGROUND_RECONCILE_INTERVAL);
   }
 
   onunload() {
@@ -586,6 +603,14 @@ export default class ExcaliSharePlugin extends Plugin {
       clearTimeout(this._layoutChangeTimer);
       this._layoutChangeTimer = null;
     }
+
+    // Clear background reconciliation interval
+    if (this._backgroundReconcileInterval) {
+      clearInterval(this._backgroundReconcileInterval);
+      this._backgroundReconcileInterval = null;
+    }
+    this._reconcileCache.clear();
+    this._reconcileInFlight.clear();
   }
 
   // ── Toolbar Management ──
@@ -653,10 +678,10 @@ export default class ExcaliSharePlugin extends Plugin {
       // Try to inject immediately, then set up observer if needed
       this.injectToolbarIntoView(toolbar, view.containerEl, file, leafId);
 
-      // Auto-sync persistent collab drawings on file open
+      // Reconcile local state with server for published drawings, then sync if persistent collab
       const publishedId = this.getPublishedId(file);
-      if (publishedId && this.isPersistentCollabEnabled(file)) {
-        this.syncPersistentCollabOnOpen(file, publishedId);
+      if (publishedId) {
+        this.reconcileServerState(file, publishedId);
       }
     } else {
       // Not an Excalidraw view — clean up everything for this leaf
@@ -1808,6 +1833,146 @@ export default class ExcaliSharePlugin extends Plugin {
       console.error('ExcaliShare: Failed to disable persistent collab', error);
       new Notice(`Failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+
+  // ── Server State Reconciliation ──
+
+  /**
+   * Reconcile local frontmatter with server state for a published drawing.
+   * Ensures persistent collab state is in sync across devices and after restarts.
+   * Also recovers active collab session tracking if lost (e.g., after Obsidian restart).
+   * Called every time a published drawing is opened/focused (with TTL cache to avoid spam).
+   */
+  private async reconcileServerState(file: TFile, drawingId: string): Promise<void> {
+    // Deduplicate: skip if already reconciling this drawing
+    if (this._reconcileInFlight.has(drawingId)) return;
+
+    // Check cache — skip if recently reconciled
+    const cached = this._reconcileCache.get(drawingId);
+    if (cached && Date.now() - cached.timestamp < ExcaliSharePlugin.RECONCILE_CACHE_TTL) {
+      // Even if cached, still trigger persistent sync if needed (it has its own dedup)
+      if (cached.persistent && this.isPersistentCollabEnabled(file)) {
+        this.syncPersistentCollabOnOpen(file, drawingId);
+      }
+      return;
+    }
+
+    this._reconcileInFlight.add(drawingId);
+
+    try {
+      const response = await requestUrl({
+        url: `${this.settings.baseUrl}/api/view/${drawingId}`,
+        method: 'GET',
+        throw: false,
+      });
+
+      if (response.status === 404) {
+        // Drawing was deleted from server — clear frontmatter
+        // @ts-ignore
+        await this.app.fileManager.processFrontMatter(file, (fm: any) => {
+          delete fm['excalishare-id'];
+          delete fm['excalishare-persistent-collab'];
+          delete fm['excalishare-last-sync-version'];
+        });
+        this._persistentSyncedFiles.delete(file.path);
+        this._reconcileCache.delete(drawingId);
+        new Notice('Drawing was deleted from server. Unpublished locally.');
+        this.refreshActiveToolbar();
+        return;
+      }
+
+      if (response.status >= 400) {
+        // Network error or server issue — skip reconciliation silently
+        return;
+      }
+
+      const serverData = response.json;
+      const serverPersistent = serverData.persistent_collab === true;
+      const localPersistent = this.isPersistentCollabEnabled(file);
+
+      // Update cache
+      this._reconcileCache.set(drawingId, { timestamp: Date.now(), persistent: serverPersistent });
+
+      // ── Reconcile persistent collab state ──
+      if (serverPersistent && !localPersistent) {
+        // Server has persistent collab enabled, but local doesn't know
+        // @ts-ignore
+        await this.app.fileManager.processFrontMatter(file, (fm: any) => {
+          fm['excalishare-persistent-collab'] = true;
+          fm['excalishare-last-sync-version'] = serverData.persistent_collab_version ?? 0;
+        });
+        console.log(`ExcaliShare: Reconciled persistent collab state for ${file.path} (server=enabled, local=disabled → updated local)`);
+        new Notice('Persistent collaboration was enabled externally. Syncing...');
+        this.refreshActiveToolbar();
+      } else if (!serverPersistent && localPersistent) {
+        // Server says persistent collab is disabled, but local thinks it's enabled
+        // @ts-ignore
+        await this.app.fileManager.processFrontMatter(file, (fm: any) => {
+          delete fm['excalishare-persistent-collab'];
+          delete fm['excalishare-last-sync-version'];
+        });
+        this._persistentSyncedFiles.delete(file.path);
+        console.log(`ExcaliShare: Reconciled persistent collab state for ${file.path} (server=disabled, local=enabled → updated local)`);
+        new Notice('Persistent collaboration was disabled externally.');
+        this.refreshActiveToolbar();
+      }
+
+      // ── Recover collab session tracking ──
+      // Check if there's an active collab session on the server that we should know about.
+      // Only restore tracking for NON-persistent sessions (regular live collab started by admin).
+      // Persistent sessions are handled separately by syncPersistentCollabOnOpen.
+      try {
+        const statusRes = await requestUrl({
+          url: `${this.settings.baseUrl}/api/collab/status/${drawingId}`,
+          method: 'GET',
+          throw: false,
+        });
+        if (statusRes.status < 400) {
+          const status = statusRes.json;
+          if (status.active && status.session_id && !status.persistent) {
+            // Server has an active NON-persistent session — restore tracking if we lost it
+            if (!this.activeCollabSessionId || this.activeCollabDrawingId !== drawingId) {
+              this.activeCollabSessionId = status.session_id;
+              this.activeCollabDrawingId = drawingId;
+              this.refreshActiveToolbar();
+            }
+          } else if (this.activeCollabSessionId && this.activeCollabDrawingId === drawingId) {
+            // We think a non-persistent session is active, but server says it's not — clean up
+            // (Don't clean up if we're natively joined to a persistent session)
+            if (!this.collabManager?.isJoined) {
+              this.cleanupCollabState();
+              this.refreshActiveToolbar();
+            }
+          }
+        }
+      } catch {
+        // Ignore status check errors
+      }
+
+      // ── Trigger persistent collab sync if enabled (after reconciliation) ──
+      if (this.isPersistentCollabEnabled(file)) {
+        this.syncPersistentCollabOnOpen(file, drawingId);
+      }
+    } catch (error) {
+      console.warn('ExcaliShare: Failed to reconcile server state', error);
+    } finally {
+      this._reconcileInFlight.delete(drawingId);
+    }
+  }
+
+  /**
+   * Background reconciliation: periodically check the active drawing against the server.
+   * Ensures long-running sessions stay in sync even without tab switching.
+   */
+  private async backgroundReconcile(): Promise<void> {
+    const file = this.app.workspace.getActiveFile();
+    if (!file || !this.isExcalidrawFile(file)) return;
+    const publishedId = this.getPublishedId(file);
+    if (!publishedId) return;
+
+    // Force cache invalidation for background reconcile
+    this._reconcileCache.delete(publishedId);
+    await this.reconcileServerState(file, publishedId);
   }
 
   /** Auto-sync persistent collab drawing on file open.

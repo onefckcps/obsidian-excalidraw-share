@@ -511,6 +511,15 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
     refreshDrawingsRef.current = refreshDrawings
   }, [refreshDrawings])
 
+  // Auto-refresh drawings list every 30 seconds to keep persistent collab badges current
+  useEffect(() => {
+    if (initialDrawings) return // Skip auto-refresh when drawings are provided externally
+    const interval = setInterval(() => {
+      refreshDrawingsRef.current()
+    }, 30_000)
+    return () => clearInterval(interval)
+  }, [initialDrawings])
+
   // Sidebar resize handlers
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault()

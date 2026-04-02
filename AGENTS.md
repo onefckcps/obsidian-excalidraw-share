@@ -340,6 +340,7 @@ interface ExcaliShareSettings {
 8. **Event-driven native collab** — Obsidian plugin uses `excalidrawAPI.onChange()` imperative subscription for instant, zero-waste change detection. Falls back to 2s polling for older Excalidraw versions. Host cursor is broadcast via DOM `pointermove` listener with screen→scene coordinate conversion. Laser pointer detected via `appState.activeTool.type`. Follow mode uses lerp-based viewport interpolation (same algorithm as frontend). Adaptive debouncing: 16ms idle / 50ms batch / 80ms during drawing. Version-based echo suppression via `remoteAppliedVersions` map + double-`requestAnimationFrame` cooldown.
 9. **Cached Excalidraw API** — Plugin caches the `getExcalidrawAPI()` reference and validates it cheaply, avoiding expensive `ea.setView('active')` calls on every cycle
 10. **Persistent Collaboration** — Always-on collab mode per drawing. Server is source of truth with debounced auto-save (2s). Sessions are created on demand when visitors arrive and cleaned up after 30 min idle (no participants). Element-level merge with version-based conflict resolution for offline admin sync. Frontmatter tracks `excalishare-persistent-collab` and `excalishare-last-sync-version`.
+11. **Server State Reconciliation** — Plugin reconciles local frontmatter with server state on every file open (with 30s TTL cache). Handles: persistent collab enabled/disabled externally, drawing deleted from server, collab session recovery after Obsidian restart. Background reconciliation every 60s for long-running sessions. Server is always the source of truth.
 
 ---
 
@@ -729,6 +730,15 @@ The project is feature-complete with the live collaboration system fully impleme
 - [x] Plugin: Frontmatter tracking (`excalishare-persistent-collab`, `excalishare-last-sync-version`)
 - [x] Plugin: Auto-join persistent sessions from Obsidian
 - [x] Plugin: Settings toggle for `persistentCollabAutoSync`
+
+**Server State Reconciliation**
+- [x] Plugin: `reconcileServerState()` — queries server on every file open, reconciles frontmatter with server state
+- [x] Plugin: TTL cache (30s) and dedup guard to avoid redundant server calls on tab switching
+- [x] Plugin: Background reconciliation every 60s for long-running sessions
+- [x] Plugin: Collab session recovery after Obsidian restart (restores `activeCollabSessionId`)
+- [x] Plugin: Drawing deletion detection (clears frontmatter when server returns 404)
+- [x] Plugin: Persistent collab drift detection (server enabled/disabled externally → update local)
+- [x] Frontend: DrawingsBrowser auto-refresh every 30s for persistent collab badge accuracy
 
 **Security**
 - [x] Constant-time API key comparison (`subtle` crate)
