@@ -42,6 +42,7 @@ export interface CollabSessionInfo {
 // Client -> Server WebSocket messages
 export type ClientMessage =
   | { type: 'scene_update'; elements: ExcalidrawElement[] }
+  | { type: 'scene_delta'; elements: ExcalidrawElement[]; seq: number }
   | { type: 'pointer_update'; x: number; y: number; button: 'down' | 'up'; tool?: 'pointer' | 'laser'; scrollX?: number; scrollY?: number; zoom?: number }
   | { type: 'set_name'; name: string }
 
@@ -55,6 +56,8 @@ export type ServerMessage =
       collaborators: CollaboratorInfo[]
     }
   | { type: 'scene_update'; elements: ExcalidrawElement[]; from: string }
+  | { type: 'scene_delta'; elements: ExcalidrawElement[]; from: string; seq: number }
+  | { type: 'full_sync'; elements: ExcalidrawElement[]; appState: Partial<AppState>; files: BinaryFiles; seq: number }
   | {
       type: 'pointer_update'
       x: number

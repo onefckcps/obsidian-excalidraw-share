@@ -18,6 +18,10 @@ pub enum ClientMessage {
     SceneUpdate {
         elements: serde_json::Value,
     },
+    SceneDelta {
+        elements: serde_json::Value,
+        seq: u64,
+    },
     PointerUpdate {
         x: f64,
         y: f64,
@@ -48,6 +52,18 @@ pub enum ServerMessage {
     SceneUpdate {
         elements: serde_json::Value,
         from: String,
+    },
+    SceneDelta {
+        elements: serde_json::Value,
+        from: String,
+        seq: u64,
+    },
+    FullSync {
+        elements: serde_json::Value,
+        #[serde(rename = "appState")]
+        app_state: serde_json::Value,
+        files: serde_json::Value,
+        seq: u64,
     },
     PointerUpdate {
         x: f64,
@@ -112,8 +128,12 @@ pub struct CollabSession {
     pub drawing_id: String,
     pub created_at: DateTime<Utc>,
     pub timeout_secs: u64,
-    /// Current scene elements (updated on every scene_update)
-    pub current_elements: serde_json::Value,
+    /// Indexed element storage: id -> element JSON
+    pub element_map: HashMap<String, serde_json::Value>,
+    /// Insertion order of element IDs
+    pub element_order: Vec<String>,
+    /// Monotonically increasing sequence number for delta tracking
+    pub scene_seq: u64,
     /// Original appState from the drawing
     pub app_state: serde_json::Value,
     /// Original files from the drawing
@@ -137,6 +157,35 @@ impl CollabSession {
             })
             .collect()
     }
+
+    /// Reconstruct the elements array from the indexed structure.
+    pub fn elements_as_array(&self) -> serde_json::Value {
+        let elements: Vec<serde_json::Value> = self
+            .element_order
+            .iter()
+            .filter_map(|id| self.element_map.get(id).cloned())
+            .collect();
+        serde_json::Value::Array(elements)
+    }
+}
+
+/// Parse an elements JSON array into an indexed (element_map, element_order) pair.
+fn parse_elements_into_map(
+    elements: &serde_json::Value,
+) -> (HashMap<String, serde_json::Value>, Vec<String>) {
+    let mut element_map = HashMap::new();
+    let mut element_order = Vec::new();
+
+    if let Some(arr) = elements.as_array() {
+        for el in arr {
+            if let Some(id) = el.get("id").and_then(|v| v.as_str()) {
+                element_map.insert(id.to_string(), el.clone());
+                element_order.push(id.to_string());
+            }
+        }
+    }
+
+    (element_map, element_order)
 }
 
 /// Admin-facing session info (serializable)
@@ -201,6 +250,9 @@ impl SessionManager {
             .cloned()
             .unwrap_or(serde_json::json!({}));
 
+        // Parse elements into indexed structure
+        let (element_map, element_order) = parse_elements_into_map(&elements);
+
         // Create broadcast channel with generous buffer
         let (broadcast_tx, _) = broadcast::channel(256);
 
@@ -209,7 +261,9 @@ impl SessionManager {
             drawing_id: drawing_id.to_string(),
             created_at: Utc::now(),
             timeout_secs,
-            current_elements: elements,
+            element_map,
+            element_order,
+            scene_seq: 0,
             app_state,
             files,
             participants: HashMap::new(),
@@ -261,11 +315,11 @@ impl SessionManager {
         );
 
         if save {
-            // Reconstruct the full drawing data
+            // Reconstruct the full drawing data from indexed structure
             let data = serde_json::json!({
                 "type": "excalidraw",
                 "version": 2,
-                "elements": session.current_elements,
+                "elements": session.elements_as_array(),
                 "appState": session.app_state,
                 "files": session.files,
             });
@@ -333,7 +387,7 @@ impl SessionManager {
             .insert(user_id.to_string(), participant);
 
         let snapshot = ServerMessage::Snapshot {
-            elements: session.current_elements.clone(),
+            elements: session.elements_as_array(),
             app_state: session.app_state.clone(),
             files: session.files.clone(),
             collaborators: session.collaborator_list(),
@@ -403,13 +457,37 @@ impl SessionManager {
             .get_mut(session_id)
             .ok_or(AppError::SessionNotFound)?;
 
-        // Version-based merge of incoming elements with stored elements
-        let merged = Self::merge_elements(&session.current_elements, &elements);
-        session.current_elements = merged.clone();
+        // Apply all incoming elements to the indexed structure
+        if let Some(arr) = elements.as_array() {
+            for el in arr {
+                if let Some(id) = el.get("id").and_then(|v| v.as_str()) {
+                    let incoming_version =
+                        el.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let should_update = match session.element_map.get(id) {
+                        Some(existing) => {
+                            let existing_version = existing
+                                .get("version")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
+                            incoming_version >= existing_version
+                        }
+                        None => {
+                            session.element_order.push(id.to_string());
+                            true
+                        }
+                    };
+                    if should_update {
+                        session.element_map.insert(id.to_string(), el.clone());
+                    }
+                }
+            }
+        }
 
-        // Broadcast the merged state to all participants
+        session.scene_seq += 1;
+
+        // Broadcast full state for backward compatibility
         let update_msg = ServerMessage::SceneUpdate {
-            elements: merged,
+            elements: session.elements_as_array(),
             from: user_id.to_string(),
         };
         let _ = session.broadcast_tx.send(update_msg);
@@ -417,9 +495,66 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Update the scene with only changed (delta) elements and broadcast the delta.
+    pub async fn update_scene_delta(
+        &self,
+        session_id: &str,
+        user_id: &str,
+        elements: serde_json::Value,
+    ) -> Result<(), AppError> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or(AppError::SessionNotFound)?;
+
+        // Apply only the delta elements to the indexed structure
+        let mut changed_elements = Vec::new();
+        if let Some(arr) = elements.as_array() {
+            for el in arr {
+                if let Some(id) = el.get("id").and_then(|v| v.as_str()) {
+                    let incoming_version =
+                        el.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let should_update = match session.element_map.get(id) {
+                        Some(existing) => {
+                            let existing_version = existing
+                                .get("version")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
+                            incoming_version >= existing_version
+                        }
+                        None => {
+                            // New element — add to order
+                            session.element_order.push(id.to_string());
+                            true
+                        }
+                    };
+                    if should_update {
+                        session.element_map.insert(id.to_string(), el.clone());
+                        changed_elements.push(el.clone());
+                    }
+                }
+            }
+        }
+
+        session.scene_seq += 1;
+
+        // Broadcast only the changed elements as a delta
+        if !changed_elements.is_empty() {
+            let delta_msg = ServerMessage::SceneDelta {
+                elements: serde_json::Value::Array(changed_elements),
+                from: user_id.to_string(),
+                seq: session.scene_seq,
+            };
+            let _ = session.broadcast_tx.send(delta_msg);
+        }
+
+        Ok(())
+    }
+
     /// Merge two element arrays using version-based conflict resolution.
     /// For each element ID, the element with the highest version wins.
     /// Elements only present in one side are kept as-is.
+    #[allow(dead_code)]
     fn merge_elements(
         current: &serde_json::Value,
         incoming: &serde_json::Value,

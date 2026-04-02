@@ -17,6 +17,8 @@ export class CollabClient {
   private sceneUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingSceneUpdate: ClientMessage | null = null;
   private lastPointerUpdate = 0;
+  private lastSentVersions: Map<string, number> = new Map();
+  private localSeq: number = 0;
 
   constructor(sessionId: string, displayName: string) {
     this.sessionId = sessionId;
@@ -45,6 +47,7 @@ export class CollabClient {
     this.ws.onopen = () => {
       console.log('ExcaliShare Collab: WebSocket connected');
       this.reconnectAttempt = 0;
+      this.resetDeltaTracking();
       this._emit('_connected', {} as ServerMessage);
     };
 
@@ -100,6 +103,8 @@ export class CollabClient {
       this.ws.close(1000, 'User disconnected');
       this.ws = null;
     }
+    this.lastSentVersions.clear();
+    this.localSeq = 0;
     this.handlers.clear();
   }
 
@@ -112,10 +117,46 @@ export class CollabClient {
   // ──────────────────────────────────────────────
 
   sendSceneUpdate(elements: unknown[]): void {
-    const msg: ClientMessage = {
-      type: 'scene_update',
-      elements: elements as ClientMessage extends { type: 'scene_update'; elements: infer E } ? E : never,
-    };
+    const typedElements = elements as Array<{ id: string; version: number; [key: string]: unknown }>;
+
+    // Compute delta: find elements that changed since last send
+    const changedElements: unknown[] = [];
+    for (const el of typedElements) {
+      if (!el.id) continue;
+      const lastVersion = this.lastSentVersions.get(el.id) ?? -1;
+      if (el.version > lastVersion) {
+        changedElements.push(el);
+      }
+    }
+
+    // If no changes, skip
+    if (changedElements.length === 0) return;
+
+    // Decide: send delta or full state
+    // Use delta if changed elements are less than 50% of total, otherwise full state
+    const useDelta = changedElements.length < typedElements.length * 0.5;
+
+    let msg: ClientMessage;
+    if (useDelta) {
+      this.localSeq++;
+      msg = {
+        type: 'scene_delta',
+        elements: changedElements as ClientMessage extends { type: 'scene_delta'; elements: infer E } ? E : never,
+        seq: this.localSeq,
+      };
+    } else {
+      msg = {
+        type: 'scene_update',
+        elements: elements as ClientMessage extends { type: 'scene_update'; elements: infer E } ? E : never,
+      };
+    }
+
+    // Update tracking map with ALL current elements (not just changed ones)
+    for (const el of typedElements) {
+      if (el.id) {
+        this.lastSentVersions.set(el.id, el.version);
+      }
+    }
 
     // Debounce: batch scene updates
     this.pendingSceneUpdate = msg;
@@ -128,6 +169,11 @@ export class CollabClient {
         }
       }, SCENE_UPDATE_DEBOUNCE_MS);
     }
+  }
+
+  resetDeltaTracking(): void {
+    this.lastSentVersions.clear();
+    this.localSeq = 0;
   }
 
   sendPointerUpdate(x: number, y: number, button: 'down' | 'up', tool?: 'pointer' | 'laser', scrollX?: number, scrollY?: number, zoom?: number): void {

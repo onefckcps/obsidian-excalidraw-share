@@ -111,9 +111,10 @@ async fn handle_ws_connection(
     // Task: forward broadcast messages to this WebSocket client
     let mut send_task = tokio::spawn(async move {
         while let Ok(msg) = broadcast_rx.recv().await {
-            // Don't send scene_update messages back to the sender
+            // Don't send scene_update/scene_delta messages back to the sender
             match &msg {
                 ServerMessage::SceneUpdate { from, .. } if from == &user_id_for_send => continue,
+                ServerMessage::SceneDelta { from, .. } if from == &user_id_for_send => continue,
                 ServerMessage::PointerUpdate { user_id: uid, .. } if uid == &user_id_for_send => {
                     continue
                 }
@@ -214,6 +215,19 @@ async fn handle_client_message(
                     user_id = %user_id,
                     error = %e,
                     "Failed to update scene"
+                );
+            }
+        }
+        ClientMessage::SceneDelta { elements, seq: _ } => {
+            if let Err(e) = session_manager
+                .update_scene_delta(session_id, user_id, elements)
+                .await
+            {
+                tracing::warn!(
+                    session_id = %session_id,
+                    user_id = %user_id,
+                    error = %e,
+                    "Failed to update scene delta"
                 );
             }
         }

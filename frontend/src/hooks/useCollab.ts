@@ -362,6 +362,43 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         }
       });
 
+      // Handle delta scene updates from other users (only changed elements)
+      client.on('scene_delta', (msg: ServerMessage) => {
+        if (msg.type !== 'scene_delta') return;
+
+        const remoteElements = msg.elements as ExcalidrawElement[];
+
+        // If user is actively drawing, queue the update to avoid interrupting the stroke
+        if (isUserDrawing()) {
+          pendingSceneUpdatesRef.current.push(remoteElements);
+          return;
+        }
+
+        // Flush any previously queued updates first, then apply this one
+        if (pendingSceneUpdatesRef.current.length > 0) {
+          pendingSceneUpdatesRef.current.push(remoteElements);
+          flushPendingSceneUpdates();
+        } else {
+          applyRemoteSceneUpdate(remoteElements);
+        }
+      });
+
+      // Handle full sync (server-initiated resync, e.g., after gap detection)
+      client.on('full_sync', (msg: ServerMessage) => {
+        if (msg.type !== 'full_sync') return;
+
+        const api = excalidrawAPIRef.current as {
+          updateScene: (data: unknown) => void;
+        } | null;
+
+        if (api) {
+          api.updateScene({
+            elements: msg.elements,
+            appState: msg.appState,
+          });
+        }
+      });
+
       // Handle pointer updates from other users — THIS IS THE KEY FIX
       client.on('pointer_update', (msg: ServerMessage) => {
         if (msg.type !== 'pointer_update') return;
