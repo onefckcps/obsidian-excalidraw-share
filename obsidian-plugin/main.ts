@@ -141,6 +141,9 @@ export default class ExcaliSharePlugin extends Plugin {
 
   // Native collab (in-Obsidian participation)
   private collabManager: CollabManager | null = null;
+  /** Snapshot of the Excalidraw scene captured before joining a collab session.
+   *  Used to restore the drawing when the host discards collab changes. */
+  private preCollabSnapshot: { elements: unknown[]; appState: Record<string, unknown>; files: Record<string, unknown> } | null = null;
 
   // Toolbar management
   private toolbarInstances: Map<string, ExcaliShareToolbar> = new Map();
@@ -1206,6 +1209,25 @@ export default class ExcaliSharePlugin extends Plugin {
 
       // Auto-join from Obsidian if enabled
       if (this.settings.collabJoinFromObsidian) {
+        // Capture pre-collab scene state so we can restore it if the host discards changes
+        try {
+          const plugin = this.getExcalidrawPlugin();
+          if (plugin?.ea) {
+            plugin.ea.setView('active');
+            const api = plugin.ea.getExcalidrawAPI();
+            if (api) {
+              this.preCollabSnapshot = {
+                elements: JSON.parse(JSON.stringify(api.getSceneElements())),
+                appState: JSON.parse(JSON.stringify(api.getAppState())),
+                files: JSON.parse(JSON.stringify(api.getFiles())),
+              };
+              console.log('ExcaliShare: Captured pre-collab snapshot with', this.preCollabSnapshot.elements.length, 'elements');
+            }
+          }
+        } catch (e) {
+          console.error('ExcaliShare: Failed to capture pre-collab snapshot', e);
+        }
+
         await this.joinCollabFromObsidian(drawingId, result.session_id);
       }
 
@@ -1264,6 +1286,8 @@ export default class ExcaliSharePlugin extends Plugin {
       }
 
       const drawingId = this.activeCollabDrawingId;
+      // Grab the snapshot before cleanupCollabState clears it
+      const snapshot = this.preCollabSnapshot;
       this.cleanupCollabState();
 
       if (save && drawingId) {
@@ -1274,6 +1298,8 @@ export default class ExcaliSharePlugin extends Plugin {
           new Notice('Collab session saved. Use "Pull from ExcaliShare" to sync changes to your vault.');
         }
       } else {
+        // Restore the pre-collab scene state so the drawing reverts to before the session
+        this.restorePreCollabSnapshot(snapshot);
         new Notice('Collab session ended. Changes discarded.');
       }
     } catch (error) {
@@ -1291,6 +1317,7 @@ export default class ExcaliSharePlugin extends Plugin {
 
     this.activeCollabSessionId = null;
     this.activeCollabDrawingId = null;
+    this.preCollabSnapshot = null;
 
     if (this.collabStatusBarItem) {
       this.collabStatusBarItem.setText('');
@@ -1300,6 +1327,37 @@ export default class ExcaliSharePlugin extends Plugin {
     if (this.collabHealthInterval) {
       clearInterval(this.collabHealthInterval);
       this.collabHealthInterval = null;
+    }
+  }
+
+  /**
+   * Restore the Excalidraw scene to the pre-collab snapshot.
+   * Called when the host discards collab changes.
+   */
+  private restorePreCollabSnapshot(snapshot: typeof this.preCollabSnapshot): void {
+    if (!snapshot) {
+      console.log('ExcaliShare: No pre-collab snapshot to restore');
+      return;
+    }
+
+    try {
+      const plugin = this.getExcalidrawPlugin();
+      if (plugin?.ea) {
+        plugin.ea.setView('active');
+        const api = plugin.ea.getExcalidrawAPI();
+        if (api && typeof api.updateScene === 'function') {
+          // Only restore elements — appState may contain non-serializable fields
+          // (e.g. collaborators is a Map that doesn't survive JSON.stringify).
+          // Also clear collaborator cursors with an empty Map.
+          api.updateScene({
+            elements: snapshot.elements,
+            collaborators: new Map(),
+          });
+          console.log('ExcaliShare: Restored pre-collab snapshot with', snapshot.elements.length, 'elements');
+        }
+      }
+    } catch (e) {
+      console.error('ExcaliShare: Failed to restore pre-collab snapshot', e);
     }
   }
 
@@ -1389,7 +1447,8 @@ export default class ExcaliSharePlugin extends Plugin {
           },
           onSessionEnded: (saved) => {
             // Session was ended by someone else (or server timeout)
-            // Clean up our state
+            // Grab the snapshot before cleanupCollabState clears it
+            const snapshot = this.preCollabSnapshot;
             this.cleanupCollabState();
             this.refreshActiveToolbar();
 
@@ -1399,6 +1458,9 @@ export default class ExcaliSharePlugin extends Plugin {
               if (file && this.getPublishedId(file) === drawingId) {
                 this.pullFromServer(file, drawingId);
               }
+            } else {
+              // Restore the pre-collab scene state
+              this.restorePreCollabSnapshot(snapshot);
             }
           },
           onFollowChanged: (_followingUserId) => {
