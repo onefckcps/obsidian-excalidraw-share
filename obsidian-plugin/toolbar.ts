@@ -17,6 +17,10 @@ export interface ToolbarState {
   collabSessionId: string | null;
   collabDrawingId: string | null;
   hasApiKey: boolean;
+  /** Number of participants in the active collab session (including self) */
+  collabParticipantCount?: number;
+  /** Whether the host is natively connected to the collab session from Obsidian */
+  collabNativeJoined?: boolean;
 }
 
 export interface ToolbarCallbacks {
@@ -263,6 +267,33 @@ export class ExcaliShareToolbar {
 
       // Collab actions
       if (this.state.collabSessionId && this.state.collabDrawingId === this.state.publishedId) {
+        // Show participant count if available
+        const count = this.state.collabParticipantCount;
+        const nativeJoined = this.state.collabNativeJoined;
+        if (count !== undefined && count > 0) {
+          const countLabel = document.createElement('div');
+          countLabel.style.padding = '4px 8px';
+          countLabel.style.fontSize = '11px';
+          countLabel.style.color = 'var(--text-muted)';
+          countLabel.style.textAlign = 'center';
+          countLabel.style.display = 'flex';
+          countLabel.style.alignItems = 'center';
+          countLabel.style.justifyContent = 'center';
+          countLabel.style.gap = '4px';
+          const dotSpan = document.createElement('span');
+          dotSpan.style.display = 'inline-block';
+          dotSpan.style.width = '6px';
+          dotSpan.style.height = '6px';
+          dotSpan.style.borderRadius = '50%';
+          dotSpan.style.backgroundColor = nativeJoined ? '#4CAF50' : '#FF6B6B';
+          dotSpan.style.animation = 'excalishare-pulse 2s ease-in-out infinite';
+          countLabel.appendChild(dotSpan);
+          countLabel.appendChild(document.createTextNode(
+            `${count} participant${count !== 1 ? 's' : ''}${nativeJoined ? ' • Connected' : ''}`
+          ));
+          panel.appendChild(countLabel);
+        }
+
         panel.appendChild(this.createActionButton(
           ICONS.stopCircle,
           'Stop Live Collab',

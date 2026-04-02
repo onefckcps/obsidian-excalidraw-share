@@ -7,7 +7,11 @@ export interface ExcaliShareSettings {
   pdfScale: number;
   collabTimeoutSecs: number;
   collabAutoOpenBrowser: boolean;
-  // New toolbar settings
+  // Native collab (in-Obsidian participation)
+  collabJoinFromObsidian: boolean;
+  collabDisplayName: string;
+  collabPollIntervalMs: number;
+  // Toolbar settings
   showFloatingToolbar: boolean;
   toolbarPosition: ToolbarPosition;
   autoSyncOnSave: boolean;
@@ -21,6 +25,9 @@ export const DEFAULT_SETTINGS: ExcaliShareSettings = {
   pdfScale: 1.5,
   collabTimeoutSecs: 7200,
   collabAutoOpenBrowser: true,
+  collabJoinFromObsidian: true,
+  collabDisplayName: 'Host',
+  collabPollIntervalMs: 250,
   showFloatingToolbar: true,
   toolbarPosition: 'top-left',
   autoSyncOnSave: false,
@@ -164,6 +171,28 @@ export class ExcaliShareSettingTab extends PluginSettingTab {
           .setDynamicTooltip()
           .onChange(value => {
             this.pluginRef.settings.collabTimeoutSecs = value * 3600;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Join from Obsidian')
+      .setDesc('Participate in collab sessions directly within the Obsidian Excalidraw canvas (see other users\' cursors and changes in real-time).')
+      .addToggle(toggle => {
+        toggle.setValue(this.pluginRef.settings.collabJoinFromObsidian)
+          .onChange(value => {
+            this.pluginRef.settings.collabJoinFromObsidian = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Display Name')
+      .setDesc('Your display name shown to other collaborators.')
+      .addText(text => {
+        text.setPlaceholder('Host').setValue(this.pluginRef.settings.collabDisplayName)
+          .onChange(value => {
+            this.pluginRef.settings.collabDisplayName = value;
             this.pluginRef.saveSettings();
           });
       });

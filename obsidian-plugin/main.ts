@@ -4,6 +4,8 @@ import type { ExcaliShareSettings } from './settings';
 import { ExcaliShareToolbar } from './toolbar';
 import type { ToolbarStatus, ToolbarCallbacks } from './toolbar';
 import { injectGlobalStyles, removeGlobalStyles } from './styles';
+import { CollabManager } from './collabManager';
+import type { ExcalidrawAPI } from './collabTypes';
 
 // ── Utility Functions ──
 
@@ -114,8 +116,15 @@ interface ExcalidrawPlugin {
     getSceneFromFile: (file: TFile) => Promise<{ elements: unknown[]; appState: unknown }>;
     getExcalidrawAPI: () => {
       getFiles: () => Record<string, unknown>;
-      updateScene: (data: { elements?: unknown[]; appState?: unknown }) => void;
+      updateScene: (data: {
+        elements?: unknown[];
+        appState?: unknown;
+        collaborators?: Map<string, unknown>;
+        commitToHistory?: boolean;
+      }) => void;
       getSceneElements: () => unknown[];
+      getSceneElementsIncludingDeleted?: () => unknown[];
+      getAppState: () => Record<string, unknown>;
     };
     isExcalidrawFile: (file: TFile) => boolean;
   };
@@ -129,6 +138,9 @@ export default class ExcaliSharePlugin extends Plugin {
   activeCollabDrawingId: string | null = null;
   collabStatusBarItem: HTMLElement | null = null;
   collabHealthInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Native collab (in-Obsidian participation)
+  private collabManager: CollabManager | null = null;
 
   // Toolbar management
   private toolbarInstances: Map<string, ExcaliShareToolbar> = new Map();
@@ -412,6 +424,12 @@ export default class ExcaliSharePlugin extends Plugin {
   }
 
   onunload() {
+    // Disconnect native collab if active
+    if (this.collabManager) {
+      this.collabManager.destroy();
+      this.collabManager = null;
+    }
+
     if (this.collabHealthInterval) {
       clearInterval(this.collabHealthInterval);
       this.collabHealthInterval = null;
@@ -750,6 +768,8 @@ export default class ExcaliSharePlugin extends Plugin {
       collabSessionId: this.activeCollabSessionId,
       collabDrawingId: this.activeCollabDrawingId,
       hasApiKey: !!this.settings.apiKey,
+      collabParticipantCount: this.collabManager?.participantCount,
+      collabNativeJoined: this.collabManager?.isJoined,
     });
 
     toolbar.setPosition(this.settings.toolbarPosition);
@@ -773,6 +793,9 @@ export default class ExcaliSharePlugin extends Plugin {
   private handleFileModify(file: TFile): void {
     if (!this.settings.autoSyncOnSave) return;
     if (!this.isExcalidrawFile(file)) return;
+
+    // Skip auto-sync during active collab session to avoid uploading mid-session state
+    if (this.collabManager?.isJoined) return;
 
     const publishedId = this.getPublishedId(file);
     if (!publishedId) return;
@@ -1166,6 +1189,11 @@ export default class ExcaliSharePlugin extends Plugin {
       const viewUrl = `${this.settings.baseUrl}/d/${drawingId}`;
       new Notice(`Live collab session started! Session ID: ${result.session_id}`);
 
+      // Auto-join from Obsidian if enabled
+      if (this.settings.collabJoinFromObsidian) {
+        await this.joinCollabFromObsidian(drawingId, result.session_id);
+      }
+
       if (this.settings.collabAutoOpenBrowser) {
         window.open(viewUrl, '_blank');
       }
@@ -1196,6 +1224,11 @@ export default class ExcaliSharePlugin extends Plugin {
     if (save === null) return;
 
     new Notice(save ? 'Saving and stopping collab session...' : 'Discarding and stopping collab session...');
+
+    // Disconnect native collab WebSocket before sending stop request
+    if (this.collabManager) {
+      this.collabManager.leave();
+    }
 
     try {
       const response = await requestUrl({
@@ -1235,6 +1268,12 @@ export default class ExcaliSharePlugin extends Plugin {
   }
 
   private cleanupCollabState() {
+    // Disconnect native collab WebSocket if active
+    if (this.collabManager) {
+      this.collabManager.destroy();
+      this.collabManager = null;
+    }
+
     this.activeCollabSessionId = null;
     this.activeCollabDrawingId = null;
 
@@ -1246,6 +1285,80 @@ export default class ExcaliSharePlugin extends Plugin {
     if (this.collabHealthInterval) {
       clearInterval(this.collabHealthInterval);
       this.collabHealthInterval = null;
+    }
+  }
+
+  /**
+   * Join the collab session from within Obsidian using a WebSocket connection.
+   * This allows the host to participate directly in the Excalidraw canvas
+   * without opening a browser.
+   */
+  private async joinCollabFromObsidian(drawingId: string, sessionId: string): Promise<void> {
+    const excalidrawPlugin = this.getExcalidrawPlugin();
+    if (!excalidrawPlugin?.ea) {
+      console.log('ExcaliShare: Excalidraw plugin not available, skipping native collab join');
+      return;
+    }
+
+    try {
+      this.collabManager = new CollabManager({
+        baseUrl: this.settings.baseUrl,
+        displayName: this.settings.collabDisplayName || 'Host',
+        pollIntervalMs: this.settings.collabPollIntervalMs || 250,
+        getExcalidrawAPI: () => {
+          try {
+            const plugin = this.getExcalidrawPlugin();
+            if (!plugin?.ea) return null;
+            plugin.ea.setView('active');
+            const api = plugin.ea.getExcalidrawAPI();
+            return api as ExcalidrawAPI;
+          } catch {
+            return null;
+          }
+        },
+        callbacks: {
+          onCollaboratorsChanged: (collaborators) => {
+            // Update status bar with participant count
+            if (this.collabStatusBarItem) {
+              const count = collaborators.length;
+              this.collabStatusBarItem.setText(`🔴 Live Collab (${count})`);
+            }
+            // Refresh toolbar to show updated participant count
+            this.refreshActiveToolbar();
+          },
+          onConnectionChanged: (connected) => {
+            if (connected) {
+              console.log('ExcaliShare: Native collab connected');
+            } else {
+              console.log('ExcaliShare: Native collab disconnected');
+            }
+          },
+          onSessionEnded: (saved) => {
+            // Session was ended by someone else (or server timeout)
+            // Clean up our state
+            this.cleanupCollabState();
+            this.refreshActiveToolbar();
+
+            if (saved) {
+              // Try to pull the saved state
+              const file = this.app.workspace.getActiveFile();
+              if (file && this.getPublishedId(file) === drawingId) {
+                this.pullFromServer(file, drawingId);
+              }
+            }
+          },
+        },
+      });
+
+      await this.collabManager.startAndJoin(drawingId, sessionId);
+      console.log('ExcaliShare: Native collab joined successfully');
+    } catch (error) {
+      console.error('ExcaliShare: Failed to join collab from Obsidian', error);
+      new Notice('Failed to join collab session from Obsidian. You can still use the browser.');
+      if (this.collabManager) {
+        this.collabManager.destroy();
+        this.collabManager = null;
+      }
     }
   }
 
