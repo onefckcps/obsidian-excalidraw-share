@@ -236,6 +236,18 @@ function AdminPage() {
                       <Link to={`/d/${session.drawing_id}`} style={styles.idLink}>
                         {session.drawing_id}
                       </Link>
+                      {session.persistent && (
+                        <span style={{
+                          marginLeft: '6px',
+                          padding: '1px 6px',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          background: 'rgba(34, 197, 94, 0.15)',
+                          color: '#16a34a',
+                          border: '1px solid rgba(34, 197, 94, 0.3)',
+                          fontFamily: 'system-ui, -apple-system, sans-serif',
+                        }}>Persistent</span>
+                      )}
                     </td>
                     <td style={styles.td}>
                       {session.participant_count} ({session.participants.map(p => p.name).join(', ') || 'none'})

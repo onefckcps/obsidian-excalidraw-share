@@ -14,6 +14,7 @@ interface PublicDrawing {
   created_at: string
   source_path: string | null
   password_protected?: boolean
+  persistent_collab?: boolean
 }
 
 interface TreeNode {
@@ -961,6 +962,7 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
                             }}>
                               <span style={styles.cardIcon}>🎨</span>
                               {drawing.password_protected && <span style={{ position: 'absolute', top: '4px', right: '4px', fontSize: '14px' }} title="Password protected">🔒</span>}
+                              {drawing.persistent_collab && <span style={{ position: 'absolute', top: '4px', left: '4px', fontSize: '10px', padding: '1px 5px', borderRadius: '6px', background: 'rgba(34, 197, 94, 0.15)', color: '#16a34a', border: '1px solid rgba(34, 197, 94, 0.3)', fontFamily: 'system-ui, -apple-system, sans-serif' }} title="Collaborative drawing">🔄 Live</span>}
                             </div>
                             <div style={styles.cardContent}>
                               <h3 style={{

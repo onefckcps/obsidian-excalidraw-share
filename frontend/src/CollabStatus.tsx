@@ -1,5 +1,7 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { Theme } from '@excalidraw/excalidraw/element/types';
+
+const DISPLAY_NAME_KEY = 'excalishare-collab-name';
 
 interface CollabStatusProps {
   theme: Theme;
@@ -12,6 +14,7 @@ interface CollabStatusProps {
   passwordError: string | null;
   onJoin: (name: string, password?: string) => void;
   onDismissSessionEnded: () => void;
+  isPersistentCollab?: boolean;
 }
 
 function CollabStatus({
@@ -25,10 +28,36 @@ function CollabStatus({
   passwordError,
   onJoin,
   onDismissSessionEnded,
+  isPersistentCollab,
 }: CollabStatusProps) {
   const [showJoinDialog, setShowJoinDialog] = useState(false);
   const [nameInput, setNameInput] = useState(displayName);
   const [passwordInput, setPasswordInput] = useState('');
+  const autoJoinAttemptedRef = useRef(false);
+
+  // Auto-join for persistent collab: if a stored name exists, join immediately
+  useEffect(() => {
+    if (
+      isPersistentCollab &&
+      isCollabActive &&
+      !isJoined &&
+      !passwordRequired &&
+      !autoJoinAttemptedRef.current
+    ) {
+      const storedName = localStorage.getItem(DISPLAY_NAME_KEY);
+      if (storedName) {
+        autoJoinAttemptedRef.current = true;
+        onJoin(storedName);
+      }
+    }
+  }, [isPersistentCollab, isCollabActive, isJoined, passwordRequired, onJoin]);
+
+  // Reset auto-join flag when drawing changes (isCollabActive goes false then true)
+  useEffect(() => {
+    if (!isCollabActive) {
+      autoJoinAttemptedRef.current = false;
+    }
+  }, [isCollabActive]);
 
   const isDark = theme === 'dark';
 
@@ -110,10 +139,12 @@ function CollabStatus({
           }}
         >
           <h3 style={{ margin: '0 0 12px 0', fontSize: '18px' }}>
-            🤝 Join Live Session
+            {isPersistentCollab ? '🤝 Join Collaborative Drawing' : '🤝 Join Live Session'}
           </h3>
           <p style={{ margin: '0 0 16px 0', color: isDark ? '#aaa' : '#666', fontSize: '14px' }}>
-            Enter your display name to join the collaboration session.
+            {isPersistentCollab
+              ? 'This is a collaborative drawing. Enter your name to start editing.'
+              : 'Enter your display name to join the collaboration session.'}
           </p>
           <input
             type="text"
@@ -192,7 +223,7 @@ function CollabStatus({
         borderColor: isDark ? '#444' : '#ddd',
       }}
     >
-      <div style={{ ...styles.liveDot, backgroundColor: '#f44336' }} />
+      <div style={{ ...styles.liveDot, backgroundColor: isPersistentCollab ? '#22c55e' : '#f44336' }} />
       <span
         style={{
           color: isDark ? '#e0e0e0' : '#333',
@@ -200,7 +231,9 @@ function CollabStatus({
           fontFamily: 'system-ui, -apple-system, sans-serif',
         }}
       >
-        Live Session · {participantCount} {participantCount === 1 ? 'user' : 'users'}
+        {isPersistentCollab
+          ? `Collaborative Drawing${participantCount > 0 ? ` · ${participantCount} ${participantCount === 1 ? 'user' : 'users'}` : ''}`
+          : `Live Session · ${participantCount} ${participantCount === 1 ? 'user' : 'users'}`}
       </span>
       <button
         style={{

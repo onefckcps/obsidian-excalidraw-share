@@ -31,6 +31,8 @@ export interface ToolbarState {
   collabFollowingUserId?: string | null;
   /** The display name of the local user (to identify self in the list) */
   collabDisplayName?: string;
+  /** Whether persistent collab is enabled for this drawing */
+  persistentCollabEnabled?: boolean;
 }
 
 export interface ToolbarCallbacks {
@@ -47,6 +49,10 @@ export interface ToolbarCallbacks {
   onStartFollowing?: (userId: string) => void;
   /** Stop following the current collaborator */
   onStopFollowing?: () => void;
+  /** Enable persistent collab for the current drawing */
+  onEnablePersistentCollab: () => Promise<void>;
+  /** Disable persistent collab for the current drawing */
+  onDisablePersistentCollab: () => Promise<void>;
 }
 
 /**
@@ -330,6 +336,44 @@ export class ExcaliShareToolbar {
           ICONS.users,
           'Start Live Collab',
           () => this.wrapAsync(this.callbacks.onStartCollab),
+        ));
+      }
+
+      // ── Persistent Collab section ──
+      if (this.state.persistentCollabEnabled) {
+        // Show "Persistent Collab Active" indicator + Disable button
+        const persistentRow = document.createElement('div');
+        persistentRow.style.padding = '4px 8px';
+        persistentRow.style.fontSize = '11px';
+        persistentRow.style.color = 'var(--text-muted)';
+        persistentRow.style.textAlign = 'center';
+        persistentRow.style.display = 'flex';
+        persistentRow.style.alignItems = 'center';
+        persistentRow.style.justifyContent = 'center';
+        persistentRow.style.gap = '4px';
+
+        const persistentDot = document.createElement('span');
+        persistentDot.style.display = 'inline-block';
+        persistentDot.style.width = '6px';
+        persistentDot.style.height = '6px';
+        persistentDot.style.borderRadius = '50%';
+        persistentDot.style.backgroundColor = '#2196F3';
+        persistentRow.appendChild(persistentDot);
+        persistentRow.appendChild(document.createTextNode('Persistent Collab'));
+        panel.appendChild(persistentRow);
+
+        panel.appendChild(this.createActionButton(
+          ICONS.globe,
+          'Disable Persistent Collab',
+          () => this.wrapAsync(this.callbacks.onDisablePersistentCollab),
+          true, // danger style
+        ));
+      } else if (this.state.status !== 'collabActive') {
+        // Only show enable button when no ephemeral collab is active
+        panel.appendChild(this.createActionButton(
+          ICONS.globe,
+          'Enable Persistent Collab',
+          () => this.wrapAsync(this.callbacks.onEnablePersistentCollab),
         ));
       }
 

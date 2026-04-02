@@ -88,6 +88,8 @@ interface UseCollabReturn {
   flushPendingSceneUpdates: () => void;
   /** Get collaborator IDs in the same order as the Excalidraw collaborator Map (for badge matching) */
   getCollaboratorIds: () => string[];
+  /** Whether this drawing has persistent collab enabled */
+  isPersistentCollab: boolean;
 }
 
 export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCollabReturn {
@@ -102,6 +104,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const [followingUserId, setFollowingUserId] = useState<string | null>(null);
   const [collabPasswordRequired, setCollabPasswordRequired] = useState(false);
   const [collabPasswordError, setCollabPasswordError] = useState<string | null>(null);
+  const [isPersistentCollab, setIsPersistentCollab] = useState(false);
 
   const clientRef = useRef<CollabClient | null>(null);
   const excalidrawAPIRef = useRef(excalidrawAPI);
@@ -172,11 +175,37 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
 
     fetch(`/api/collab/status/${drawingId}`)
       .then((res) => res.json())
-      .then((data: CollabStatusResponse) => {
-        setIsCollabActive(data.active);
-        setSessionId(data.session_id || null);
-        setParticipantCount(data.participant_count || 0);
-        setCollabPasswordRequired(data.password_required || false);
+      .then(async (data: CollabStatusResponse) => {
+        const persistent = data.persistent || false;
+        setIsPersistentCollab(persistent);
+
+        if (data.active) {
+          // Session exists — normal flow
+          setIsCollabActive(true);
+          setSessionId(data.session_id || null);
+          setParticipantCount(data.participant_count || 0);
+          setCollabPasswordRequired(data.password_required || false);
+        } else if (persistent && !clientRef.current) {
+          // Persistent collab but no active session — activate it
+          try {
+            const activateRes = await fetch(
+              `/api/persistent-collab/activate/${drawingId}`,
+              { method: 'POST' }
+            );
+            if (activateRes.ok) {
+              const activateData = await activateRes.json();
+              setIsCollabActive(true);
+              setSessionId(activateData.session_id);
+              setCollabPasswordRequired(activateData.password_required || false);
+              setParticipantCount(0);
+            }
+          } catch (err) {
+            console.error('ExcaliShare Collab: Failed to activate persistent session', err);
+          }
+        } else {
+          setIsCollabActive(false);
+          setSessionId(null);
+        }
       })
       .catch((err) => {
         console.error('ExcaliShare Collab: Failed to check status', err);
@@ -755,5 +784,6 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     stopFollowing,
     flushPendingSceneUpdates,
     getCollaboratorIds,
+    isPersistentCollab,
   };
 }

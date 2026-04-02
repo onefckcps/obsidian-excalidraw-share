@@ -16,6 +16,8 @@ export interface ExcaliShareSettings {
   autoSyncOnSave: boolean;
   autoSyncDelaySecs: number;
   toolbarCollapsedByDefault: boolean;
+  /** Auto-pull server changes when opening a persistent collab drawing */
+  persistentCollabAutoSync: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExcaliShareSettings = {
@@ -31,6 +33,7 @@ export const DEFAULT_SETTINGS: ExcaliShareSettings = {
   autoSyncOnSave: false,
   autoSyncDelaySecs: 5,
   toolbarCollapsedByDefault: true,
+  persistentCollabAutoSync: true,
 };
 
 /** Interface for the plugin reference needed by the settings tab */
@@ -202,6 +205,20 @@ export class ExcaliShareSettingTab extends PluginSettingTab {
         toggle.setValue(this.pluginRef.settings.collabAutoOpenBrowser)
           .onChange(value => {
             this.pluginRef.settings.collabAutoOpenBrowser = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    // ── Persistent Collaboration ──
+    containerEl.createEl('h3', { text: 'Persistent Collaboration' });
+
+    new Setting(containerEl)
+      .setName('Auto-sync on open')
+      .setDesc('Automatically pull latest changes from server when opening a persistent collab drawing.')
+      .addToggle(toggle => {
+        toggle.setValue(this.pluginRef.settings.persistentCollabAutoSync)
+          .onChange(value => {
+            this.pluginRef.settings.persistentCollabAutoSync = value;
             this.pluginRef.saveSettings();
           });
       });

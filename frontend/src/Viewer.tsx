@@ -978,6 +978,36 @@ function Viewer() {
         }
       />
 
+      {/* Persistent collab badge */}
+      {collab.isPersistentCollab && (
+        <div style={{
+          position: 'absolute',
+          top: 12,
+          left: 60,
+          zIndex: 5,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 10px',
+          borderRadius: 12,
+          background: theme === 'dark' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(34, 197, 94, 0.1)',
+          border: `1px solid ${theme === 'dark' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(34, 197, 94, 0.2)'}`,
+          fontSize: 12,
+          color: theme === 'dark' ? '#4ade80' : '#16a34a',
+          pointerEvents: 'none',
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+        }}>
+          <span style={{
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: '#22c55e',
+            display: 'inline-block',
+          }} />
+          Collaborative
+        </div>
+      )}
+
       {/* Collaboration Status — pre-join banner + session ended only */}
       <CollabStatus
         theme={theme}
@@ -989,6 +1019,7 @@ function Viewer() {
         passwordRequired={collab.collabPasswordRequired}
         passwordError={collab.collabPasswordError}
         onJoin={collab.joinSession}
+        isPersistentCollab={collab.isPersistentCollab}
         onDismissSessionEnded={() => {
           collab.dismissSessionEnded()
           // Reload the drawing to get the latest saved state.

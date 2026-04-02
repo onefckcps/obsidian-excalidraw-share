@@ -7,6 +7,8 @@ export interface ExcalidrawData {
   elements: ExcalidrawElement[]
   appState?: Partial<AppState>
   files?: BinaryFiles
+  persistent_collab?: boolean
+  persistent_collab_version?: number
 }
 
 export interface PublicDrawing {
@@ -14,6 +16,7 @@ export interface PublicDrawing {
   created_at: string
   source_path: string | null
   password_protected: boolean
+  persistent_collab?: boolean
 }
 
 // ──────────────────────────────────────────────
@@ -31,6 +34,7 @@ export interface CollabStatusResponse {
   session_id?: string
   participant_count?: number
   password_required?: boolean
+  persistent?: boolean
 }
 
 export interface CollabSessionInfo {
@@ -39,6 +43,7 @@ export interface CollabSessionInfo {
   created_at: string
   participant_count: number
   participants: CollaboratorInfo[]
+  persistent?: boolean
 }
 
 // Client -> Server WebSocket messages

@@ -46,6 +46,7 @@ pub struct PublicDrawingMeta {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub source_path: Option<String>,
     pub password_protected: bool,
+    pub persistent_collab: bool,
 }
 
 #[derive(Deserialize)]
@@ -106,11 +107,47 @@ pub struct CollabStatusResponse {
     pub participant_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_required: Option<bool>,
+    pub persistent: bool,
 }
 
 #[derive(Serialize)]
 pub struct CollabSessionsResponse {
     pub sessions: Vec<SessionInfo>,
+}
+
+// ──────────────────────────────────────────────
+// Persistent Collab Request / Response types
+// ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct EnablePersistentCollabRequest {
+    pub drawing_id: String,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct EnablePersistentCollabResponse {
+    pub enabled: bool,
+    pub drawing_id: String,
+    pub session_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct DisablePersistentCollabRequest {
+    pub drawing_id: String,
+}
+
+#[derive(Serialize)]
+pub struct DisablePersistentCollabResponse {
+    pub disabled: bool,
+    pub drawing_id: String,
+}
+
+#[derive(Serialize)]
+pub struct ActivatePersistentCollabResponse {
+    pub session_id: String,
+    pub password_required: bool,
 }
 
 // ──────────────────────────────────────────────
@@ -240,9 +277,28 @@ pub async fn get_drawing(
 
     // Strip internal metadata fields from the response
     let mut response_data = data;
+
+    // Extract persistent collab info before stripping
+    let persistent_collab = response_data.get("_persistent_collab")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let persistent_version = response_data.get("_persistent_collab_version")
+        .and_then(|v| v.as_u64());
+
     if let Some(obj) = response_data.as_object_mut() {
         obj.remove("_password_hash");
         obj.remove("_source_path");
+        obj.remove("_persistent_collab");
+        obj.remove("_persistent_collab_version");
+        obj.remove("_persistent_collab_password_hash");
+
+        // Expose persistent collab info (without underscore prefix)
+        if persistent_collab {
+            obj.insert("persistent_collab".to_string(), serde_json::Value::Bool(true));
+            if let Some(v) = persistent_version {
+                obj.insert("persistent_collab_version".to_string(), serde_json::json!(v));
+            }
+        }
     }
 
     Ok(Json(response_data))
@@ -275,6 +331,7 @@ pub async fn list_drawings_public(
             created_at: d.created_at,
             source_path: d.source_path,
             password_protected: d.password_protected,
+            persistent_collab: d.persistent_collab,
         })
         .collect();
     Ok(Json(PublicListResponse { drawings: public_drawings }))
@@ -385,19 +442,25 @@ pub async fn collab_status(
     State(state): State<AppState>,
     Path(drawing_id): Path<String>,
 ) -> Json<CollabStatusResponse> {
-    match state.session_manager.get_session_status(&drawing_id).await {
-        Some((session_id, participant_count, password_required)) => Json(CollabStatusResponse {
+    let (active, session_id, participant_count, password_required, persistent) =
+        state.session_manager.get_session_status_extended(&drawing_id).await;
+
+    if active {
+        Json(CollabStatusResponse {
             active: true,
-            session_id: Some(session_id),
+            session_id,
             participant_count: Some(participant_count),
             password_required: Some(password_required),
-        }),
-        None => Json(CollabStatusResponse {
+            persistent,
+        })
+    } else {
+        Json(CollabStatusResponse {
             active: false,
             session_id: None,
             participant_count: None,
             password_required: None,
-        }),
+            persistent,
+        })
     }
 }
 
@@ -440,4 +503,179 @@ pub async fn list_collab_sessions(
 ) -> Json<CollabSessionsResponse> {
     let sessions = state.session_manager.list_sessions().await;
     Json(CollabSessionsResponse { sessions })
+}
+
+// ──────────────────────────────────────────────
+// Persistent Collab Handlers
+// ──────────────────────────────────────────────
+
+/// Enable persistent collab for a drawing (auth required).
+/// Creates a persistent session that auto-saves and survives server restarts.
+pub async fn enable_persistent_collab(
+    State(state): State<AppState>,
+    Json(body): Json<EnablePersistentCollabRequest>,
+) -> Result<(StatusCode, Json<EnablePersistentCollabResponse>), AppError> {
+    // 1. Verify drawing exists
+    let drawing_data = state.storage.load(&body.drawing_id).await?;
+
+    // 2. Hash password if provided
+    let password_hash = match &body.password {
+        Some(pw) if !pw.is_empty() => {
+            let hash = password::hash_password(pw)
+                .map_err(|e| AppError::Internal(format!("Failed to hash password: {e}")))?;
+            Some(hash)
+        }
+        _ => None,
+    };
+
+    // 3. Update drawing JSON: set _persistent_collab = true, store password hash
+    let mut data = drawing_data.clone();
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert("_persistent_collab".to_string(), serde_json::Value::Bool(true));
+        if let Some(ph) = &password_hash {
+            obj.insert(
+                "_persistent_collab_password_hash".to_string(),
+                serde_json::Value::String(ph.clone()),
+            );
+        } else {
+            obj.remove("_persistent_collab_password_hash");
+        }
+        if !obj.contains_key("_persistent_collab_version") {
+            obj.insert("_persistent_collab_version".to_string(), serde_json::json!(0));
+        }
+    }
+
+    // 4. Save updated drawing (preserve source_path and password_hash)
+    let source_path = data.get("_source_path").and_then(|v| v.as_str()).map(String::from);
+    let pw_hash = data.get("_password_hash").and_then(|v| v.as_str()).map(String::from);
+    state.storage.save(&body.drawing_id, &data, source_path.as_deref(), pw_hash.as_deref()).await?;
+
+    // 5. Register in session manager
+    state.session_manager.register_persistent_drawing(body.drawing_id.clone()).await;
+
+    // 6. Create persistent session (if not already active)
+    let session_id = match state.session_manager.get_session_for_drawing(&body.drawing_id).await {
+        Some(existing_id) => existing_id,
+        None => {
+            state.session_manager.create_persistent_session(
+                &body.drawing_id, &drawing_data, password_hash,
+            ).await?
+        }
+    };
+
+    tracing::info!(drawing_id = %body.drawing_id, "Persistent collab enabled");
+
+    Ok((StatusCode::OK, Json(EnablePersistentCollabResponse {
+        enabled: true,
+        drawing_id: body.drawing_id,
+        session_id,
+    })))
+}
+
+/// Disable persistent collab for a drawing (auth required).
+/// Ends any active session (saving changes) and removes persistent collab metadata.
+pub async fn disable_persistent_collab(
+    State(state): State<AppState>,
+    Json(body): Json<DisablePersistentCollabRequest>,
+) -> Result<Json<DisablePersistentCollabResponse>, AppError> {
+    // 1. End active session if exists (save to disk)
+    if let Some(session_id) = state.session_manager.get_session_for_drawing(&body.drawing_id).await {
+        let result = state.session_manager.end_session(&session_id, true).await;
+        // Save session data to disk if end_session returned it
+        if let Ok(Some((drawing_id, data))) = result {
+            let (source_path, password_hash) = match state.storage.load(&drawing_id).await {
+                Ok(existing) => (
+                    existing.get("_source_path")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    existing.get("_password_hash")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                ),
+                Err(_) => (None, None),
+            };
+            let _ = state.storage.save(
+                &drawing_id, &data, source_path.as_deref(), password_hash.as_deref(),
+            ).await;
+        }
+    }
+
+    // 2. Remove _persistent_collab from drawing JSON
+    let data = state.storage.load(&body.drawing_id).await?;
+    let mut updated = data;
+    if let Some(obj) = updated.as_object_mut() {
+        obj.insert("_persistent_collab".to_string(), serde_json::Value::Bool(false));
+        obj.remove("_persistent_collab_password_hash");
+        obj.remove("_persistent_collab_version");
+    }
+    let source_path = updated.get("_source_path").and_then(|v| v.as_str()).map(String::from);
+    let pw_hash = updated.get("_password_hash").and_then(|v| v.as_str()).map(String::from);
+    state.storage.save(&body.drawing_id, &updated, source_path.as_deref(), pw_hash.as_deref()).await?;
+
+    // 3. Unregister from session manager
+    state.session_manager.unregister_persistent_drawing(&body.drawing_id).await;
+
+    tracing::info!(drawing_id = %body.drawing_id, "Persistent collab disabled");
+
+    Ok(Json(DisablePersistentCollabResponse {
+        disabled: true,
+        drawing_id: body.drawing_id,
+    }))
+}
+
+/// Activate a persistent collab session on demand (public, no auth).
+/// Creates the session if it doesn't exist yet (lazy activation).
+/// Returns the session_id for WebSocket connection.
+pub async fn activate_persistent_collab(
+    State(state): State<AppState>,
+    Path(drawing_id): Path<String>,
+) -> Result<Json<ActivatePersistentCollabResponse>, AppError> {
+    // 1. Check if session already exists
+    if let Some(session_id) = state.session_manager.get_session_for_drawing(&drawing_id).await {
+        let (active, _, _, pw_req, _) =
+            state.session_manager.get_session_status_extended(&drawing_id).await;
+        if active {
+            return Ok(Json(ActivatePersistentCollabResponse {
+                session_id,
+                password_required: pw_req,
+            }));
+        }
+    }
+
+    // 2. Verify drawing has persistent collab enabled
+    let has_persistent = state.storage.get_persistent_collab_status(&drawing_id).await?;
+    if !has_persistent {
+        return Err(AppError::NotFound);
+    }
+
+    // 3. Load drawing and create persistent session
+    let drawing_data = state.storage.load(&drawing_id).await?;
+    let password_hash = drawing_data.get("_persistent_collab_password_hash")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    // Handle race condition: create_persistent_session may fail with SessionAlreadyExists
+    // if two visitors arrive simultaneously
+    let session_id = match state.session_manager.create_persistent_session(
+        &drawing_id, &drawing_data, password_hash.clone(),
+    ).await {
+        Ok(id) => id,
+        Err(AppError::SessionAlreadyExists) => {
+            // Another request created the session concurrently — return the existing one
+            state.session_manager.get_session_for_drawing(&drawing_id).await
+                .ok_or(AppError::Internal("Race condition: session disappeared".to_string()))?
+        }
+        Err(e) => return Err(e),
+    };
+
+    tracing::info!(
+        drawing_id = %drawing_id,
+        session_id = %session_id,
+        "Persistent collab session activated on demand"
+    );
+
+    Ok(Json(ActivatePersistentCollabResponse {
+        session_id,
+        password_required: password_hash.is_some(),
+    }))
 }

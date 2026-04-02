@@ -1,12 +1,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::storage::DrawingStorage;
 
 // ──────────────────────────────────────────────
 // WebSocket message types
@@ -146,6 +145,14 @@ pub struct CollabSession {
     pub broadcast_tx: broadcast::Sender<ServerMessage>,
     /// Optional password hash for session access control
     pub password_hash: Option<String>,
+    /// Whether this is a persistent collab session (no timeout, auto-save)
+    pub persistent: bool,
+    /// Last time any scene change occurred (for idle-based cleanup of persistent sessions)
+    pub last_activity: DateTime<Utc>,
+    /// Monotonically increasing version counter for persistent disk saves
+    pub persistent_version: u64,
+    /// Whether the session has unsaved changes since last disk flush
+    pub persistent_dirty: bool,
 }
 
 impl CollabSession {
@@ -199,6 +206,7 @@ pub struct SessionInfo {
     pub participant_count: usize,
     pub participants: Vec<CollaboratorInfo>,
     pub password_required: bool,
+    pub persistent: bool,
 }
 
 // ──────────────────────────────────────────────
@@ -211,6 +219,8 @@ pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, CollabSession>>>,
     /// drawing_id -> session_id (for quick lookup)
     drawing_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// Drawing IDs that have persistent collab enabled (for status queries)
+    persistent_drawings: Arc<RwLock<HashSet<String>>>,
 }
 
 impl SessionManager {
@@ -218,6 +228,7 @@ impl SessionManager {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             drawing_sessions: Arc::new(RwLock::new(HashMap::new())),
+            persistent_drawings: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -274,6 +285,10 @@ impl SessionManager {
             next_color_index: 0,
             broadcast_tx,
             password_hash,
+            persistent: false,
+            last_activity: Utc::now(),
+            persistent_version: 0,
+            persistent_dirty: false,
         };
 
         drawing_sessions.insert(drawing_id.to_string(), session_id.clone());
@@ -286,6 +301,107 @@ impl SessionManager {
             session_id = %session_id,
             drawing_id = %drawing_id,
             "Collab session created"
+        );
+
+        Ok(session_id)
+    }
+
+    /// Register a drawing as having persistent collab enabled.
+    /// Called on server startup and when enabling persistent collab.
+    pub async fn register_persistent_drawing(&self, drawing_id: String) {
+        self.persistent_drawings.write().await.insert(drawing_id);
+    }
+
+    /// Unregister a drawing from persistent collab tracking.
+    /// Called when disabling persistent collab.
+    pub async fn unregister_persistent_drawing(&self, drawing_id: &str) {
+        self.persistent_drawings.write().await.remove(drawing_id);
+    }
+
+    /// Check if a drawing has persistent collab registered.
+    pub async fn is_persistent_drawing(&self, drawing_id: &str) -> bool {
+        self.persistent_drawings.read().await.contains(drawing_id)
+    }
+
+    /// Create a persistent collaboration session for a drawing.
+    /// Unlike ephemeral sessions, persistent sessions have no timeout and auto-save.
+    /// Returns the session_id. Fails if a session already exists for this drawing.
+    pub async fn create_persistent_session(
+        &self,
+        drawing_id: &str,
+        drawing_data: &serde_json::Value,
+        password_hash: Option<String>,
+    ) -> Result<String, AppError> {
+        let mut drawing_sessions = self.drawing_sessions.write().await;
+
+        if drawing_sessions.contains_key(drawing_id) {
+            return Err(AppError::SessionAlreadyExists);
+        }
+
+        let session_id = Uuid::new_v4().to_string().replace('-', "");
+
+        let elements = drawing_data
+            .get("elements")
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(vec![]));
+
+        let app_state = drawing_data
+            .get("appState")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
+
+        let files = drawing_data
+            .get("files")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
+
+        // Read persistent_version from the drawing data (set by save_persistent)
+        let persistent_version = drawing_data
+            .get("_persistent_collab_version")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        let (element_map, element_order) = parse_elements_into_map(&elements);
+
+        let (broadcast_tx, _) = broadcast::channel(256);
+
+        let session = CollabSession {
+            session_id: session_id.clone(),
+            drawing_id: drawing_id.to_string(),
+            created_at: Utc::now(),
+            timeout_secs: 0, // No timeout for persistent sessions
+            element_map,
+            element_order,
+            scene_seq: 0,
+            app_state,
+            files,
+            participants: HashMap::new(),
+            next_color_index: 0,
+            broadcast_tx,
+            password_hash,
+            persistent: true,
+            last_activity: Utc::now(),
+            persistent_version,
+            persistent_dirty: false,
+        };
+
+        drawing_sessions.insert(drawing_id.to_string(), session_id.clone());
+        self.sessions
+            .write()
+            .await
+            .insert(session_id.clone(), session);
+
+        // Register in persistent_drawings if not already registered
+        self.persistent_drawings
+            .write()
+            .await
+            .insert(drawing_id.to_string());
+
+        tracing::info!(
+            session_id = %session_id,
+            drawing_id = %drawing_id,
+            persistent_version = persistent_version,
+            "Persistent collab session created"
         );
 
         Ok(session_id)
@@ -359,6 +475,31 @@ impl SessionManager {
             }
         }
         None
+    }
+
+    /// Get session status for a drawing, including persistent collab info.
+    /// Returns (active, session_id, participant_count, password_required, persistent).
+    /// If no active session exists, checks the persistent_drawings registry.
+    pub async fn get_session_status_extended(
+        &self,
+        drawing_id: &str,
+    ) -> (bool, Option<String>, usize, bool, bool) {
+        let drawing_sessions = self.drawing_sessions.read().await;
+        if let Some(session_id) = drawing_sessions.get(drawing_id) {
+            let sessions = self.sessions.read().await;
+            if let Some(session) = sessions.get(session_id) {
+                return (
+                    true,
+                    Some(session_id.clone()),
+                    session.participants.len(),
+                    session.password_hash.is_some(),
+                    session.persistent,
+                );
+            }
+        }
+        // No active session — check if drawing has persistent collab registered
+        let is_persistent = self.persistent_drawings.read().await.contains(drawing_id);
+        (false, None, 0, false, is_persistent)
     }
 
     /// Verify a password against a session's password hash.
@@ -517,6 +658,12 @@ impl SessionManager {
 
         session.scene_seq += 1;
 
+        // Update persistent session tracking
+        if session.persistent {
+            session.persistent_dirty = true;
+        }
+        session.last_activity = Utc::now();
+
         // Broadcast only the changed elements as a scene_update (delta-efficient).
         // Clients merge these into their local state using version-based resolution.
         if !changed_elements.is_empty() {
@@ -572,6 +719,12 @@ impl SessionManager {
         }
 
         session.scene_seq += 1;
+
+        // Update persistent session tracking
+        if session.persistent {
+            session.persistent_dirty = true;
+        }
+        session.last_activity = Utc::now();
 
         // Broadcast only the changed elements as a delta
         if !changed_elements.is_empty() {
@@ -737,27 +890,79 @@ impl SessionManager {
                 participant_count: s.participants.len(),
                 participants: s.collaborator_list(),
                 password_required: s.password_hash.is_some(),
+                persistent: s.persistent,
             })
             .collect()
     }
 
+    /// Get save data for a persistent session if it has unsaved changes.
+    /// Returns (drawing_id, scene_data, version) if dirty, None otherwise.
+    /// Resets the dirty flag after reading.
+    pub async fn get_persistent_save_data(
+        &self,
+        session_id: &str,
+    ) -> Option<(String, serde_json::Value, u64)> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions.get_mut(session_id)?;
+
+        if !session.persistent || !session.persistent_dirty {
+            return None;
+        }
+
+        // Increment version for this save
+        session.persistent_version += 1;
+        session.persistent_dirty = false;
+
+        let version = session.persistent_version;
+        let drawing_id = session.drawing_id.clone();
+
+        // Reconstruct the full drawing data (same as end_session with save=true)
+        let data = serde_json::json!({
+            "type": "excalidraw",
+            "version": 2,
+            "elements": session.elements_as_array(),
+            "appState": session.app_state,
+            "files": session.files,
+        });
+
+        Some((drawing_id, data, version))
+    }
+
     /// Clean up expired sessions. Called periodically by background task.
     /// Expired sessions are saved to storage before being removed to prevent data loss.
+    /// Persistent sessions use idle-based cleanup (no participants + 30 min idle)
+    /// instead of timeout-based cleanup.
     pub async fn cleanup_expired(&self, storage: &crate::storage::FileSystemStorage) {
+        use crate::storage::DrawingStorage;
+
         let now = Utc::now();
-        let mut expired_ids = Vec::new();
+        let mut expired_ephemeral_ids = Vec::new();
+        let mut idle_persistent_ids = Vec::new();
 
         {
             let sessions = self.sessions.read().await;
             for (id, session) in sessions.iter() {
-                let elapsed = (now - session.created_at).num_seconds() as u64;
-                if elapsed > session.timeout_secs {
-                    expired_ids.push(id.clone());
+                if session.persistent {
+                    // Persistent sessions: idle-based cleanup
+                    // Idle = no participants AND last_activity older than 30 minutes
+                    if session.participants.is_empty() {
+                        let idle_secs = (now - session.last_activity).num_seconds().max(0) as u64;
+                        if idle_secs > 1800 {
+                            idle_persistent_ids.push((id.clone(), session.drawing_id.clone(), session.persistent_version));
+                        }
+                    }
+                } else {
+                    // Ephemeral sessions: timeout-based cleanup (existing logic)
+                    let elapsed = (now - session.created_at).num_seconds() as u64;
+                    if elapsed > session.timeout_secs {
+                        expired_ephemeral_ids.push(id.clone());
+                    }
                 }
             }
         }
 
-        for session_id in expired_ids {
+        // Clean up expired ephemeral sessions (existing behavior)
+        for session_id in expired_ephemeral_ids {
             tracing::info!(session_id = %session_id, "Cleaning up expired collab session (saving changes)");
             match self.end_session(&session_id, true).await {
                 Ok(Some((drawing_id, data))) => {
@@ -786,6 +991,69 @@ impl SessionManager {
                 Ok(None) => {}
                 Err(e) => {
                     tracing::error!(session_id = %session_id, error = %e, "Failed to end expired session");
+                }
+            }
+        }
+
+        // Clean up idle persistent sessions: save to disk, remove from memory,
+        // but do NOT unregister from persistent_drawings
+        for (session_id, drawing_id, version) in idle_persistent_ids {
+            tracing::info!(
+                session_id = %session_id,
+                drawing_id = %drawing_id,
+                "Cleaning up idle persistent collab session (saving to disk)"
+            );
+
+            // Get save data before ending the session
+            if let Some((did, data, ver)) = self.get_persistent_save_data(&session_id).await {
+                if let Err(e) = storage.save_persistent(&did, &data, ver).await {
+                    tracing::error!(
+                        drawing_id = %did,
+                        error = %e,
+                        "Failed to save idle persistent session to disk"
+                    );
+                } else {
+                    tracing::info!(drawing_id = %did, version = ver, "Idle persistent session saved to disk");
+                }
+            } else {
+                // Session wasn't dirty — still save with current version to be safe
+                let sessions = self.sessions.write().await;
+                if let Some(session) = sessions.get(&session_id) {
+                    let data = serde_json::json!({
+                        "type": "excalidraw",
+                        "version": 2,
+                        "elements": session.elements_as_array(),
+                        "appState": session.app_state,
+                        "files": session.files,
+                    });
+                    if let Err(e) = storage.save_persistent(&drawing_id, &data, version).await {
+                        tracing::error!(
+                            drawing_id = %drawing_id,
+                            error = %e,
+                            "Failed to save idle persistent session to disk"
+                        );
+                    } else {
+                        tracing::info!(drawing_id = %drawing_id, version = version, "Idle persistent session saved to disk (clean)");
+                    }
+                }
+                drop(sessions);
+            }
+
+            // Remove session from memory (end_session handles broadcast + cleanup)
+            match self.end_session(&session_id, false).await {
+                Ok(_) => {
+                    tracing::info!(
+                        session_id = %session_id,
+                        drawing_id = %drawing_id,
+                        "Idle persistent session removed from memory"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to end idle persistent session"
+                    );
                 }
             }
         }
