@@ -67,6 +67,9 @@ function Viewer() {
   const [showCollabPopover, setShowCollabPopover] = useState(false)
   const [passwordRequired, setPasswordRequired] = useState(false)
   const [passwordError, setPasswordError] = useState<string | null>(null)
+  // Store the password used to successfully load a password-protected drawing,
+  // so it can be reused for subsequent re-fetches (e.g. after session ends).
+  const currentPasswordRef = useRef<string | undefined>(undefined)
 
   const isMobile = useMediaQuery('(max-width: 730px)')
 
@@ -117,6 +120,8 @@ function Viewer() {
     // Reset password state on ID change
     setPasswordRequired(false)
     setPasswordError(null)
+    // Clear stored password when navigating to a different drawing
+    currentPasswordRef.current = undefined
 
     // Wenn sich die ID ändert, wollen wir vorherige noch laufende Fetches abbrechen
     const abortController = new AbortController()
@@ -150,6 +155,10 @@ function Viewer() {
           return
         }
         if (result.data) {
+          // Store the fragment key as the current password for future re-fetches
+          if (fragmentKey) {
+            currentPasswordRef.current = fragmentKey
+          }
           // Im Cache speichern für später
           drawingCache.set(id, result.data)
           setSceneData(result.data)
@@ -186,6 +195,8 @@ function Viewer() {
         return
       }
       if (result.data) {
+        // Store the password so subsequent re-fetches (e.g. after session ends) can reuse it
+        currentPasswordRef.current = password
         drawingCache.set(id, result.data)
         setSceneData(result.data)
         setCurrentDataId(id)
@@ -346,7 +357,10 @@ function Viewer() {
       if (e.key === 'r' || e.key === 'R') {
         if (!id || loading) return
         setLoading(true)
-        fetch(`/api/view/${id}`)
+        const refreshUrl = currentPasswordRef.current
+          ? `/api/view/${id}?key=${encodeURIComponent(currentPasswordRef.current)}`
+          : `/api/view/${id}`
+        fetch(refreshUrl)
           .then((res) => {
             if (!res.ok) throw new Error(res.status === 404 ? 'Drawing not found' : 'Failed to load drawing')
             return res.json()
@@ -987,10 +1001,14 @@ function Viewer() {
         onJoin={collab.joinSession}
         onDismissSessionEnded={() => {
           collab.dismissSessionEnded()
-          // Reload the drawing to get the latest state
+          // Reload the drawing to get the latest saved state.
+          // Must include the password key if the drawing is password-protected.
           if (id) {
             setLoading(true)
-            fetch(`/api/view/${id}`)
+            const reloadUrl = currentPasswordRef.current
+              ? `/api/view/${id}?key=${encodeURIComponent(currentPasswordRef.current)}`
+              : `/api/view/${id}`
+            fetch(reloadUrl)
               .then(res => res.json())
               .then(data => {
                 drawingCache.set(id, data)
