@@ -1,3 +1,4 @@
+import type { BinaryFiles } from '@excalidraw/excalidraw/types';
 import type { ClientMessage, ServerMessage } from '../types';
 
 type MessageHandler = (msg: ServerMessage) => void;
@@ -5,6 +6,7 @@ type MessageHandler = (msg: ServerMessage) => void;
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
 const SCENE_UPDATE_DEBOUNCE_MS = 100;
 const POINTER_UPDATE_THROTTLE_MS = 50;
+const FILES_UPDATE_DEBOUNCE_MS = 200;
 
 export class CollabClient {
   private ws: WebSocket | null = null;
@@ -19,6 +21,10 @@ export class CollabClient {
   private lastPointerUpdate = 0;
   private lastSentVersions: Map<string, number> = new Map();
   private localSeq: number = 0;
+  /** Track which file IDs have already been sent to avoid re-sending immutable files */
+  private sentFileIds: Set<string> = new Set();
+  private filesUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingFilesUpdate: BinaryFiles | null = null;
 
   private password?: string;
 
@@ -105,12 +111,18 @@ export class CollabClient {
       clearTimeout(this.sceneUpdateTimer);
       this.sceneUpdateTimer = null;
     }
+    if (this.filesUpdateTimer) {
+      clearTimeout(this.filesUpdateTimer);
+      this.filesUpdateTimer = null;
+    }
     if (this.ws) {
       this.ws.close(1000, 'User disconnected');
       this.ws = null;
     }
     this.lastSentVersions.clear();
     this.localSeq = 0;
+    this.sentFileIds.clear();
+    this.pendingFilesUpdate = null;
     this.handlers.clear();
   }
 
@@ -180,6 +192,68 @@ export class CollabClient {
   resetDeltaTracking(): void {
     this.lastSentVersions.clear();
     this.localSeq = 0;
+    this.sentFileIds.clear();
+    this.pendingFilesUpdate = null;
+  }
+
+  /**
+   * Send new binary files (images) to the server.
+   * Only sends files that haven't been sent before (delta tracking via sentFileIds).
+   * Debounced to batch multiple file additions.
+   */
+  sendFilesUpdate(files: BinaryFiles): void {
+    if (!files || Object.keys(files).length === 0) return;
+
+    // Find new files that haven't been sent yet
+    const newFiles: BinaryFiles = {};
+    let hasNew = false;
+    for (const [fileId, fileData] of Object.entries(files)) {
+      if (!this.sentFileIds.has(fileId)) {
+        newFiles[fileId] = fileData;
+        hasNew = true;
+      }
+    }
+
+    if (!hasNew) return;
+
+    // Merge with any pending files update
+    if (this.pendingFilesUpdate) {
+      Object.assign(this.pendingFilesUpdate, newFiles);
+    } else {
+      this.pendingFilesUpdate = { ...newFiles };
+    }
+
+    // Debounce: batch file updates
+    if (this.filesUpdateTimer) {
+      clearTimeout(this.filesUpdateTimer);
+    }
+    this.filesUpdateTimer = setTimeout(() => {
+      this.filesUpdateTimer = null;
+      if (this.pendingFilesUpdate) {
+        const filesToSend = this.pendingFilesUpdate;
+        this.pendingFilesUpdate = null;
+
+        // Mark as sent before sending
+        for (const fileId of Object.keys(filesToSend)) {
+          this.sentFileIds.add(fileId);
+        }
+
+        this._send({
+          type: 'files_update',
+          files: filesToSend,
+        });
+      }
+    }, FILES_UPDATE_DEBOUNCE_MS);
+  }
+
+  /**
+   * Mark file IDs as already known (e.g., from snapshot or initial load).
+   * Prevents re-sending files that were received from the server.
+   */
+  markFilesAsKnown(fileIds: string[]): void {
+    for (const id of fileIds) {
+      this.sentFileIds.add(id);
+    }
   }
 
   sendPointerUpdate(x: number, y: number, button: 'down' | 'up', tool?: 'pointer' | 'laser', scrollX?: number, scrollY?: number, zoom?: number): void {

@@ -23,7 +23,8 @@ export type ClientMessage =
   | { type: 'scene_update'; elements: unknown[] }
   | { type: 'scene_delta'; elements: unknown[]; seq: number }
   | { type: 'pointer_update'; x: number; y: number; button: 'down' | 'up'; tool?: 'pointer' | 'laser'; scrollX?: number; scrollY?: number; zoom?: number }
-  | { type: 'set_name'; name: string };
+  | { type: 'set_name'; name: string }
+  | { type: 'files_update'; files: Record<string, unknown> };
 
 // ──────────────────────────────────────────────
 // Server → Client WebSocket messages
@@ -65,6 +66,7 @@ export type ServerMessage =
       name: string;
       collaborators: CollaboratorInfo[];
     }
+  | { type: 'files_update'; files: Record<string, unknown>; from: string }
   | { type: 'session_ended'; saved: boolean }
   | { type: 'error'; message: string };
 
@@ -100,6 +102,8 @@ export interface ExcalidrawAPI {
   getSceneElementsIncludingDeleted?: () => ExcalidrawElement[];
   getFiles: () => Record<string, unknown>;
   getAppState: () => Record<string, unknown>;
+  /** Add binary files (images) to the Excalidraw file cache. Available on Excalidraw 0.17+ */
+  addFiles?: (files: { id: string; mimeType: string; dataURL: string; created: number; lastRetrieved?: number }[]) => void;
 
   // ── Event subscription methods (Excalidraw imperative API) ──
   // These return an unsubscribe function. Available on newer Excalidraw versions.

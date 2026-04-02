@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Excalidraw, LiveCollaborationTrigger } from '@excalidraw/excalidraw'
 import type { Theme, ExcalidrawElement } from '@excalidraw/excalidraw/element/types'
+import type { BinaryFiles } from '@excalidraw/excalidraw/types'
 import type { ExcalidrawData } from './types'
 import { drawingCache } from './utils/cache'
 import { useCollab } from './hooks/useCollab'
@@ -197,7 +198,7 @@ function Viewer() {
     }
   }, [id, fetchDrawing])
 
-  const handleExcalidrawChange = useCallback((elements: readonly ExcalidrawElement[], appState: { theme?: Theme }) => {
+  const handleExcalidrawChange = useCallback((elements: readonly ExcalidrawElement[], appState: { theme?: Theme }, files: BinaryFiles) => {
     setTheme(currentTheme => {
       // Nur updaten wenn sich das Theme wirklich geändert hat,
       // um endlose Re-Renders zu verhindern
@@ -210,8 +211,12 @@ function Viewer() {
     // Send scene updates to collab session if joined
     if (collab.isJoined && collab.isConnected) {
       collab.sendSceneUpdate(elements as ExcalidrawElement[])
+      // Send any new binary files (images) — CollabClient handles delta tracking
+      if (files && Object.keys(files).length > 0) {
+        collab.sendFilesUpdate(files)
+      }
     }
-  }, [collab.isJoined, collab.isConnected, collab.sendSceneUpdate])
+  }, [collab.isJoined, collab.isConnected, collab.sendSceneUpdate, collab.sendFilesUpdate])
 
   const handlePointerUpdate = useCallback((payload: { pointer: { x: number; y: number; tool: string }; button: 'down' | 'up'; pointersMap: Map<number, Readonly<{ x: number; y: number }>> }) => {
     if (collab.isJoined && collab.isConnected) {

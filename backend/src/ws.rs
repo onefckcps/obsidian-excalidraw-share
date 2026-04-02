@@ -146,10 +146,11 @@ async fn handle_ws_connection(
     // Task: forward broadcast messages to this WebSocket client
     let mut send_task = tokio::spawn(async move {
         while let Ok(msg) = broadcast_rx.recv().await {
-            // Don't send scene_update/scene_delta messages back to the sender
+            // Don't send scene_update/scene_delta/files_update messages back to the sender
             match &msg {
                 ServerMessage::SceneUpdate { from, .. } if from == &user_id_for_send => continue,
                 ServerMessage::SceneDelta { from, .. } if from == &user_id_for_send => continue,
+                ServerMessage::FilesUpdate { from, .. } if from == &user_id_for_send => continue,
                 ServerMessage::PointerUpdate { user_id: uid, .. } if uid == &user_id_for_send => {
                     continue
                 }
@@ -283,6 +284,19 @@ async fn handle_client_message(
             session_manager
                 .set_participant_name(session_id, user_id, &name)
                 .await;
+        }
+        ClientMessage::FilesUpdate { files } => {
+            if let Err(e) = session_manager
+                .update_files(session_id, user_id, files)
+                .await
+            {
+                tracing::warn!(
+                    session_id = %session_id,
+                    user_id = %user_id,
+                    error = %e,
+                    "Failed to update files"
+                );
+            }
         }
     }
 }

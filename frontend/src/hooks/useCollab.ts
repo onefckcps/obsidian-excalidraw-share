@@ -6,7 +6,7 @@ import type {
   ServerMessage,
 } from '../types';
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
-import type { Collaborator } from '@excalidraw/excalidraw/types';
+import type { BinaryFileData, BinaryFiles, Collaborator } from '@excalidraw/excalidraw/types';
 import { UserIdleState } from '@excalidraw/excalidraw';
 
 const DISPLAY_NAME_KEY = 'excalishare-collab-name';
@@ -72,6 +72,8 @@ interface UseCollabReturn {
   leaveSession: () => void;
   /** Send a scene update */
   sendSceneUpdate: (elements: ExcalidrawElement[]) => void;
+  /** Send binary files (images) update */
+  sendFilesUpdate: (files: BinaryFiles) => void;
   /** Send a pointer update (with optional tool type and viewport data) */
   sendPointerUpdate: (x: number, y: number, button: 'down' | 'up', tool?: 'pointer' | 'laser', scrollX?: number, scrollY?: number, zoom?: number) => void;
   /** Update display name */
@@ -399,6 +401,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
 
         const api = excalidrawAPIRef.current as {
           updateScene: (data: unknown) => void;
+          addFiles: (data: BinaryFileData[]) => void;
         } | null;
 
         if (api) {
@@ -410,6 +413,13 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
             appState: msg.appState,
             collaborators: new Map(collabMap),
           });
+
+          // Apply binary files (images) from the snapshot
+          if (msg.files && Object.keys(msg.files).length > 0) {
+            api.addFiles(Object.values(msg.files));
+            // Mark these files as known so we don't re-send them
+            client.markFilesAsKnown(Object.keys(msg.files));
+          }
         }
 
         setCollaborators(msg.collaborators);
@@ -464,6 +474,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
 
         const api = excalidrawAPIRef.current as {
           updateScene: (data: unknown) => void;
+          addFiles: (data: BinaryFileData[]) => void;
         } | null;
 
         if (api) {
@@ -471,6 +482,27 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
             elements: msg.elements,
             appState: msg.appState,
           });
+
+          // Apply binary files (images) from the full sync
+          if (msg.files && Object.keys(msg.files).length > 0) {
+            api.addFiles(Object.values(msg.files));
+            client.markFilesAsKnown(Object.keys(msg.files));
+          }
+        }
+      });
+
+      // Handle files_update from other users (new images added during collab)
+      client.on('files_update', (msg: ServerMessage) => {
+        if (msg.type !== 'files_update') return;
+
+        const api = excalidrawAPIRef.current as {
+          addFiles: (data: BinaryFileData[]) => void;
+        } | null;
+
+        if (api && msg.files && Object.keys(msg.files).length > 0) {
+          api.addFiles(Object.values(msg.files));
+          // Mark these files as known so we don't re-send them back
+          client.markFilesAsKnown(Object.keys(msg.files));
         }
       });
 
@@ -704,6 +736,13 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     }
   }, [drawingId]);
 
+  // Send files update — only new files that haven't been sent yet (delta tracked by CollabClient)
+  const sendFilesUpdate = useCallback((files: BinaryFiles) => {
+    if (collabDrawingIdRef.current && collabDrawingIdRef.current === drawingId) {
+      clientRef.current?.sendFilesUpdate(files);
+    }
+  }, [drawingId]);
+
   // Send pointer update (with optional tool type and viewport data for follow mode)
   const sendPointerUpdate = useCallback(
     (x: number, y: number, button: 'down' | 'up', tool?: 'pointer' | 'laser', scrollX?: number, scrollY?: number, zoom?: number) => {
@@ -849,6 +888,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     joinSession,
     leaveSession,
     sendSceneUpdate,
+    sendFilesUpdate,
     sendPointerUpdate,
     setDisplayName,
     dismissSessionEnded,

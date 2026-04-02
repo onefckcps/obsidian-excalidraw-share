@@ -52,6 +52,7 @@ export type ClientMessage =
   | { type: 'scene_delta'; elements: ExcalidrawElement[]; seq: number }
   | { type: 'pointer_update'; x: number; y: number; button: 'down' | 'up'; tool?: 'pointer' | 'laser'; scrollX?: number; scrollY?: number; zoom?: number }
   | { type: 'set_name'; name: string }
+  | { type: 'files_update'; files: BinaryFiles }
 
 // Server -> Client WebSocket messages
 export type ServerMessage =
@@ -90,5 +91,6 @@ export type ServerMessage =
       name: string
       collaborators: CollaboratorInfo[]
     }
+  | { type: 'files_update'; files: BinaryFiles; from: string }
   | { type: 'session_ended'; saved: boolean }
   | { type: 'error'; message: string }

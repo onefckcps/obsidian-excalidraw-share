@@ -36,6 +36,9 @@ pub enum ClientMessage {
     SetName {
         name: String,
     },
+    FilesUpdate {
+        files: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +96,10 @@ pub enum ServerMessage {
         user_id: String,
         name: String,
         collaborators: Vec<CollaboratorInfo>,
+    },
+    FilesUpdate {
+        files: serde_json::Value,
+        from: String,
     },
     SessionEnded {
         saved: bool,
@@ -734,6 +741,66 @@ impl SessionManager {
                 seq: session.scene_seq,
             };
             let _ = session.broadcast_tx.send(delta_msg);
+        }
+
+        Ok(())
+    }
+
+    /// Merge incoming files into the session's file store and broadcast new files to other clients.
+    /// Files are immutable in Excalidraw (same ID = same content), so this is additive only.
+    pub async fn update_files(
+        &self,
+        session_id: &str,
+        user_id: &str,
+        files: serde_json::Value,
+    ) -> Result<(), AppError> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or(AppError::SessionNotFound)?;
+
+        // Merge incoming files into session.files (additive only)
+        let incoming_map = match files.as_object() {
+            Some(map) => map,
+            None => return Ok(()), // Not a valid files object
+        };
+
+        // Ensure session.files is an object
+        if !session.files.is_object() {
+            session.files = serde_json::Value::Object(serde_json::Map::new());
+        }
+
+        let session_files = session.files.as_object_mut().unwrap();
+        let mut new_files = serde_json::Map::new();
+
+        for (file_id, file_data) in incoming_map {
+            // Only add files that don't already exist (files are immutable)
+            if !session_files.contains_key(file_id) {
+                session_files.insert(file_id.clone(), file_data.clone());
+                new_files.insert(file_id.clone(), file_data.clone());
+            }
+        }
+
+        // Only broadcast if there are actually new files
+        if !new_files.is_empty() {
+            tracing::info!(
+                session_id = %session_id,
+                user_id = %user_id,
+                new_file_count = new_files.len(),
+                "Merging new files into collab session"
+            );
+
+            // Update persistent session tracking
+            if session.persistent {
+                session.persistent_dirty = true;
+            }
+            session.last_activity = Utc::now();
+
+            let files_msg = ServerMessage::FilesUpdate {
+                files: serde_json::Value::Object(new_files),
+                from: user_id.to_string(),
+            };
+            let _ = session.broadcast_tx.send(files_msg);
         }
 
         Ok(())

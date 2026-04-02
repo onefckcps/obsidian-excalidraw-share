@@ -238,6 +238,11 @@ export class CollabManager {
       this.handleFullSync(msg);
     });
 
+    client.on('files_update', (msg: ServerMessage) => {
+      if (msg.type !== 'files_update') return;
+      this.handleRemoteFilesUpdate(msg.files);
+    });
+
     client.on('pointer_update', (msg: ServerMessage) => {
       if (msg.type !== 'pointer_update') return;
       this.handlePointerUpdate(msg);
@@ -403,6 +408,9 @@ export class CollabManager {
         appState: msg.appState,
         collaborators: new Map(this.collaboratorMap),
       });
+
+      // Apply binary files (images) from the snapshot
+      this.applyRemoteFiles(api, msg.files);
     } catch (e) {
       console.error('ExcaliShare Collab: Failed to apply snapshot', e);
     }
@@ -526,6 +534,9 @@ export class CollabManager {
         elements: msg.elements,
         appState: msg.appState,
       });
+
+      // Apply binary files (images) from the full sync
+      this.applyRemoteFiles(api, msg.files);
     } catch (e) {
       console.error('ExcaliShare Collab: Failed to apply full sync', e);
     }
@@ -533,6 +544,59 @@ export class CollabManager {
 
     // Re-initialize version tracking
     this.initializeVersionTracking(msg.elements as ExcalidrawElement[]);
+  }
+
+  /**
+   * Apply binary files (images) from a server message to the Excalidraw canvas.
+   * Uses addFiles API if available, otherwise falls back to no-op (files will be missing).
+   */
+  private applyRemoteFiles(api: ExcalidrawAPI, files: Record<string, unknown>): void {
+    if (!files || Object.keys(files).length === 0) return;
+
+    // Mark these files as known so we don't re-send them back
+    if (this.client) {
+      this.client.markFilesAsKnown(Object.keys(files));
+    }
+
+    // Use addFiles API if available (Excalidraw 0.17+)
+    if (typeof api.addFiles === 'function') {
+      try {
+        const fileArray = Object.values(files) as { id: string; mimeType: string; dataURL: string; created: number; lastRetrieved?: number }[];
+        api.addFiles(fileArray);
+      } catch (e) {
+        console.error('ExcaliShare Collab: Failed to add files via addFiles API', e);
+      }
+    } else {
+      console.warn('ExcaliShare Collab: addFiles API not available — images from remote users may not display');
+    }
+  }
+
+  /**
+   * Handle incoming files_update from other users.
+   * Applies new binary files to the Excalidraw canvas.
+   */
+  private handleRemoteFilesUpdate(files: Record<string, unknown>): void {
+    const api = this.getAPI();
+    if (!api) return;
+
+    this.applyRemoteFiles(api, files);
+  }
+
+  /**
+   * Handle local file changes detected via onChange callback.
+   * Sends new files to the server via the CollabClient.
+   */
+  private handleLocalFilesChange(files: Record<string, unknown>): void {
+    // Skip if we're in the middle of applying a remote update
+    if (this.isApplyingRemoteUpdate) return;
+
+    // Skip if not connected
+    if (!this.client?.isConnected) return;
+
+    // Send files update — CollabClient handles delta tracking (only sends new files)
+    if (files && Object.keys(files).length > 0) {
+      this.client.sendFilesUpdate(files);
+    }
   }
 
   private handlePointerUpdate(msg: Extract<ServerMessage, { type: 'pointer_update' }>): void {
@@ -662,8 +726,10 @@ export class CollabManager {
 
     // ── Subscribe to scene changes ──
     this.onChangeUnsubscribe = api.onChange!(
-      (elements: readonly ExcalidrawElement[], appState: Record<string, unknown>, _files: Record<string, unknown>) => {
+      (elements: readonly ExcalidrawElement[], appState: Record<string, unknown>, files: Record<string, unknown>) => {
         this.handleLocalSceneChange(elements);
+        // Send any new binary files (images) — CollabClient handles delta tracking
+        this.handleLocalFilesChange(files);
         // Bridge Excalidraw's built-in follow mode to our follow system
         this.handleAppStateFollowChange(appState);
       }
@@ -802,6 +868,16 @@ export class CollabManager {
 
     // Send changes via WebSocket
     this.client.sendSceneUpdate(currentElements, this.isUserDrawing());
+
+    // Also send any new files (polling fallback doesn't get onChange files param)
+    try {
+      const files = api.getFiles();
+      if (files && Object.keys(files).length > 0) {
+        this.client.sendFilesUpdate(files);
+      }
+    } catch {
+      // getFiles might not be available
+    }
   }
 
   // ──────────────────────────────────────────────
