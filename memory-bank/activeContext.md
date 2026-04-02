@@ -100,6 +100,20 @@ Documented in `plans/plugin-ui-upgrade.md`:
 - Plugin uses `requestUrl` from Obsidian API (not `fetch`) for cross-platform compatibility
 - Drawing IDs stored in Obsidian frontmatter (`excalishare-id`)
 
+### 6. Host Cursor/Laser/Follow Bug Fix (April 2026)
+Fixed a fatal bug where the Obsidian plugin host's cursor, laser pointer, and follow mode were invisible to browser users during native live collaboration. Root causes:
+- **Pointer tracking skipped in polling fallback** — `startPointerTracking()` was only called inside `startEventDrivenDetection()`, never when using polling fallback
+- **Canvas element not found** — `findExcalidrawCanvas()` used too few selectors, missing `.excalidraw__canvas.interactive` used by newer Excalidraw versions
+- **Insufficient retry logic** — Only a single 1-second retry for canvas discovery
+- **No fallback for follow mode** — If pointer tracking failed, no viewport data was ever sent
+
+Fixes applied:
+- Expanded canvas discovery with 5 selectors + iframe search + diagnostic logging
+- Moved `startPointerTracking()` to `startChangeDetection()` (always runs)
+- Exponential backoff retry (500ms → 1s → 2s → 4s) for canvas discovery
+- Viewport broadcast fallback (500ms interval) ensures follow mode works even without DOM pointer tracking
+- Improved `getCanvasContainer` in `main.ts` to search `.excalidraw-wrapper`, `[class*="excalidraw"]`, and all workspace leaves of type `'excalidraw'`
+
 ## Known Limitations
 - No automated tests (manual testing only)
 - Collab sessions lost on server restart (in-memory)

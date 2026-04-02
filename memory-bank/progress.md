@@ -110,6 +110,14 @@
 - Native collab from Obsidian — host can participate without opening a browser
 - Deferred remote updates prevent stutter during active drawing in Obsidian
 
+### Host Cursor/Laser/Follow Bug Fix (April 2026)
+- [x] Fixed: Pointer tracking skipped when using polling fallback (startPointerTracking only called in event-driven path)
+- [x] Fixed: Canvas element not found due to insufficient selectors (added .excalidraw__canvas.interactive, canvas.interactive, iframe search)
+- [x] Fixed: Single 1-second retry replaced with exponential backoff (500ms → 1s → 2s → 4s)
+- [x] Added: Viewport broadcast fallback (500ms interval) ensures follow mode works even without DOM pointer tracking
+- [x] Improved: getCanvasContainer in main.ts searches .excalidraw-wrapper, [class*="excalidraw"], all workspace leaves of type 'excalidraw'
+- [x] Added: Diagnostic logging throughout canvas discovery and pointer tracking
+
 ## Known Issues / Potential Improvements
 - No automated tests (all manual testing)
 - Collab sessions are in-memory only (lost on server restart)
@@ -121,3 +129,4 @@
 - No undo/redo sync across collaborators
 - ~~Obsidian host cannot broadcast cursor position~~ — FIXED: DOM pointermove listener with coordinate conversion
 - ~~Polling-based change detection adds ~250ms latency~~ — FIXED: Event-driven via excalidrawAPI.onChange() (instant)
+- ~~Host cursor/laser/follow not visible to browser users~~ — FIXED: Canvas discovery, always-on pointer tracking, viewport broadcast fallback

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a self-hosted Excalidraw drawing sharing server with three components:
+ExcaliShare is a **self-hosted Excalidraw drawing sharing server** with three main components:
 - **backend/** - Rust/Axum API server (port 8184 by default)
 - **frontend/** - React/Vite TypeScript viewer with PWA support
 - **obsidian-plugin/** - Obsidian plugin for publishing drawings (with PDF embedding support)
@@ -11,6 +11,74 @@ Additional infrastructure:
 - **nixos/** - NixOS module for declarative deployment
 - **DEPLOYMENT.md** - Deployment guide (NixOS declarative or manual)
 - **excalishare.service** - Systemd service file for manual deployment
+
+### Core Purpose
+Allow users to publish Excalidraw drawings from Obsidian to a self-hosted server, view them in a web browser, and collaborate in real-time.
+
+### Key Features
+- **Publish/Sync** drawings from Obsidian to the server
+- **View** drawings in a web-based Excalidraw viewer (with view, edit, present modes)
+- **Browse** all shared drawings (tree view, search, overlay mode)
+- **Live Collaboration** — real-time multi-user editing via WebSocket
+- **PDF Embedding** — convert PDF pages to PNG for embedding in drawings
+- **Admin Panel** — manage drawings and collab sessions
+- **PWA Support** — installable web app with offline caching
+- **NixOS Deployment** — declarative NixOS module for production deployment
+
+### Technical Stack
+- **Backend**: Rust, Axum 0.8, Tokio, Serde, tower-http, tower_governor (rate limiting)
+- **Frontend**: React 18, TypeScript, Vite 8, Excalidraw 0.17.6, react-router-dom 6, vite-plugin-pwa
+- **Plugin**: TypeScript, Obsidian API, esbuild
+- **Infrastructure**: NixOS module, systemd service, Nix flake dev shell
+
+### Version
+- Backend: 1.0.1
+- Frontend: 1.0.1
+- Plugin manifest ID: `excalishare`
+
+---
+
+## Product Context
+
+### Why This Project Exists
+ExcaliShare fills the gap between Obsidian's local-only Excalidraw drawings and the need to share them publicly or collaboratively. It provides a self-hosted alternative to Excalidraw's cloud service, giving users full control over their data.
+
+### User Workflow
+1. **Author** creates Excalidraw drawings in Obsidian
+2. **Publish** via the plugin (ribbon icon, command palette, context menu, or floating toolbar)
+3. **Share** the generated URL with others
+4. **View** in any browser — no login required
+5. **Collaborate** in real-time via live collab sessions started from Obsidian
+6. **Pull** changes back to Obsidian after collaboration
+
+### Key User Personas
+- **Drawing Author** — Uses Obsidian + Excalidraw plugin, publishes drawings
+- **Viewer** — Accesses shared drawings via URL, can browse all drawings
+- **Collaborator** — Joins live sessions to edit drawings together in real-time
+- **Admin** — Manages drawings and collab sessions via the admin panel
+
+### Frontend Viewer Modes
+- **View Mode** (default) — Read-only, zen mode enabled, no editing tools
+- **Edit Mode** (press `w` twice) — Full Excalidraw editing, local only (not saved to server)
+- **Present Mode** (press `p`/`q`) — Slideshow-like navigation between drawings with arrow keys
+- **Collab Mode** — When joined to a live session, full editing with real-time sync
+
+### Obsidian Plugin Features
+- **Floating Toolbar** — Injected directly into the Excalidraw canvas view, shows publish/sync/collab status
+- **Auto-Sync** — Optionally auto-sync published drawings on save (debounced)
+- **Context Menu** — Right-click on `.excalidraw` files for all actions
+- **Command Palette** — All actions available as commands
+- **Pull from Server** — Sync collab changes back to the vault
+- **PDF Embedding** — Converts PDF pages (with optional crop rects) to PNG for sharing
+
+### Admin Panel (`/admin`)
+- API key authentication (stored in sessionStorage)
+- List all drawings with size, date, source path
+- Delete drawings
+- View and end active collab sessions
+- Auto-refreshes collab sessions every 10 seconds
+
+---
 
 ## Build Commands
 
@@ -54,21 +122,23 @@ npm run dev                          # Watch mode
 API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 ```
 
+---
+
 ## API Endpoints
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| POST | `/api/upload` | API Key | Upload/update a drawing (supports `id` field for updates) |
-| GET | `/api/view/{id}` | Public | Get a single drawing by ID |
-| DELETE | `/api/drawings/{id}` | API Key | Delete a drawing |
-| GET | `/api/drawings` | API Key | List all drawings (includes `size_bytes`) |
+| POST | `/api/upload` | Bearer | Upload/update drawing (supports `id` field for updates) |
+| GET | `/api/view/{id}` | Public | Get drawing by ID |
+| DELETE | `/api/drawings/{id}` | Bearer | Delete drawing |
+| GET | `/api/drawings` | Bearer | List all drawings (includes `size_bytes`) |
 | GET | `/api/public/drawings` | Public | List drawings (id, created_at, source_path only) |
 | GET | `/api/health` | Public | Health check |
-| POST | `/api/collab/start` | API Key | Start a live collab session for a drawing |
-| POST | `/api/collab/stop` | API Key | End a collab session (save or discard) |
-| GET | `/api/collab/status/{drawing_id}` | Public | Check if drawing has active collab session |
-| GET | `/api/collab/sessions` | API Key | List all active collab sessions (admin) |
-| WS | `/ws/collab/{session_id}` | Public | WebSocket connection for real-time collaboration |
+| POST | `/api/collab/start` | Bearer | Start collab session for a drawing |
+| POST | `/api/collab/stop` | Bearer | End collab session (save or discard) |
+| GET | `/api/collab/status/{drawing_id}` | Public | Check collab status (returns session_id if active) |
+| GET | `/api/collab/sessions` | Bearer | List all active sessions (admin) |
+| WS | `/ws/collab/{session_id}?name=...` | Public | WebSocket for real-time collaboration |
 
 ### Upload Request Format
 ```json
@@ -81,6 +151,245 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
   "id": "optional-existing-id-for-updates"
 }
 ```
+
+### WebSocket Protocol
+
+**Client → Server Messages**
+```typescript
+{ type: 'scene_update', elements: ExcalidrawElement[] }
+{ type: 'pointer_update', x, y, button, tool?, scrollX?, scrollY?, zoom? }
+{ type: 'set_name', name: string }
+```
+
+**Server → Client Messages**
+```typescript
+{ type: 'snapshot', elements, appState, files, collaborators }
+{ type: 'scene_update', elements, from: userId }
+{ type: 'pointer_update', x, y, button, tool?, userId, name, colorIndex, scrollX?, scrollY?, zoom? }
+{ type: 'user_joined', userId, name, collaborators }
+{ type: 'user_left', userId, name, collaborators }
+{ type: 'session_ended', saved: boolean }
+{ type: 'error', message: string }
+```
+
+---
+
+## System Architecture
+
+### Architecture Overview
+
+```
+┌─────────────────┐     HTTP/WS      ┌──────────────────┐     HTTP      ┌─────────────────┐
+│  Obsidian Plugin │ ──────────────→  │  Rust/Axum       │ ←──────────  │  React Frontend  │
+│  (TypeScript)    │  API + Collab    │  Backend         │  API + WS    │  (Vite + PWA)    │
+└─────────────────┘                   │  Port 8184       │              └─────────────────┘
+                                      │                  │
+                                      │  ┌────────────┐  │
+                                      │  │ FileSystem  │  │
+                                      │  │ Storage     │  │
+                                      │  │ (JSON files)│  │
+                                      │  └────────────┘  │
+                                      │                  │
+                                      │  ┌────────────┐  │
+                                      │  │ Session     │  │
+                                      │  │ Manager     │  │
+                                      │  │ (in-memory) │  │
+                                      │  └────────────┘  │
+                                      └──────────────────┘
+```
+
+### Backend Architecture (Rust/Axum)
+
+**Module Structure**
+- `main.rs` — Entry point, CLI config (clap), route registration, CORS, rate limiting, background cleanup task
+- `routes.rs` — All HTTP handlers (upload, get, delete, list, collab start/stop/status/sessions)
+- `storage.rs` — `DrawingStorage` trait + `FileSystemStorage` implementation
+- `auth.rs` — Bearer token middleware with constant-time comparison (`subtle` crate)
+- `error.rs` — `AppError` enum with `IntoResponse` impl
+- `collab.rs` — `SessionManager`, `CollabSession`, message types, version-based element merging
+- `ws.rs` — WebSocket upgrade handler, bidirectional message routing
+
+**Route Organization**
+- **Public routes** (no auth): `/api/health`, `/api/public/drawings`, `/api/view/{id}`, `/api/collab/status/{drawing_id}`
+- **Protected routes** (Bearer token): `/api/upload`, `/api/drawings/{id}` (DELETE), `/api/drawings` (GET), `/api/collab/start`, `/api/collab/stop`, `/api/collab/sessions`
+- **WebSocket**: `/ws/collab/{session_id}` (no auth, but session must exist — security via unguessable UUID)
+
+**Rate Limiting**
+- Public: 120 req/sec per IP (burst)
+- Protected: 30 req/sec per IP (burst)
+- Implemented via `tower_governor`
+
+**Storage Pattern**
+- Each drawing is `<id>.json` in `DATA_DIR`
+- Source path stored as `_source_path` field inside the JSON
+- ID sanitization: alphanumeric, `-`, `_` only (path traversal protection)
+- IDs: 16-char truncated UUID for new drawings, or client-provided (1-64 chars)
+
+**CORS Configuration**
+- Allowed origins: configured `BASE_URL` + `app://obsidian.md`
+- Allowed methods: GET, POST, DELETE, OPTIONS
+- Allowed headers: Authorization, Content-Type
+
+### Frontend Architecture (React/Vite)
+
+**Component Structure**
+- `App.tsx` — Router: `/` and `/d/:id` → Viewer, `/admin` → AdminPage
+- `Viewer.tsx` — Main drawing viewer (1000+ lines), handles all modes, keyboard shortcuts, mobile toolbar injection
+- `DrawingsBrowser.tsx` — Browse/search drawings with tree view, overlay mode
+- `AdminPage.tsx` — Admin panel with drawing management and collab session management
+- `CollabStatus.tsx` — Pre-join banner and session-ended notification overlay
+- `CollabPopover.tsx` — In-session popover showing participants, follow mode controls
+- `AboutModal.tsx` — About dialog
+
+**Hooks**
+- `useCollab.ts` — Complete collaboration state management (569 lines), handles WebSocket lifecycle, scene merging, pointer updates, follow mode, drawing interruption deferral
+
+**Utilities**
+- `cache.ts` — LRU `DrawingCache` class (50 MB limit, singleton `drawingCache`)
+- `collabClient.ts` — `CollabClient` WebSocket wrapper with reconnect, debounce, throttle
+
+**Shared Types (`types/index.ts`)**
+- `ExcalidrawData`, `PublicDrawing`
+- `CollaboratorInfo`, `CollabStatusResponse`, `CollabSessionInfo`
+- `ClientMessage` (union: scene_update, pointer_update, set_name)
+- `ServerMessage` (union: snapshot, scene_update, pointer_update, user_joined, user_left, session_ended, error)
+
+**PWA Configuration**
+- Service worker with NetworkFirst caching for public API routes
+- Excludes authenticated endpoints from caching
+- 5 MB max file size for cache
+
+### Obsidian Plugin Architecture
+
+**File Structure (Modular)**
+- `main.ts` — Plugin class, commands, context menu, toolbar management, API methods, collab wiring
+- `settings.ts` — `ExcaliShareSettings` interface, `ExcaliShareSettingTab`, defaults
+- `toolbar.ts` — `ExcaliShareToolbar` class (floating toolbar DOM management)
+- `styles.ts` — CSS-in-JS styles, icons, colors, position helpers, global style injection
+- `pdfUtils.ts` — PDF-to-PNG conversion utilities
+- `collabClient.ts` — WebSocket client for native collab (adapted from frontend)
+- `collabManager.ts` — Session lifecycle, polling-based change detection, deferred updates, cursor display
+- `collabTypes.ts` — Shared types for WebSocket protocol (ClientMessage, ServerMessage, ExcalidrawAPI)
+
+**Native Collab Architecture**
+The plugin can participate in collab sessions directly within Obsidian (no browser needed):
+- **CollabClient** — WebSocket wrapper with reconnect, delta tracking, adaptive debounce (mirrors frontend's `collabClient.ts`)
+- **CollabManager** — Orchestrates the full collab lifecycle:
+  - Connects via WebSocket to `/ws/collab/{session_id}`
+  - **Event-driven change detection** — Uses `excalidrawAPI.onChange()` subscription for instant, zero-waste detection. Falls back to 2s polling for older Excalidraw versions.
+  - **Pointer tracking** — DOM `pointermove` listener on Excalidraw canvas with screen→scene coordinate conversion. Exponential backoff retry (500ms → 1s → 2s → 4s) for canvas discovery. Canvas search uses 5 selectors: `.excalidraw__canvas.interactive`, `.excalidraw__canvas`, `.excalidraw canvas`, `canvas.interactive`, `canvas`. Also searches iframes.
+  - **Viewport broadcast fallback** — Periodic 500ms broadcast of scrollX/scrollY/zoom ensures follow mode works even if DOM pointer tracking fails
+  - **Laser pointer support** — Reads `appState.activeTool.type` to detect laser vs pointer tool
+  - **Follow mode** — Lerp-based viewport interpolation via `requestAnimationFrame` (same algorithm as frontend)
+  - **Deferred remote updates** — Queues incoming updates while user is drawing, flushes via 300ms interval + onPointerUp
+  - **Cached API reference** — Stores `getExcalidrawAPI()` result, validates with quick `getSceneElements()` call, avoids expensive `ea.setView('active')` on every cycle
+  - **Collaborator cursors** — Receives pointer updates, builds Excalidraw collaborator Map, pushes via `updateScene({ collaborators })`
+  - **Version-based echo suppression** — `remoteAppliedVersions` map + double-`requestAnimationFrame` cooldown
+- **No backend changes needed** — Uses the same WebSocket endpoint and protocol as the frontend
+
+**Plugin Settings**
+```typescript
+interface ExcaliShareSettings {
+  apiKey: string;
+  baseUrl: string;
+  pdfScale: number;                    // 0.5 - 5.0
+  collabTimeoutSecs: number;           // default 7200 (2h)
+  collabAutoOpenBrowser: boolean;      // auto-open browser on collab start
+  collabJoinFromObsidian: boolean;     // auto-join collab from Obsidian (default: true)
+  collabDisplayName: string;           // display name for collab (default: 'Host')
+  collabPollIntervalMs: number;        // change detection interval (default: 250)
+  showFloatingToolbar: boolean;        // toggle floating toolbar
+  toolbarPosition: ToolbarPosition;    // top-right, top-left, bottom-right, bottom-left
+  autoSyncOnSave: boolean;             // auto-sync on file modify
+  autoSyncDelaySecs: number;           // debounce delay (1-30s)
+  toolbarCollapsedByDefault: boolean;  // start collapsed
+}
+```
+
+**Toolbar States**
+- `unpublished` — Drawing not yet published
+- `published` — Drawing published, can sync/copy link/start collab
+- `syncing` — Currently syncing
+- `collabActive` — Live collab session active
+- `error` — Error state
+
+**Published ID Tracking**
+- Stored in Obsidian frontmatter as `excalishare-id`
+- Read via `app.metadataCache.getFileCache(file).frontmatter['excalishare-id']`
+- Written via `app.fileManager.processFrontMatter()`
+
+### Key Design Decisions
+
+1. **In-memory collab sessions** — No database needed, sessions are ephemeral with configurable timeout
+2. **Version-based element merging** — Server merges elements by ID + version to prevent deletion flickering
+3. **Drawing interruption deferral** — Remote scene updates are queued while user is actively drawing (dragging/resizing/editing), flushed on pointer up or via 300ms safety interval
+4. **Follow mode** — Viewport syncing via pointer_update messages carrying scrollX/scrollY/zoom
+5. **Unguessable session IDs** — Full 128-bit UUIDs for session security (no auth on WebSocket)
+6. **Constant-time auth** — `subtle::ConstantTimeEq` for API key comparison
+7. **Expired session auto-save** — Background task saves expired sessions to storage before cleanup
+8. **Event-driven native collab** — Obsidian plugin uses `excalidrawAPI.onChange()` imperative subscription for instant, zero-waste change detection. Falls back to 2s polling for older Excalidraw versions. Host cursor is broadcast via DOM `pointermove` listener with screen→scene coordinate conversion. Laser pointer detected via `appState.activeTool.type`. Follow mode uses lerp-based viewport interpolation (same algorithm as frontend). Adaptive debouncing: 16ms idle / 50ms batch / 80ms during drawing. Version-based echo suppression via `remoteAppliedVersions` map + double-`requestAnimationFrame` cooldown.
+9. **Cached Excalidraw API** — Plugin caches the `getExcalidrawAPI()` reference and validates it cheaply, avoiding expensive `ea.setView('active')` calls on every cycle
+
+---
+
+## Technical Dependencies
+
+### Backend Dependencies (Cargo.toml)
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| `axum` | 0.8 | Web framework (with `macros` + `ws` features) |
+| `tokio` | 1 (full) | Async runtime |
+| `serde` / `serde_json` | 1 | Serialization |
+| `uuid` | 1 (v4) | ID generation |
+| `tower-http` | 0.6 | CORS, static files, compression, tracing, body limits |
+| `tower` | 0.5 | Middleware tower |
+| `tower_governor` | 0.6 | Rate limiting per IP |
+| `tracing` / `tracing-subscriber` | 0.1/0.3 | Structured logging |
+| `clap` | 4 | CLI args with env var fallbacks |
+| `chrono` | 0.4 | DateTime handling |
+| `thiserror` | 2 | Error derive macro |
+| `anyhow` | 1 | Application-level errors |
+| `futures` | 0.3 | Stream/Sink for WebSocket |
+| `subtle` | 2 | Constant-time comparison for auth |
+
+### Frontend Dependencies (package.json)
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `@excalidraw/excalidraw` | ^0.17.6 | Drawing canvas component |
+| `react` | ^18.3.1 | UI framework |
+| `react-dom` | ^18.3.1 | React DOM renderer |
+| `react-router-dom` | ^6.26.0 | Client-side routing |
+| `vite` | ^8.0.0 | Build tool |
+| `vite-plugin-pwa` | ^1.2.0 | PWA/service worker support |
+| `typescript` | ^5.5.4 | Type checking |
+
+Frontend `.npmrc`: `legacy-peer-deps=true` (required for Excalidraw peer dependency conflicts)
+
+### Plugin Dependencies (package.json)
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `obsidian` | latest | Obsidian API |
+| `@types/node` | ^16.11.6 | Node.js types |
+| `esbuild` | 0.17.3 | Bundler |
+| `typescript` | 4.7.4 | Type checking |
+| `tslib` | 2.4.0 | TypeScript helpers |
+| `builtin-modules` | 3.3.0 | Node built-in module list |
+
+### Backend CLI Configuration
+
+| Arg | Env Var | Default | Description |
+|-----|---------|---------|-------------|
+| `--listen-addr` | `LISTEN_ADDR` | `127.0.0.1:8184` | Listen address |
+| `--data-dir` | `DATA_DIR` | `./data/drawings` | Drawing storage directory |
+| `--api-key` | `API_KEY` | (required) | API key for protected routes |
+| `--base-url` | `BASE_URL` | `http://localhost:8184` | Public base URL |
+| `--max-upload-mb` | `MAX_UPLOAD_MB` | `50` | Max upload size in MB |
+| `--frontend-dir` | `FRONTEND_DIR` | `./frontend/dist` | Frontend static files |
+
+---
 
 ## Code Style Guidelines
 
@@ -205,6 +514,8 @@ pub enum AppError {
 - Use async/await for all vault operations
 - Use `console.log` with plugin prefix for debugging
 
+---
+
 ## Testing
 
 No automated tests configured. Test manually:
@@ -219,6 +530,8 @@ curl -X POST http://localhost:8184/api/upload \
 # Frontend
 cd frontend && npm run dev
 ```
+
+---
 
 ## Common Tasks
 
@@ -245,6 +558,8 @@ cd backend && cargo build --release
 2. Import `nixos/module.nix` in your NixOS config
 3. Configure `services.excalishare` options
 
+---
+
 ## Project Structure
 
 ```
@@ -267,6 +582,7 @@ obsidian-excalidraw-share/
 │   │   ├── AdminPage.tsx        # Admin panel (API key auth, delete drawings)
 │   │   ├── AboutModal.tsx       # About dialog (light/dark theme)
 │   │   ├── CollabStatus.tsx     # Live collab session UI (join, status, participants)
+│   │   ├── CollabPopover.tsx    # In-session popover (participants, follow controls)
 │   │   ├── main.tsx             # React entry point
 │   │   ├── index.css            # Global styles
 │   │   ├── types/
@@ -285,13 +601,20 @@ obsidian-excalidraw-share/
 ├── obsidian-plugin/
 │   ├── main.ts             # Plugin entry point (publish, PDF support, live collab)
 │   ├── main.js             # Compiled output
+│   ├── settings.ts         # Settings interface + settings tab UI
+│   ├── toolbar.ts          # Floating toolbar DOM management
+│   ├── styles.ts           # CSS-in-JS styles, icons, colors
 │   ├── pdfUtils.ts         # PDF-to-PNG conversion utilities
-│   ├── pdfUtils.js         # Compiled output
+│   ├── collabClient.ts     # WebSocket client (adaptive debounce, delta tracking)
+│   ├── collabManager.ts    # Event-driven collab: onChange, pointer tracking, follow mode
+│   ├── collabTypes.ts      # Shared types for WS protocol + ExcalidrawAPI subscriptions
 │   ├── manifest.json       # Plugin manifest (id: excalishare)
 │   ├── package.json
 │   └── tsconfig.json
 ├── nixos/
 │   └── module.nix          # NixOS service module (systemd, optional nginx)
+├── plans/                  # Implementation plans (collab, security, UI, native-collab)
+├── memory-bank/            # Project memory/context documentation
 ├── flake.nix               # Nix flake for dev environment
 ├── start.sh                # Quick start script (builds + runs)
 ├── excalishare.service     # Systemd service file (manual deployment)
@@ -299,3 +622,144 @@ obsidian-excalidraw-share/
 ├── AGENTS.md               # This file
 └── README.md               # Project documentation
 ```
+
+---
+
+## Current State & Progress (April 2026)
+
+The project is feature-complete with the live collaboration system fully implemented and refined through multiple iterations. All three components (backend, frontend, plugin) are working together.
+
+### Completed Features ✅
+
+**Core Functionality**
+- [x] Backend API server (Rust/Axum) with upload, view, delete, list endpoints
+- [x] Frontend viewer (React/Vite) with Excalidraw integration
+- [x] Obsidian plugin for publishing drawings
+- [x] PDF page embedding with crop rect support
+- [x] Source path tracking (`_source_path` in JSON, frontmatter `excalishare-id`)
+- [x] Drawing update support (re-upload with same ID)
+- [x] Public drawings list endpoint (`/api/public/drawings`)
+
+**Frontend Viewer**
+- [x] View mode (read-only, zen mode)
+- [x] Edit mode (local editing, press `w` twice)
+- [x] Present mode (slideshow navigation with arrows)
+- [x] DrawingsBrowser with tree view, search, overlay mode
+- [x] LRU drawing cache (50 MB limit)
+- [x] Mobile toolbar injection (present/edit/browse buttons)
+- [x] ExcaliShare links in Excalidraw help dropdown
+- [x] About modal
+- [x] Keyboard shortcuts (e, w, p/q, r, arrows, Escape)
+- [x] PWA support with service worker caching
+
+**Live Collaboration**
+- [x] Backend: SessionManager with in-memory sessions
+- [x] Backend: WebSocket handler with broadcast channel
+- [x] Backend: Version-based element merging (prevents deletion flickering)
+- [x] Backend: Background session cleanup with auto-save
+- [x] Backend: Participant management (join/leave/color assignment)
+- [x] Frontend: `useCollab` hook (complete state management)
+- [x] Frontend: `CollabClient` WebSocket wrapper (reconnect, debounce, throttle)
+- [x] Frontend: CollabStatus (pre-join banner, session-ended notification)
+- [x] Frontend: CollabPopover (participant list, follow controls)
+- [x] Frontend: LiveCollaborationTrigger integration
+- [x] Frontend: Real-time cursor/pointer display
+- [x] Frontend: Drawing interruption deferral (queue during active drawing)
+- [x] Frontend: Follow mode (viewport syncing via pointer updates)
+- [x] Frontend: Click-to-follow on Excalidraw user badges
+- [x] Frontend: Visual follow indicator (CSS outline on followed avatar)
+- [x] Frontend: Auto-disconnect on drawing navigation
+- [x] Plugin: Start/Stop collab commands
+- [x] Plugin: CollabStopModal (save/discard/cancel)
+- [x] Plugin: Health check polling (30s interval)
+- [x] Plugin: Status bar indicator with participant count
+- [x] Plugin: Auto-open browser on collab start
+- [x] Plugin: Pull from server (sync changes back to vault)
+- [x] Plugin: Native collab participation (WebSocket from Obsidian)
+- [x] Plugin: CollabClient WebSocket wrapper (adapted from frontend)
+- [x] Plugin: CollabManager (session lifecycle, change detection, cursor display, follow mode)
+- [x] Plugin: Event-driven change detection via `excalidrawAPI.onChange()` (instant, zero-waste)
+- [x] Plugin: Fallback polling at 2s for older Excalidraw versions
+- [x] Plugin: Adaptive debouncing (16ms idle / 50ms batch / 80ms drawing)
+- [x] Plugin: Version-based echo suppression (remoteAppliedVersions + double-rAF)
+- [x] Plugin: Host cursor broadcasting via DOM pointermove (50ms throttled)
+- [x] Plugin: Laser pointer detection (reads appState.activeTool.type)
+- [x] Plugin: Follow mode with lerp-based viewport interpolation (same as frontend)
+- [x] Plugin: Drawing state tracking via onPointerDown/onPointerUp subscriptions
+- [x] Plugin: Deferred remote updates during active drawing (prevents stutter)
+- [x] Plugin: Cached Excalidraw API reference (avoids expensive setView calls)
+- [x] Plugin: Collaborator cursor display in Obsidian Excalidraw view
+- [x] Plugin: Auto-sync disabled during active collab session
+- [x] Plugin: Toolbar shows participant count and native connection status
+
+**Security**
+- [x] Constant-time API key comparison (`subtle` crate)
+- [x] Rate limiting (tower_governor, per-IP)
+- [x] CORS restriction (BASE_URL + Obsidian origin only)
+- [x] Unguessable session IDs (full 128-bit UUID)
+- [x] WebSocket message size limit (5 MB)
+- [x] Session capacity limit (20 participants)
+- [x] Timeout clamping (5 min – 24 hours)
+- [x] API key file loading in NixOS module
+- [x] PWA cache scope limited to public routes
+- [x] Path traversal protection (ID sanitization)
+
+**Plugin UI**
+- [x] Modular file structure (settings.ts, toolbar.ts, styles.ts)
+- [x] Floating toolbar with status dot
+- [x] Expandable toolbar panel with all actions
+- [x] Auto-sync on save (debounced)
+- [x] Toolbar position configuration (4 positions)
+- [x] Toolbar retry injection for mobile
+- [x] CSS-in-JS with Obsidian theme variables
+- [x] Context menu integration
+- [x] Ribbon icons (publish, browse)
+
+**Admin Panel**
+- [x] API key authentication
+- [x] Drawing list with size, date, source path
+- [x] Delete drawings
+- [x] Active collab sessions display
+- [x] End collab sessions
+- [x] Auto-refresh (10s interval)
+
+**Infrastructure**
+- [x] NixOS module (`nixos/module.nix`)
+- [x] Systemd service with security hardening
+- [x] Nix flake dev environment
+- [x] Quick start script (`start.sh`)
+- [x] DEPLOYMENT.md guide
+
+### Recent Bug Fixes
+
+**Host Cursor/Laser/Follow Bug Fix (April 2026)**
+Fixed a fatal bug where the Obsidian plugin host's cursor, laser pointer, and follow mode were invisible to browser users during native live collaboration. Root causes:
+- Pointer tracking skipped in polling fallback — `startPointerTracking()` was only called inside `startEventDrivenDetection()`, never when using polling fallback
+- Canvas element not found — `findExcalidrawCanvas()` used too few selectors, missing `.excalidraw__canvas.interactive` used by newer Excalidraw versions
+- Insufficient retry logic — Only a single 1-second retry for canvas discovery
+- No fallback for follow mode — If pointer tracking failed, no viewport data was ever sent
+
+Fixes applied:
+- [x] Expanded canvas discovery with 5 selectors + iframe search + diagnostic logging
+- [x] Moved `startPointerTracking()` to `startChangeDetection()` (always runs)
+- [x] Exponential backoff retry (500ms → 1s → 2s → 4s) for canvas discovery
+- [x] Viewport broadcast fallback (500ms interval) ensures follow mode works even without DOM pointer tracking
+- [x] Improved `getCanvasContainer` in `main.ts` to search `.excalidraw-wrapper`, `[class*="excalidraw"]`, and all workspace leaves of type `'excalidraw'`
+
+### Active Decisions
+- Collab sessions are **in-memory only** — no persistence across server restarts (by design)
+- Frontend uses **Excalidraw 0.17.6** — specific version pinned for API compatibility
+- Plugin uses `requestUrl` from Obsidian API (not `fetch`) for cross-platform compatibility
+- Drawing IDs stored in Obsidian frontmatter (`excalishare-id`)
+
+### Known Limitations / Potential Improvements
+- No automated tests (all manual testing)
+- Collab sessions are in-memory only (lost on server restart)
+- Large drawings may cause performance issues in collab (no delta updates, full scene sync)
+- No user authentication for viewers (anyone with the URL can view)
+- WebSocket has no auth — relies on unguessable session IDs
+- Plugin can only manage one collab session at a time
+- `DrawingsBrowser.tsx` is very large (54K+ chars) — could benefit from splitting
+- `Viewer.tsx` is very large (42K+ chars) — could benefit from splitting
+- No conflict resolution UI (server always picks highest version)
+- No undo/redo sync across collaborators

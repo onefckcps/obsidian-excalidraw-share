@@ -102,14 +102,18 @@
 
 ### Native Collab Architecture
 The plugin can participate in collab sessions directly within Obsidian (no browser needed):
-- **CollabClient** — WebSocket wrapper with reconnect, delta tracking, debounce (mirrors frontend's `collabClient.ts`)
+- **CollabClient** — WebSocket wrapper with reconnect, delta tracking, adaptive debounce (mirrors frontend's `collabClient.ts`)
 - **CollabManager** — Orchestrates the full collab lifecycle:
   - Connects via WebSocket to `/ws/collab/{session_id}`
-  - **Polling-based change detection** — Polls `getSceneElements()` every 250ms, compares element versions
-  - **Deferred remote updates** — Queues incoming updates while user is drawing (`draggingElement/resizingElement/editingElement`), flushes via 300ms interval when user stops
+  - **Event-driven change detection** — Uses `excalidrawAPI.onChange()` subscription for instant, zero-waste detection. Falls back to 2s polling for older Excalidraw versions.
+  - **Pointer tracking** — DOM `pointermove` listener on Excalidraw canvas with screen→scene coordinate conversion. Exponential backoff retry (500ms → 1s → 2s → 4s) for canvas discovery. Canvas search uses 5 selectors: `.excalidraw__canvas.interactive`, `.excalidraw__canvas`, `.excalidraw canvas`, `canvas.interactive`, `canvas`. Also searches iframes.
+  - **Viewport broadcast fallback** — Periodic 500ms broadcast of scrollX/scrollY/zoom ensures follow mode works even if DOM pointer tracking fails
+  - **Laser pointer support** — Reads `appState.activeTool.type` to detect laser vs pointer tool
+  - **Follow mode** — Lerp-based viewport interpolation via `requestAnimationFrame` (same algorithm as frontend)
+  - **Deferred remote updates** — Queues incoming updates while user is drawing, flushes via 300ms interval + onPointerUp
   - **Cached API reference** — Stores `getExcalidrawAPI()` result, validates with quick `getSceneElements()` call, avoids expensive `ea.setView('active')` on every cycle
   - **Collaborator cursors** — Receives pointer updates, builds Excalidraw collaborator Map, pushes via `updateScene({ collaborators })`
-  - **Echo prevention** — Sets `isApplyingRemoteUpdate` flag during remote updates, skips next poll cycle
+  - **Version-based echo suppression** — `remoteAppliedVersions` map + double-`requestAnimationFrame` cooldown
 - **No backend changes needed** — Uses the same WebSocket endpoint and protocol as the frontend
 
 ### Plugin Settings

@@ -144,7 +144,7 @@ obsidian-excalidraw-share/
 │   ├── styles.ts         # CSS-in-JS styles, icons, colors
 │   ├── pdfUtils.ts       # PDF-to-PNG conversion
 │   ├── collabClient.ts   # WebSocket client with adaptive debouncing + pointer updates
-│   ├── collabManager.ts  # Event-driven collab: onChange subscription, pointer tracking, follow mode, lerp viewport
+│   ├── collabManager.ts  # Event-driven collab: onChange subscription, pointer tracking (5 selectors + retry), viewport broadcast fallback, follow mode, lerp viewport
 │   └── collabTypes.ts    # Shared types for WS protocol + ExcalidrawAPI event subscriptions
 ├── nixos/module.nix      # NixOS service module
 ├── plans/                # Implementation plans (collab, security, UI, native-collab)
