@@ -84,6 +84,20 @@ if [ "$SKIP_BUILD" = false ]; then
 		cd backend && cargo build --release
 		cd ../frontend && npm install && npm run build
 	"
+
+	# Ensure Excalidraw font assets are in the frontend dist
+	# (vite-plugin-static-copy handles this during build, but this is a safety net)
+	# Excalidraw 0.17.6 loads fonts from two paths:
+	#   1. Webpack chunks: /excalidraw-assets/Virgil.woff2 (canvas rendering)
+	#   2. CSS @font-face: /Virgil.woff2 (SVG export)
+	if [ -d "$PROJECT_ROOT/frontend/node_modules/@excalidraw/excalidraw/dist/excalidraw-assets-dev" ]; then
+		if [ ! -f "$FRONTEND_DIR/excalidraw-assets/Virgil.woff2" ]; then
+			log_info "Copying Excalidraw font assets to frontend dist..."
+			mkdir -p "$FRONTEND_DIR/excalidraw-assets"
+			cp "$PROJECT_ROOT/frontend/node_modules/@excalidraw/excalidraw/dist/excalidraw-assets-dev/"*.woff2 "$FRONTEND_DIR/excalidraw-assets/" 2>/dev/null || true
+			cp "$PROJECT_ROOT/frontend/node_modules/@excalidraw/excalidraw/dist/excalidraw-assets-dev/"*.woff2 "$FRONTEND_DIR/" 2>/dev/null || true
+		fi
+	fi
 else
 	log_info "Skipping build (--no-build flag)"
 fi

@@ -1,15 +1,35 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { viteStaticCopy } from 'vite-plugin-static-copy'
 
 export default defineConfig({
   plugins: [
     react(),
+    viteStaticCopy({
+      targets: [
+        {
+          // Excalidraw 0.17.6 loads fonts from two paths:
+          // 1. Webpack chunks: {ASSET_PATH}/excalidraw-assets/Virgil.woff2
+          // 2. CSS @font-face (SVG export): {ASSET_PATH}/Virgil.woff2
+          // Copy to excalidraw-assets/ for webpack chunk loading (canvas rendering)
+          src: 'node_modules/@excalidraw/excalidraw/dist/excalidraw-assets-dev/*.woff2',
+          dest: 'excalidraw-assets'
+        },
+        {
+          // Copy to root for CSS @font-face loading (SVG export)
+          src: 'node_modules/@excalidraw/excalidraw/dist/excalidraw-assets-dev/*.woff2',
+          dest: '.'
+        }
+      ]
+    }),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
       workbox: {
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        // Exclude Excalidraw font assets from precache (they're loaded on demand)
+        globIgnores: ['excalidraw-assets/**', '*.woff2'],
         runtimeCaching: [
           {
             // Only cache public API routes — exclude authenticated endpoints
