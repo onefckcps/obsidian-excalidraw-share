@@ -162,7 +162,12 @@ pub async fn upload_drawing(
 
         // Ensure uniqueness for new IDs
         if state.storage.exists(&new_id).await? {
-            Uuid::new_v4().to_string().replace('-', "")
+            Uuid::new_v4()
+                .to_string()
+                .replace('-', "")
+                .chars()
+                .take(16)
+                .collect::<String>()
         } else {
             new_id
         }

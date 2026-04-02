@@ -21,20 +21,40 @@ pub struct WsQuery {
 }
 
 fn default_name() -> String {
+    use rand::Rng;
     let adjectives = ["Swift", "Bright", "Calm", "Bold", "Keen"];
     let nouns = ["Fox", "Owl", "Bear", "Wolf", "Hawk"];
-    let adj = adjectives[rand_index(adjectives.len())];
-    let noun = nouns[rand_index(nouns.len())];
+    let mut rng = rand::thread_rng();
+    let adj = adjectives[rng.gen_range(0..adjectives.len())];
+    let noun = nouns[rng.gen_range(0..nouns.len())];
     format!("{adj} {noun}")
 }
 
-fn rand_index(max: usize) -> usize {
-    // Simple pseudo-random using time
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as usize;
-    nanos % max
+/// Sanitize a display name: strip HTML tags and control characters,
+/// keeping only printable text. Truncates to `max_len` characters.
+fn sanitize_display_name(name: &str, max_len: usize) -> String {
+    // Strip anything that looks like an HTML tag
+    let mut result = String::with_capacity(name.len());
+    let mut in_tag = false;
+    for ch in name.chars() {
+        if ch == '<' {
+            in_tag = true;
+            continue;
+        }
+        if ch == '>' {
+            in_tag = false;
+            continue;
+        }
+        if in_tag {
+            continue;
+        }
+        // Skip control characters (except space)
+        if ch.is_control() && ch != ' ' {
+            continue;
+        }
+        result.push(ch);
+    }
+    result.chars().take(max_len).collect()
 }
 
 /// WebSocket upgrade handler for collab sessions.
@@ -60,10 +80,8 @@ pub async fn ws_collab_handler(
 
     let name = if query.name.is_empty() {
         default_name()
-    } else if query.name.len() > 50 {
-        query.name.chars().take(50).collect()
     } else {
-        query.name
+        sanitize_display_name(&query.name, 50)
     };
 
     Ok(ws.on_upgrade(move |socket| handle_ws_connection(socket, session_id, name, session_manager)))

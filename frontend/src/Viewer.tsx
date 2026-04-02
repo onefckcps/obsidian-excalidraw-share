@@ -5,31 +5,11 @@ import type { Theme, ExcalidrawElement } from '@excalidraw/excalidraw/types/elem
 import type { ExcalidrawData } from './types'
 import { drawingCache } from './utils/cache'
 import { useCollab } from './hooks/useCollab'
+import { useMediaQuery } from './hooks/useMediaQuery'
 import CollabStatus from './CollabStatus'
 import CollabPopover from './CollabPopover'
 import AboutModal from './AboutModal'
 import PasswordDialog from './PasswordDialog'
-
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return window.matchMedia(query).matches
-    }
-    return false
-  })
-
-  useEffect(() => {
-    const media = window.matchMedia(query)
-    if (media.matches !== matches) {
-      setMatches(media.matches)
-    }
-    const listener = (e: MediaQueryListEvent) => setMatches(e.matches)
-    media.addEventListener('change', listener)
-    return () => media.removeEventListener('change', listener)
-  }, [matches, query])
-
-  return matches
-}
 import DrawingsBrowser from './DrawingsBrowser'
 
 const spinKeyframes = `
@@ -64,6 +44,7 @@ function Viewer() {
   const [showEditWarning, setShowEditWarning] = useState(false)
   const [drawingsList, setDrawingsList] = useState<{id: string, created_at: string, source_path: string | null}[]>([])
   const [loadingDrawings, setLoadingDrawings] = useState(false)
+  const loadingDrawingsRef = useRef(false)
   const [showCollabPopover, setShowCollabPopover] = useState(false)
   const [passwordRequired, setPasswordRequired] = useState(false)
   const [passwordError, setPasswordError] = useState<string | null>(null)
@@ -142,6 +123,12 @@ function Viewer() {
     // Check for password in URL fragment (#key=...)
     const hashParams = new URLSearchParams(window.location.hash.slice(1))
     const fragmentKey = hashParams.get('key')
+
+    // Security: strip the password fragment from the URL to prevent leakage
+    // via browser history, referrer headers, and shoulder surfing.
+    if (fragmentKey) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search)
+    }
 
     fetchDrawing(id, fragmentKey || undefined, abortController.signal)
       .then((result) => {
@@ -466,19 +453,22 @@ function Viewer() {
   }, [showOverlay, drawingsList, id, loadingDrawings, navigate, loading])
 
   const loadDrawingsList = useCallback(() => {
-    if (loadingDrawings) return
+    if (loadingDrawingsRef.current) return
+    loadingDrawingsRef.current = true
     setLoadingDrawings(true)
     fetch('/api/public/drawings')
       .then(res => res.json())
       .then(data => {
         const drawings = data.drawings || []
         setDrawingsList(drawings)
+        loadingDrawingsRef.current = false
         setLoadingDrawings(false)
       })
       .catch(() => {
+        loadingDrawingsRef.current = false
         setLoadingDrawings(false)
       })
-  }, []) // loadingDrawings entfernt
+  }, [])
 
   const navigateToPrevDrawing = useCallback(() => {
     if (drawingsList.length === 0) {

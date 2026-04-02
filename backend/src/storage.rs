@@ -14,6 +14,17 @@ pub struct DrawingMeta {
     pub password_protected: bool,
 }
 
+/// Lightweight sidecar metadata stored alongside each drawing.
+/// Avoids reading the full drawing JSON just to list metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SidecarMeta {
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub password_protected: bool,
+}
+
 /// Trait abstracting drawing storage – implement this for different backends
 /// (filesystem, S3, SQLite, etc.).
 #[allow(async_fn_in_trait)]
@@ -25,7 +36,8 @@ pub trait DrawingStorage: Send + Sync + 'static {
     async fn exists(&self, id: &str) -> Result<bool, AppError>;
 }
 
-/// Filesystem-backed storage. Each drawing is a JSON file named `<id>.json`.
+/// Filesystem-backed storage. Each drawing is a JSON file named `<id>.json`
+/// with a lightweight sidecar `<id>.meta.json` for fast listing.
 #[derive(Clone)]
 pub struct FileSystemStorage {
     base_path: PathBuf,
@@ -35,7 +47,13 @@ impl FileSystemStorage {
     pub async fn new(base_path: impl AsRef<Path>) -> Result<Self, AppError> {
         let base_path = base_path.as_ref().to_path_buf();
         fs::create_dir_all(&base_path).await?;
-        Ok(Self { base_path })
+
+        let storage = Self { base_path };
+
+        // Migrate: generate sidecar files for any existing drawings that lack them
+        storage.migrate_sidecars().await;
+
+        Ok(storage)
     }
 
     fn drawing_path(&self, id: &str) -> PathBuf {
@@ -46,12 +64,117 @@ impl FileSystemStorage {
             .collect();
         self.base_path.join(format!("{safe_id}.json"))
     }
+
+    fn meta_path(&self, id: &str) -> PathBuf {
+        let safe_id: String = id
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        self.base_path.join(format!("{safe_id}.meta.json"))
+    }
+
+    /// Write the sidecar metadata file for a drawing.
+    async fn write_sidecar(&self, id: &str, meta: &SidecarMeta) -> Result<(), AppError> {
+        let path = self.meta_path(id);
+        let json_bytes = serde_json::to_vec(meta)?;
+        fs::write(&path, &json_bytes).await?;
+        Ok(())
+    }
+
+    /// Read the sidecar metadata file for a drawing.
+    async fn read_sidecar(&self, id: &str) -> Option<SidecarMeta> {
+        let path = self.meta_path(id);
+        match fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).ok(),
+            Err(_) => None,
+        }
+    }
+
+    /// One-time migration: generate sidecar files for drawings that don't have them.
+    /// This reads the full JSON only once per drawing, then writes a tiny sidecar.
+    async fn migrate_sidecars(&self) {
+        let mut entries = match fs::read_dir(&self.base_path).await {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        let mut migrated = 0u32;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            // Only process .json files (not .meta.json)
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !filename.ends_with(".json") || filename.ends_with(".meta.json") {
+                continue;
+            }
+
+            let id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            if id.is_empty() {
+                continue;
+            }
+
+            // Skip if sidecar already exists
+            let meta_path = self.meta_path(&id);
+            if meta_path.exists() {
+                continue;
+            }
+
+            // Read the full drawing to extract metadata
+            match fs::read(&path).await {
+                Ok(bytes) => {
+                    let source_path = serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .and_then(|json| {
+                            let sp = json.get("_source_path")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+                            let pw = json.get("_password_hash")
+                                .and_then(|v| v.as_str())
+                                .is_some();
+                            Some((sp, pw))
+                        });
+
+                    let (source_path, password_protected) = source_path.unwrap_or((None, false));
+
+                    // Use file system creation time as best-effort, or fall back to now
+                    let created_at = entry.metadata().await
+                        .ok()
+                        .and_then(|m| m.created().ok())
+                        .map(DateTime::from)
+                        .unwrap_or_else(Utc::now);
+
+                    let sidecar = SidecarMeta {
+                        created_at,
+                        source_path,
+                        password_protected,
+                    };
+
+                    if let Err(e) = self.write_sidecar(&id, &sidecar).await {
+                        tracing::warn!(id = %id, error = %e, "Failed to migrate sidecar metadata");
+                    } else {
+                        migrated += 1;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(id = %id, error = %e, "Failed to read drawing for sidecar migration");
+                }
+            }
+        }
+
+        if migrated > 0 {
+            tracing::info!(count = migrated, "Migrated sidecar metadata files for existing drawings");
+        }
+    }
 }
 
 impl DrawingStorage for FileSystemStorage {
     async fn save(&self, id: &str, data: &serde_json::Value, source_path: Option<&str>, password_hash: Option<&str>) -> Result<DrawingMeta, AppError> {
         let path = self.drawing_path(id);
-        
+
         let mut data_with_meta = data.clone();
         if let Some(obj) = data_with_meta.as_object_mut() {
             if let Some(sp) = source_path {
@@ -64,18 +187,33 @@ impl DrawingStorage for FileSystemStorage {
                 obj.remove("_password_hash");
             }
         }
-        
+
         let json_bytes = serde_json::to_vec(&data_with_meta)?;
         let size_bytes = json_bytes.len() as u64;
 
         fs::write(&path, &json_bytes).await?;
 
+        // Determine created_at: preserve from existing sidecar, or use now for new drawings
+        let created_at = self.read_sidecar(id).await
+            .map(|m| m.created_at)
+            .unwrap_or_else(Utc::now);
+
+        let password_protected = password_hash.is_some();
+
+        // Write/update sidecar metadata (tiny file, fast)
+        let sidecar = SidecarMeta {
+            created_at,
+            source_path: source_path.map(String::from),
+            password_protected,
+        };
+        self.write_sidecar(id, &sidecar).await?;
+
         Ok(DrawingMeta {
             id: id.to_string(),
-            created_at: Utc::now(),
+            created_at,
             size_bytes,
             source_path: source_path.map(String::from),
-            password_protected: password_hash.is_some(),
+            password_protected,
         })
     }
 
@@ -95,56 +233,62 @@ impl DrawingStorage for FileSystemStorage {
             return Err(AppError::NotFound);
         }
         fs::remove_file(&path).await?;
+
+        // Also remove sidecar metadata
+        let meta_path = self.meta_path(id);
+        let _ = fs::remove_file(&meta_path).await; // Ignore error if sidecar doesn't exist
+
         Ok(())
     }
 
+    /// List all drawings using lightweight sidecar metadata files.
+    /// Never reads the full drawing JSON — only the tiny .meta.json files.
     async fn list(&self) -> Result<Vec<DrawingMeta>, AppError> {
         let mut entries = fs::read_dir(&self.base_path).await?;
         let mut drawings = Vec::new();
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                let metadata = entry.metadata().await?;
-                let id = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-                let created_at = metadata
-                    .created()
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-                let (source_path, password_protected) = if path.exists() {
-                    match fs::read_to_string(&path).await {
-                        Ok(content) => {
-                            match serde_json::from_str::<serde_json::Value>(&content) {
-                                Ok(json) => (
-                                    json.get("_source_path")
-                                        .and_then(|v| v.as_str())
-                                        .map(String::from),
-                                    json.get("_password_hash")
-                                        .and_then(|v| v.as_str())
-                                        .is_some(),
-                                ),
-                                Err(_) => (None, false),
-                            }
-                        }
-                        Err(_) => (None, false),
-                    }
-                } else {
-                    (None, false)
-                };
-
-                drawings.push(DrawingMeta {
-                    id,
-                    created_at: DateTime::from(created_at),
-                    size_bytes: metadata.len(),
-                    source_path,
-                    password_protected,
-                });
+            // Only process .json files (not .meta.json)
+            if !filename.ends_with(".json") || filename.ends_with(".meta.json") {
+                continue;
             }
+
+            let file_metadata = entry.metadata().await?;
+            let id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            if id.is_empty() {
+                continue;
+            }
+
+            // Read the lightweight sidecar (typically < 200 bytes)
+            let sidecar = self.read_sidecar(&id).await;
+
+            let (created_at, source_path, password_protected) = match sidecar {
+                Some(meta) => (meta.created_at, meta.source_path, meta.password_protected),
+                None => {
+                    // Sidecar missing — use filesystem metadata as fallback
+                    let created_at = file_metadata
+                        .created()
+                        .map(DateTime::from)
+                        .unwrap_or_else(|_| Utc::now());
+                    (created_at, None, false)
+                }
+            };
+
+            drawings.push(DrawingMeta {
+                id,
+                created_at,
+                size_bytes: file_metadata.len(),
+                source_path,
+                password_protected,
+            });
         }
 
         drawings.sort_by(|a, b| b.created_at.cmp(&a.created_at));

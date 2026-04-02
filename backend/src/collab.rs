@@ -487,7 +487,8 @@ impl SessionManager {
             .get_mut(session_id)
             .ok_or(AppError::SessionNotFound)?;
 
-        // Apply all incoming elements to the indexed structure
+        // Apply all incoming elements to the indexed structure, tracking which actually changed
+        let mut changed_elements = Vec::new();
         if let Some(arr) = elements.as_array() {
             for el in arr {
                 if let Some(id) = el.get("id").and_then(|v| v.as_str()) {
@@ -508,6 +509,7 @@ impl SessionManager {
                     };
                     if should_update {
                         session.element_map.insert(id.to_string(), el.clone());
+                        changed_elements.push(el.clone());
                     }
                 }
             }
@@ -515,12 +517,15 @@ impl SessionManager {
 
         session.scene_seq += 1;
 
-        // Broadcast full state for backward compatibility
-        let update_msg = ServerMessage::SceneUpdate {
-            elements: session.elements_as_array(),
-            from: user_id.to_string(),
-        };
-        let _ = session.broadcast_tx.send(update_msg);
+        // Broadcast only the changed elements as a scene_update (delta-efficient).
+        // Clients merge these into their local state using version-based resolution.
+        if !changed_elements.is_empty() {
+            let update_msg = ServerMessage::SceneUpdate {
+                elements: serde_json::Value::Array(changed_elements),
+                from: user_id.to_string(),
+            };
+            let _ = session.broadcast_tx.send(update_msg);
+        }
 
         Ok(())
     }
@@ -682,18 +687,30 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Update a participant's display name (truncated to 50 chars max).
+    /// Update a participant's display name (sanitized and truncated to 50 chars max).
     pub async fn set_participant_name(
         &self,
         session_id: &str,
         user_id: &str,
         name: &str,
     ) {
-        let truncated: String = name.chars().take(50).collect();
+        // Sanitize: strip HTML tags and control characters, truncate to 50 chars
+        let sanitized: String = {
+            let mut result = String::with_capacity(name.len());
+            let mut in_tag = false;
+            for ch in name.chars() {
+                if ch == '<' { in_tag = true; continue; }
+                if ch == '>' { in_tag = false; continue; }
+                if in_tag { continue; }
+                if ch.is_control() && ch != ' ' { continue; }
+                result.push(ch);
+            }
+            result.chars().take(50).collect()
+        };
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
             if let Some(participant) = session.participants.get_mut(user_id) {
-                participant.name = truncated;
+                participant.name = sanitized;
             }
         }
     }

@@ -84,13 +84,7 @@ function promptPassword(app: App, title: string, description: string): Promise<s
 
 const blobToBase64 = async (blob: Blob): Promise<string> => {
   const arrayBuffer = await blob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
+  return arrayBufferToBase64(arrayBuffer);
 };
 
 const cropCanvas = (

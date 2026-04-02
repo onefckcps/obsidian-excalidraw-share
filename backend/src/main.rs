@@ -117,6 +117,34 @@ async fn main() -> anyhow::Result<()> {
                 .expect("Failed to build protected rate limiter"),
         ),
     };
+    // Strict rate limit for password verification (brute-force protection): 5 req/sec per IP
+    let password_rate_limit = GovernorLayer {
+        config: Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(1)
+                .burst_size(5)
+                .finish()
+                .expect("Failed to build password rate limiter"),
+        ),
+    };
+    // Rate limit for WebSocket connections: 10 connections/sec per IP
+    let ws_rate_limit = GovernorLayer {
+        config: Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(1)
+                .burst_size(10)
+                .finish()
+                .expect("Failed to build WebSocket rate limiter"),
+        ),
+    };
+
+    // Password verification route (stricter rate limit for brute-force protection)
+    let password_api = Router::new()
+        .route(
+            "/api/collab/verify-password",
+            post(routes::verify_collab_password),
+        )
+        .layer(password_rate_limit);
 
     // Public API routes (no auth required)
     let public_api = Router::new()
@@ -126,10 +154,6 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/collab/status/{drawing_id}",
             get(routes::collab_status),
-        )
-        .route(
-            "/api/collab/verify-password",
-            post(routes::verify_collab_password),
         )
         .layer(public_rate_limit);
 
@@ -148,12 +172,13 @@ async fn main() -> anyhow::Result<()> {
             auth::api_key_middleware,
         ));
 
-    // WebSocket route (no auth, but session must exist)
+    // WebSocket route (rate limited, no auth but session must exist)
     let ws_routes = Router::new()
         .route(
             "/ws/collab/{session_id}",
             get(ws::ws_collab_handler),
         )
+        .layer(ws_rate_limit)
         .with_state(session_manager.clone());
 
     // Restrict CORS to the configured BASE_URL origin and Obsidian's app origin.
@@ -174,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     let app = Router::new()
+        .merge(password_api)
         .merge(public_api)
         .merge(protected_api)
         .with_state(app_state)
