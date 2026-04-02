@@ -114,6 +114,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const pendingCollabUpdateRef = useRef<Map<string, Collaborator> | null>(null);
   /** Follow mode: target viewport for lerp interpolation */
   const followTargetRef = useRef<{ scrollX: number; scrollY: number; zoom: number | null } | null>(null);
+  /** Follow mode: current interpolated viewport position (self-tracked, not read from Excalidraw) */
+  const followCurrentRef = useRef<{ scrollX: number; scrollY: number; zoom: number } | null>(null);
   /** Follow mode: rAF handle for the viewport interpolation loop */
   const followLerpRafRef = useRef<number | null>(null);
   /** Follow mode: lerp factor (0-1, higher = faster convergence) */
@@ -433,36 +435,45 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
 
         // Follow mode: update the lerp target (the interpolation loop handles the actual scrolling)
         if (followingUserIdRef.current === msg.userId && msg.scrollX !== undefined && msg.scrollY !== undefined) {
-          const newTarget = {
+          followTargetRef.current = {
             scrollX: msg.scrollX,
             scrollY: msg.scrollY,
             zoom: msg.zoom !== undefined ? msg.zoom : null,
           };
-          followTargetRef.current = newTarget;
+
+          // Initialize current position from Excalidraw's state on first target
+          if (followCurrentRef.current === null) {
+            const api = excalidrawAPIRef.current as {
+              getAppState: () => { scrollX: number; scrollY: number; zoom: { value: number } };
+            } | null;
+            if (api?.getAppState) {
+              const appState = api.getAppState();
+              followCurrentRef.current = {
+                scrollX: appState.scrollX,
+                scrollY: appState.scrollY,
+                zoom: appState.zoom?.value ?? 1,
+              };
+            }
+          }
 
           // Start the lerp loop if not already running
           if (followLerpRafRef.current === null) {
             const lerpLoop = () => {
               const api = excalidrawAPIRef.current as {
                 updateScene: (data: unknown) => void;
-                getAppState: () => { scrollX: number; scrollY: number; zoom: { value: number } };
               } | null;
               const target = followTargetRef.current;
+              const current = followCurrentRef.current;
 
-              if (!api || !target || !followingUserIdRef.current) {
+              if (!api || !target || !current || !followingUserIdRef.current) {
                 followLerpRafRef.current = null;
                 return;
               }
 
-              const appState = api.getAppState();
-              const currentX = appState.scrollX;
-              const currentY = appState.scrollY;
-              const currentZoom = appState.zoom?.value ?? 1;
-
-              // Lerp toward target
-              const dx = target.scrollX - currentX;
-              const dy = target.scrollY - currentY;
-              const dz = target.zoom !== null ? target.zoom - currentZoom : 0;
+              // Lerp toward target using self-tracked position
+              const dx = target.scrollX - current.scrollX;
+              const dy = target.scrollY - current.scrollY;
+              const dz = target.zoom !== null ? target.zoom - current.zoom : 0;
 
               // Check if close enough to snap
               const threshold = 0.5;
@@ -470,7 +481,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
 
               if (isClose) {
                 // Snap to exact target and stop the loop
-                // (a new pointer_update will restart it if needed)
+                current.scrollX = target.scrollX;
+                current.scrollY = target.scrollY;
+                if (target.zoom !== null) current.zoom = target.zoom;
+
                 const finalState: Record<string, unknown> = {
                   scrollX: target.scrollX,
                   scrollY: target.scrollY,
@@ -481,15 +495,17 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
                 api.updateScene({ appState: finalState });
                 followLerpRafRef.current = null;
               } else {
-                // Interpolate
-                const newX = currentX + dx * FOLLOW_LERP_FACTOR;
-                const newY = currentY + dy * FOLLOW_LERP_FACTOR;
+                // Interpolate and update self-tracked position
+                current.scrollX += dx * FOLLOW_LERP_FACTOR;
+                current.scrollY += dy * FOLLOW_LERP_FACTOR;
+                if (target.zoom !== null) current.zoom += dz * FOLLOW_LERP_FACTOR;
+
                 const lerpState: Record<string, unknown> = {
-                  scrollX: newX,
-                  scrollY: newY,
+                  scrollX: current.scrollX,
+                  scrollY: current.scrollY,
                 };
                 if (target.zoom !== null) {
-                  lerpState.zoom = { value: currentZoom + dz * FOLLOW_LERP_FACTOR };
+                  lerpState.zoom = { value: current.zoom };
                 }
                 api.updateScene({ appState: lerpState });
                 followLerpRafRef.current = requestAnimationFrame(lerpLoop);
@@ -601,6 +617,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     }
     pendingCollabUpdateRef.current = null;
     followTargetRef.current = null;
+    followCurrentRef.current = null;
     collabDrawingIdRef.current = null;
     setIsJoined(false);
     setIsConnected(false);
@@ -654,8 +671,9 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
 
   const stopFollowing = useCallback(() => {
     setFollowingUserId(null);
-    // Stop the lerp loop immediately
+    // Stop the lerp loop immediately and reset state
     followTargetRef.current = null;
+    followCurrentRef.current = null;
     if (followLerpRafRef.current !== null) {
       cancelAnimationFrame(followLerpRafRef.current);
       followLerpRafRef.current = null;
