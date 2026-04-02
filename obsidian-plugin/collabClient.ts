@@ -26,6 +26,7 @@ export class CollabClient {
   private baseUrl: string;
   private sessionId: string;
   private displayName: string;
+  private password: string | null;
   private handlers: Map<string, MessageHandler[]> = new Map();
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -40,10 +41,11 @@ export class CollabClient {
   private pendingPointerUpdate: ClientMessage | null = null;
   private pointerTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(baseUrl: string, sessionId: string, displayName: string) {
+  constructor(baseUrl: string, sessionId: string, displayName: string, password?: string | null) {
     this.baseUrl = baseUrl;
     this.sessionId = sessionId;
     this.displayName = displayName;
+    this.password = password ?? null;
   }
 
   connect(): void {
@@ -57,7 +59,10 @@ export class CollabClient {
     const wsProtocol = this.baseUrl.startsWith('https') ? 'wss:' : 'ws:';
     const urlObj = new URL(this.baseUrl);
     const host = urlObj.host;
-    const url = `${wsProtocol}//${host}/ws/collab/${this.sessionId}?name=${encodeURIComponent(this.displayName)}`;
+    let url = `${wsProtocol}//${host}/ws/collab/${this.sessionId}?name=${encodeURIComponent(this.displayName)}`;
+    if (this.password) {
+      url += `&password=${encodeURIComponent(this.password)}`;
+    }
 
     try {
       this.ws = new WebSocket(url);

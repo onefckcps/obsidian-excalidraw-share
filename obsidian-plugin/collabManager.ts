@@ -184,7 +184,7 @@ export class CollabManager {
   /**
    * Connect to a collab session via WebSocket and start participating.
    */
-  async startAndJoin(drawingId: string, sessionId: string): Promise<void> {
+  async startAndJoin(drawingId: string, sessionId: string, password?: string | null): Promise<void> {
     if (this.client) {
       this.leave();
     }
@@ -195,7 +195,7 @@ export class CollabManager {
     // Cache the API reference once at join time
     this.cachedAPI = this.getExcalidrawAPIFn();
 
-    const client = new CollabClient(this.baseUrl, sessionId, this.displayName);
+    const client = new CollabClient(this.baseUrl, sessionId, this.displayName, password);
 
     // ── Register message handlers ──
 

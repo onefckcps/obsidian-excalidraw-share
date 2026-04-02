@@ -1322,7 +1322,7 @@ export default class ExcaliSharePlugin extends Plugin {
           console.error('ExcaliShare: Failed to capture pre-collab snapshot', e);
         }
 
-        await this.joinCollabFromObsidian(drawingId, result.session_id);
+        await this.joinCollabFromObsidian(drawingId, result.session_id, collabPassword);
       }
 
       if (this.settings.collabAutoOpenBrowser) {
@@ -1467,7 +1467,7 @@ export default class ExcaliSharePlugin extends Plugin {
    * This allows the host to participate directly in the Excalidraw canvas
    * without opening a browser.
    */
-  private async joinCollabFromObsidian(drawingId: string, sessionId: string): Promise<void> {
+  private async joinCollabFromObsidian(drawingId: string, sessionId: string, password?: string | null): Promise<void> {
     const excalidrawPlugin = this.getExcalidrawPlugin();
     if (!excalidrawPlugin?.ea) {
       return;
@@ -1566,7 +1566,7 @@ export default class ExcaliSharePlugin extends Plugin {
         },
       });
 
-      await this.collabManager.startAndJoin(drawingId, sessionId);
+      await this.collabManager.startAndJoin(drawingId, sessionId, password);
     } catch (error) {
       console.error('ExcaliShare: Failed to join collab from Obsidian', error);
       new Notice('Failed to join collab session from Obsidian. You can still use the browser.');
