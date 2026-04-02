@@ -229,6 +229,66 @@ export function injectGlobalStyles(): void {
       transform: scale(1.08);
       box-shadow: 0 3px 12px rgba(0,0,0,0.2);
     }
+
+    /* ── Excalidraw built-in collaborator UI fixes for Obsidian ──
+     * When we push collaborators via updateScene({ collaborators }),
+     * Excalidraw renders its built-in UserList with Avatar elements.
+     * These can be invisible or poorly positioned in Obsidian's context,
+     * especially on mobile where they appear in the right-side toolbar.
+     */
+
+    /* Ensure collaborator avatars are visible with proper colors */
+    .excalidraw .UserList {
+      pointer-events: auto !important;
+      z-index: 10 !important;
+    }
+
+    .excalidraw .UserList .Avatar {
+      opacity: 1 !important;
+      visibility: visible !important;
+      cursor: pointer !important;
+      min-width: 28px !important;
+      min-height: 28px !important;
+    }
+
+    /* Ensure the follow button/icon inside avatars is visible */
+    .excalidraw .UserList .Avatar button,
+    .excalidraw .UserList .Avatar [class*="follow"],
+    .excalidraw .UserList button[class*="follow"] {
+      opacity: 1 !important;
+      visibility: visible !important;
+      color: var(--text-normal, #333) !important;
+    }
+
+    /* Fix avatar text/initials visibility */
+    .excalidraw .UserList .Avatar span,
+    .excalidraw .UserList .Avatar div {
+      opacity: 1 !important;
+      visibility: visible !important;
+    }
+
+    /* Ensure the UserList doesn't overlap the Obsidian mobile toolbar excessively */
+    .excalidraw .UserList {
+      position: relative !important;
+      max-height: 200px !important;
+      overflow-y: auto !important;
+    }
+
+    /* Fix for Excalidraw's collaborator tooltip/popover visibility */
+    .excalidraw [class*="UserList"] [class*="tooltip"],
+    .excalidraw [class*="UserList"] [class*="popover"] {
+      color: var(--text-normal, #333) !important;
+      background-color: var(--background-primary, #fff) !important;
+      border: 1px solid var(--background-modifier-border, #ddd) !important;
+      z-index: 1000 !important;
+    }
+
+    /* Dark mode adjustments for Excalidraw collaborator UI */
+    .theme-dark .excalidraw .UserList .Avatar button,
+    .theme-dark .excalidraw .UserList .Avatar [class*="follow"],
+    .theme-dark .excalidraw .UserList button[class*="follow"] {
+      color: var(--text-normal, #e0e0e0) !important;
+    }
   `;
   document.head.appendChild(styleEl);
 }

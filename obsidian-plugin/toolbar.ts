@@ -8,6 +8,8 @@ import {
   getPositionStyles,
 } from './styles';
 import type { ToolbarPosition } from './styles';
+import type { CollaboratorInfo } from './collabTypes';
+import { getCollaboratorColor } from './collabTypes';
 
 export type ToolbarStatus = 'unpublished' | 'published' | 'syncing' | 'collabActive' | 'error';
 
@@ -21,6 +23,12 @@ export interface ToolbarState {
   collabParticipantCount?: number;
   /** Whether the host is natively connected to the collab session from Obsidian */
   collabNativeJoined?: boolean;
+  /** List of collaborators in the active session */
+  collabCollaborators?: CollaboratorInfo[];
+  /** The user ID currently being followed (null if not following) */
+  collabFollowingUserId?: string | null;
+  /** The display name of the local user (to identify self in the list) */
+  collabDisplayName?: string;
 }
 
 export interface ToolbarCallbacks {
@@ -33,6 +41,10 @@ export interface ToolbarCallbacks {
   onOpenInBrowser: () => void;
   onUnpublish: () => Promise<void>;
   onOpenSettings: () => void;
+  /** Start following a collaborator's viewport */
+  onStartFollowing?: (userId: string) => void;
+  /** Stop following the current collaborator */
+  onStopFollowing?: () => void;
 }
 
 /**
@@ -267,7 +279,7 @@ export class ExcaliShareToolbar {
 
       // Collab actions
       if (this.state.collabSessionId && this.state.collabDrawingId === this.state.publishedId) {
-        // Show participant count if available
+        // Show participant count header
         const count = this.state.collabParticipantCount;
         const nativeJoined = this.state.collabNativeJoined;
         if (count !== undefined && count > 0) {
@@ -292,6 +304,11 @@ export class ExcaliShareToolbar {
             `${count} participant${count !== 1 ? 's' : ''}${nativeJoined ? ' • Connected' : ''}`
           ));
           panel.appendChild(countLabel);
+        }
+
+        // ── Collaborator list with follow buttons ──
+        if (nativeJoined && this.state.collabCollaborators && this.state.collabCollaborators.length > 0) {
+          this.buildCollaboratorList(panel);
         }
 
         panel.appendChild(this.createActionButton(
@@ -501,6 +518,171 @@ export class ExcaliShareToolbar {
 
     panel.style.position = 'relative';
     panel.appendChild(overlay);
+  }
+
+  /**
+   * Build the collaborator list with follow/unfollow buttons.
+   * Each collaborator shows a colored dot, name, and an eye icon to toggle follow mode.
+   */
+  private buildCollaboratorList(panel: HTMLElement): void {
+    const collaborators = this.state.collabCollaborators || [];
+    const followingUserId = this.state.collabFollowingUserId || null;
+    const displayName = this.state.collabDisplayName || '';
+
+    const listContainer = document.createElement('div');
+    listContainer.style.padding = '4px 0';
+
+    for (const collab of collaborators) {
+      const isSelf = collab.name === displayName;
+      const isFollowing = followingUserId === collab.id;
+      const color = getCollaboratorColor(collab.colorIndex);
+
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.gap = '8px';
+      row.style.padding = '5px 12px';
+      row.style.cursor = isSelf ? 'default' : 'pointer';
+      row.style.borderRadius = '0';
+      row.style.transition = 'background-color 0.1s ease';
+      if (isFollowing) {
+        row.style.backgroundColor = 'rgba(76, 175, 80, 0.12)';
+      }
+
+      // Hover effect (non-self, non-following)
+      if (!isSelf) {
+        row.addEventListener('mouseenter', () => {
+          if (!isFollowing) {
+            row.style.backgroundColor = 'var(--background-modifier-hover)';
+          }
+        });
+        row.addEventListener('mouseleave', () => {
+          if (!isFollowing) {
+            row.style.backgroundColor = 'transparent';
+          }
+        });
+      }
+
+      // Color dot
+      const dot = document.createElement('span');
+      dot.style.display = 'inline-block';
+      dot.style.width = '8px';
+      dot.style.height = '8px';
+      dot.style.borderRadius = '50%';
+      dot.style.backgroundColor = color.stroke;
+      dot.style.flexShrink = '0';
+      row.appendChild(dot);
+
+      // Name
+      const nameEl = document.createElement('span');
+      nameEl.style.fontSize = '12px';
+      nameEl.style.color = 'var(--text-normal)';
+      nameEl.style.flex = '1';
+      nameEl.style.overflow = 'hidden';
+      nameEl.style.textOverflow = 'ellipsis';
+      nameEl.style.whiteSpace = 'nowrap';
+      nameEl.textContent = collab.name;
+      if (isSelf) {
+        const youSpan = document.createElement('span');
+        youSpan.style.color = 'var(--text-muted)';
+        youSpan.style.fontSize = '10px';
+        youSpan.style.marginLeft = '4px';
+        youSpan.textContent = '(you)';
+        nameEl.appendChild(youSpan);
+      }
+      row.appendChild(nameEl);
+
+      // Follow/eye button (not for self)
+      if (!isSelf) {
+        const eyeBtn = document.createElement('span');
+        eyeBtn.style.fontSize = '12px';
+        eyeBtn.style.flexShrink = '0';
+        eyeBtn.style.cursor = 'pointer';
+        eyeBtn.style.userSelect = 'none';
+        eyeBtn.style.padding = '2px 4px';
+        eyeBtn.style.borderRadius = '4px';
+        eyeBtn.style.transition = 'background-color 0.1s ease';
+
+        if (isFollowing) {
+          eyeBtn.textContent = '👁 Following';
+          eyeBtn.style.color = '#4CAF50';
+          eyeBtn.style.fontWeight = '600';
+          eyeBtn.title = 'Click to stop following';
+        } else {
+          eyeBtn.textContent = '👁';
+          eyeBtn.style.color = 'var(--text-faint)';
+          eyeBtn.title = `Follow ${collab.name}`;
+        }
+
+        eyeBtn.addEventListener('mouseenter', () => {
+          eyeBtn.style.backgroundColor = 'var(--background-modifier-hover)';
+        });
+        eyeBtn.addEventListener('mouseleave', () => {
+          eyeBtn.style.backgroundColor = 'transparent';
+        });
+
+        row.appendChild(eyeBtn);
+
+        // Click handler for the entire row
+        row.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (isFollowing) {
+            this.callbacks.onStopFollowing?.();
+          } else {
+            this.callbacks.onStartFollowing?.(collab.id);
+          }
+        });
+      }
+
+      listContainer.appendChild(row);
+    }
+
+    // Following banner (if following someone)
+    if (followingUserId) {
+      const followedName = collaborators.find(c => c.id === followingUserId)?.name || 'user';
+      const banner = document.createElement('div');
+      banner.style.padding = '4px 12px';
+      banner.style.margin = '4px 8px';
+      banner.style.borderRadius = '6px';
+      banner.style.backgroundColor = 'rgba(76, 175, 80, 0.12)';
+      banner.style.display = 'flex';
+      banner.style.alignItems = 'center';
+      banner.style.gap = '6px';
+      banner.style.fontSize = '11px';
+      banner.style.color = 'var(--text-muted)';
+
+      const bannerText = document.createElement('span');
+      bannerText.textContent = `👁 Following ${followedName}`;
+      banner.appendChild(bannerText);
+
+      const stopBtn = document.createElement('span');
+      stopBtn.textContent = '✕';
+      stopBtn.style.marginLeft = 'auto';
+      stopBtn.style.cursor = 'pointer';
+      stopBtn.style.padding = '2px 4px';
+      stopBtn.style.borderRadius = '4px';
+      stopBtn.style.color = 'var(--text-muted)';
+      stopBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.callbacks.onStopFollowing?.();
+      });
+      stopBtn.addEventListener('mouseenter', () => {
+        stopBtn.style.backgroundColor = 'var(--background-modifier-hover)';
+      });
+      stopBtn.addEventListener('mouseleave', () => {
+        stopBtn.style.backgroundColor = 'transparent';
+      });
+      banner.appendChild(stopBtn);
+
+      listContainer.appendChild(banner);
+    }
+
+    panel.appendChild(listContainer);
+
+    // Separator after collaborator list
+    const sep = document.createElement('div');
+    applyStyles(sep, styles.separator);
+    panel.appendChild(sep);
   }
 
   private flashSuccess(message: string): void {

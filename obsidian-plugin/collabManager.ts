@@ -32,6 +32,8 @@ export interface CollabManagerCallbacks {
   onConnectionChanged?: (connected: boolean) => void;
   /** Called when the session ends (from server) */
   onSessionEnded?: (saved: boolean) => void;
+  /** Called when follow mode changes (userId being followed, or null to stop) */
+  onFollowChanged?: (followingUserId: string | null) => void;
 }
 
 /** Detection strategy currently in use */
@@ -101,6 +103,9 @@ export class CollabManager {
   private followLerpRaf: ReturnType<typeof requestAnimationFrame> | null = null;
   private static readonly FOLLOW_LERP_FACTOR = 0.25;
 
+  // ── Bridge: track Excalidraw's built-in userToFollow to connect to our follow system ──
+  private lastDetectedUserToFollow: string | null = null;
+
   // ── Canvas element finder (for pointer tracking) ──
   private getCanvasContainerFn: (() => HTMLElement | null) | null = null;
 
@@ -154,14 +159,19 @@ export class CollabManager {
    * The host's viewport will smoothly track the followed user's scroll/zoom.
    */
   startFollowing(userId: string): void {
+    if (this.followingUserId === userId) return; // Already following this user
     this.followingUserId = userId;
+    this.followTarget = null;
+    this.followCurrent = null;
     console.log(`ExcaliShare Collab: Now following user ${userId}`);
+    this.callbacks.onFollowChanged?.(userId);
   }
 
   /**
    * Stop following a user's viewport.
    */
   stopFollowing(): void {
+    if (!this.followingUserId) return; // Not following anyone
     this.followingUserId = null;
     this.followTarget = null;
     this.followCurrent = null;
@@ -170,6 +180,7 @@ export class CollabManager {
       this.followLerpRaf = null;
     }
     console.log('ExcaliShare Collab: Stopped following');
+    this.callbacks.onFollowChanged?.(null);
   }
 
   /**
@@ -298,6 +309,7 @@ export class CollabManager {
     this.followingUserId = null;
     this.followTarget = null;
     this.followCurrent = null;
+    this.lastDetectedUserToFollow = null;
     if (this.followLerpRaf !== null) {
       cancelAnimationFrame(this.followLerpRaf);
       this.followLerpRaf = null;
@@ -660,8 +672,10 @@ export class CollabManager {
 
     // ── Subscribe to scene changes ──
     this.onChangeUnsubscribe = api.onChange!(
-      (elements: readonly ExcalidrawElement[], _appState: Record<string, unknown>, _files: Record<string, unknown>) => {
+      (elements: readonly ExcalidrawElement[], appState: Record<string, unknown>, _files: Record<string, unknown>) => {
         this.handleLocalSceneChange(elements);
+        // Bridge Excalidraw's built-in follow mode to our follow system
+        this.handleAppStateFollowChange(appState);
       }
     );
 
@@ -751,6 +765,8 @@ export class CollabManager {
 
     this.pollTimer = setInterval(() => {
       this.detectAndSendChanges();
+      // Also check for follow mode changes in polling mode
+      this.pollAppStateForFollow();
     }, CollabManager.FALLBACK_POLL_INTERVAL_MS);
   }
 
@@ -797,6 +813,64 @@ export class CollabManager {
 
     // Send changes via WebSocket
     this.client.sendSceneUpdate(currentElements, this.isUserDrawing());
+  }
+
+  // ──────────────────────────────────────────────
+  // Follow Mode Bridge (Excalidraw built-in → our system)
+  // ──────────────────────────────────────────────
+
+  /**
+   * Bridge Excalidraw's built-in follow mode to our WebSocket-based follow system.
+   *
+   * When the user clicks a collaborator avatar in Excalidraw's built-in UI,
+   * Excalidraw sets `appState.userToFollow = { socketId, username }`.
+   * The `socketId` corresponds to the key we used in the collaborators Map
+   * (which is our userId from the WebSocket server).
+   *
+   * This method detects those changes and calls our startFollowing()/stopFollowing().
+   */
+  private handleAppStateFollowChange(appState: Record<string, unknown>): void {
+    const userToFollow = appState.userToFollow as
+      | { socketId?: string; username?: string }
+      | null
+      | undefined;
+    const followSocketId = userToFollow?.socketId ?? null;
+
+    if (followSocketId === this.lastDetectedUserToFollow) return; // No change
+
+    this.lastDetectedUserToFollow = followSocketId;
+
+    if (followSocketId) {
+      // Excalidraw's UI activated follow — bridge to our system
+      if (this.followingUserId !== followSocketId) {
+        console.log(`ExcaliShare Collab: Excalidraw follow mode activated for ${userToFollow?.username ?? followSocketId}`);
+        this.startFollowing(followSocketId);
+        this.callbacks.onFollowChanged?.(followSocketId);
+      }
+    } else {
+      // Excalidraw's UI deactivated follow
+      if (this.followingUserId) {
+        console.log('ExcaliShare Collab: Excalidraw follow mode deactivated');
+        this.stopFollowing();
+        this.callbacks.onFollowChanged?.(null);
+      }
+    }
+  }
+
+  /**
+   * Polling fallback for detecting Excalidraw's userToFollow changes.
+   * Used when onChange API is not available (older Excalidraw versions).
+   */
+  private pollAppStateForFollow(): void {
+    const api = this.getAPI();
+    if (!api?.getAppState) return;
+
+    try {
+      const appState = api.getAppState();
+      this.handleAppStateFollowChange(appState);
+    } catch {
+      // Silently ignore — API might be stale
+    }
   }
 
   /**

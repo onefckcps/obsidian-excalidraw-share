@@ -741,6 +741,18 @@ export default class ExcaliSharePlugin extends Plugin {
         // @ts-ignore
         (this.app as any).setting?.openTabById?.('excalishare');
       },
+      onStartFollowing: (userId: string) => {
+        if (this.collabManager?.isJoined) {
+          this.collabManager.startFollowing(userId);
+          this.refreshActiveToolbar();
+        }
+      },
+      onStopFollowing: () => {
+        if (this.collabManager?.isJoined) {
+          this.collabManager.stopFollowing();
+          this.refreshActiveToolbar();
+        }
+      },
     };
 
     return new ExcaliShareToolbar(
@@ -770,6 +782,9 @@ export default class ExcaliSharePlugin extends Plugin {
       hasApiKey: !!this.settings.apiKey,
       collabParticipantCount: this.collabManager?.participantCount,
       collabNativeJoined: this.collabManager?.isJoined,
+      collabCollaborators: this.collabManager?.currentCollaborators,
+      collabFollowingUserId: this.collabManager?.currentFollowingUserId,
+      collabDisplayName: this.settings.collabDisplayName || 'Host',
     });
 
     toolbar.setPosition(this.settings.toolbarPosition);
@@ -1385,6 +1400,10 @@ export default class ExcaliSharePlugin extends Plugin {
                 this.pullFromServer(file, drawingId);
               }
             }
+          },
+          onFollowChanged: (_followingUserId) => {
+            // Refresh toolbar to update follow state in the collaborator list
+            this.refreshActiveToolbar();
           },
         },
       });
