@@ -784,6 +784,25 @@ Fixes applied:
 - [x] Viewport broadcast fallback (500ms interval) ensures follow mode works even without DOM pointer tracking
 - [x] Improved `getCanvasContainer` in `main.ts` to search `.excalidraw-wrapper`, `[class*="excalidraw"]`, and all workspace leaves of type `'excalidraw'`
 
+**Persistent Collab & Follow Mode Fixes (April 2026)**
+Multiple fixes for persistent collaboration and follow mode:
+
+1. **"Collaborative" badge hidden behind floating buttons** — Badge was at `zIndex: 5` overlapping with floating buttons at `zIndex: 100`. Moved badge inside the floating buttons flex container; hidden on mobile.
+
+2. **Persistent collab requires tab close/reopen** — After enabling persistent collab, `syncPersistentCollabOnOpen()` was never called (only triggered on leaf change). Added call after `enablePersistentCollab()` succeeds.
+
+3. **Follow function missing for persistent collab** — `activeCollabSessionId` and `activeCollabDrawingId` were never set when auto-joining persistent sessions via `syncPersistentCollabOnOpen()`. Toolbar condition checked these to render collaborator list with follow buttons. Added assignments before `joinCollabFromObsidian()`.
+
+4. **Zoom/scroll not detected in follow mode** — Excalidraw's `onPointerUpdate` only fires on mouse movement, not scroll/zoom. Added periodic viewport broadcast (500ms) in both frontend (`useCollab.ts`) and plugin (`collabManager.ts`) that detects viewport changes and sends pointer_update with last known cursor position. Skips during active dragging to avoid stale cursor positions causing jitter.
+
+Fixes applied:
+- [x] Moved "Collaborative" badge inside floating buttons container in `Viewer.tsx`
+- [x] Call `syncPersistentCollabOnOpen()` after `enablePersistentCollab()` in `main.ts`
+- [x] Set `activeCollabSessionId`/`activeCollabDrawingId` in `syncPersistentCollabOnOpen()` before joining
+- [x] Added periodic viewport broadcast in `useCollab.ts` with change detection and drag-skip
+- [x] Fixed plugin viewport broadcast in `collabManager.ts` to always run (not skip when DOM tracking active)
+- [x] Track last known cursor position in both frontend and plugin for viewport broadcast reuse
+
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)
 - Persistent collab sessions are **auto-recreated from disk** on first visitor after server restart

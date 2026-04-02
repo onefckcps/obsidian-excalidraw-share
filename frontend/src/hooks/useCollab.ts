@@ -130,6 +130,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const followLerpRafRef = useRef<number | null>(null);
   /** Follow mode: lerp factor (0-1, higher = faster convergence) */
   const FOLLOW_LERP_FACTOR = 0.25;
+  /** Viewport broadcast: last sent viewport state for change detection */
+  const lastBroadcastViewportRef = useRef<{ scrollX: number; scrollY: number; zoom: number } | null>(null);
+  /** Viewport broadcast: interval handle */
+  const viewportBroadcastRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Last known cursor position (from onPointerUpdate), reused by viewport broadcast */
+  const lastPointerRef = useRef<{ x: number; y: number; button: 'down' | 'up'; tool: 'pointer' | 'laser' }>({ x: 0, y: 0, button: 'up', tool: 'pointer' });
 
   // Keep refs in sync
   useEffect(() => {
@@ -701,6 +707,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   // Send pointer update (with optional tool type and viewport data for follow mode)
   const sendPointerUpdate = useCallback(
     (x: number, y: number, button: 'down' | 'up', tool?: 'pointer' | 'laser', scrollX?: number, scrollY?: number, zoom?: number) => {
+      // Track last known pointer state for viewport broadcast reuse
+      lastPointerRef.current = { x, y, button, tool: tool || 'pointer' };
+      // Also update last broadcast viewport to avoid redundant sends from the periodic broadcast
+      if (scrollX !== undefined && scrollY !== undefined && zoom !== undefined) {
+        lastBroadcastViewportRef.current = { scrollX, scrollY, zoom };
+      }
       clientRef.current?.sendPointerUpdate(x, y, button, tool, scrollX, scrollY, zoom);
     },
     []
@@ -743,6 +755,63 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     return Array.from(collaboratorMapRef.current.keys());
   }, []);
 
+  // Periodic viewport broadcast — catches scroll/zoom changes that don't trigger onPointerUpdate.
+  // Excalidraw's onPointerUpdate only fires on mouse movement, so viewport changes from
+  // scroll wheel, pinch zoom, or keyboard shortcuts would otherwise not be broadcast.
+  useEffect(() => {
+    if (!isJoined || !isConnected) {
+      // Not in a session — clear any existing interval
+      if (viewportBroadcastRef.current) {
+        clearInterval(viewportBroadcastRef.current);
+        viewportBroadcastRef.current = null;
+      }
+      lastBroadcastViewportRef.current = null;
+      return;
+    }
+
+    viewportBroadcastRef.current = setInterval(() => {
+      const api = excalidrawAPIRef.current as {
+        getAppState?: () => { scrollX: number; scrollY: number; zoom: { value: number }; cursorButton?: string };
+      } | null;
+      if (!api?.getAppState || !clientRef.current?.isConnected) return;
+
+      try {
+        const appState = api.getAppState();
+
+        // Skip during active dragging — onPointerUpdate already sends viewport data
+        // during mouse movement, and sending here would use stale cursor positions
+        if (appState.cursorButton === 'down' || lastPointerRef.current.button === 'down') {
+          return;
+        }
+
+        const scrollX = appState.scrollX;
+        const scrollY = appState.scrollY;
+        const zoom = appState.zoom?.value ?? 1;
+
+        // Only send if viewport actually changed
+        const last = lastBroadcastViewportRef.current;
+        if (last && Math.abs(last.scrollX - scrollX) < 0.5 && Math.abs(last.scrollY - scrollY) < 0.5 && Math.abs(last.zoom - zoom) < 0.001) {
+          return;
+        }
+
+        lastBroadcastViewportRef.current = { scrollX, scrollY, zoom };
+
+        // Send a pointer update with viewport data, reusing the last known cursor position
+        const lp = lastPointerRef.current;
+        clientRef.current.sendPointerUpdate(lp.x, lp.y, lp.button, lp.tool, scrollX, scrollY, zoom);
+      } catch {
+        // Ignore — API might not be ready
+      }
+    }, 500);
+
+    return () => {
+      if (viewportBroadcastRef.current) {
+        clearInterval(viewportBroadcastRef.current);
+        viewportBroadcastRef.current = null;
+      }
+    };
+  }, [isJoined, isConnected]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -757,6 +826,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       if (followLerpRafRef.current !== null) {
         cancelAnimationFrame(followLerpRafRef.current);
         followLerpRafRef.current = null;
+      }
+      if (viewportBroadcastRef.current) {
+        clearInterval(viewportBroadcastRef.current);
+        viewportBroadcastRef.current = null;
       }
     };
   }, []);

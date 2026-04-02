@@ -67,9 +67,12 @@ export class CollabManager {
   private pointerTrackingRetryCount = 0;
   private static readonly POINTER_TRACKING_RETRY_DELAYS = [500, 1000, 2000, 4000];
 
-  // ── Viewport broadcast fallback (ensures follow mode works even without pointer tracking) ──
+  // ── Viewport broadcast (ensures follow mode works on scroll/zoom, not just pointer movement) ──
   private viewportBroadcastTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly VIEWPORT_BROADCAST_INTERVAL_MS = 500;
+  private lastBroadcastViewport: { scrollX: number; scrollY: number; zoom: number } | null = null;
+  /** Last known cursor position from DOM pointermove, reused by viewport broadcast */
+  private lastKnownPointer: { x: number; y: number; button: 'down' | 'up'; tool: 'pointer' | 'laser' } = { x: 0, y: 0, button: 'up', tool: 'pointer' };
 
   // ── Fallback polling (only used when onChange is unavailable) ──
   private static readonly FALLBACK_POLL_INTERVAL_MS = 2000;
@@ -986,6 +989,11 @@ export class CollabManager {
         const tool: 'pointer' | 'laser' =
           appState.activeTool?.type === 'laser' ? 'laser' : 'pointer';
 
+        // Track last known pointer for viewport broadcast reuse
+        this.lastKnownPointer = { x: sceneX, y: sceneY, button, tool };
+        // Also update last broadcast viewport to avoid redundant sends
+        this.lastBroadcastViewport = { scrollX: appState.scrollX, scrollY: appState.scrollY, zoom };
+
         this.client.sendPointerUpdate(
           sceneX, sceneY, button, tool,
           appState.scrollX, appState.scrollY, zoom,
@@ -1251,11 +1259,12 @@ export class CollabManager {
 
   /**
    * Start a periodic viewport broadcast that sends the host's current
-   * viewport state (scrollX, scrollY, zoom) even without pointer movement.
+   * viewport state (scrollX, scrollY, zoom) when it changes.
    *
-   * This is a fallback that ensures follow mode works for browser users
-   * even if DOM-based pointer tracking fails (e.g., canvas element not found).
-   * It sends a pointer_update with the last known or center-of-viewport position.
+   * This ensures follow mode works for browser users even when the host
+   * scrolls or zooms without moving the mouse (e.g., scroll wheel, pinch zoom,
+   * keyboard shortcuts). The pointermove handler only fires on mouse movement,
+   * so this periodic check catches viewport-only changes.
    */
   private startViewportBroadcast(): void {
     if (this.viewportBroadcastTimer) return;
@@ -1277,26 +1286,29 @@ export class CollabManager {
           cursorButton?: string;
         };
 
-        const zoom = appState.zoom?.value || 1;
-        const button: 'down' | 'up' = appState.cursorButton === 'down' ? 'down' : 'up';
-        const tool: 'pointer' | 'laser' =
-          appState.activeTool?.type === 'laser' ? 'laser' : 'pointer';
-
-        // If DOM pointer tracking is active, only send viewport data (no position override)
-        // The DOM listener handles position. This just ensures viewport is periodically sent.
-        if (this.pointerMoveCleanup) {
-          // DOM tracking is active — skip, the pointermove handler already sends viewport data
+        // Skip during active dragging — the pointermove handler already sends viewport data
+        // during mouse movement, and sending here would use stale cursor positions
+        if (appState.cursorButton === 'down' || this.lastKnownPointer.button === 'down') {
           return;
         }
 
-        // DOM tracking failed — send a viewport-only update with center-of-screen position
-        // This enables follow mode even without cursor position
-        const viewportCenterX = (appState.width || 800) / 2 / zoom - appState.scrollX;
-        const viewportCenterY = (appState.height || 600) / 2 / zoom - appState.scrollY;
+        const zoom = appState.zoom?.value || 1;
+        const scrollX = appState.scrollX;
+        const scrollY = appState.scrollY;
 
+        // Check if viewport has actually changed since last broadcast
+        const last = this.lastBroadcastViewport;
+        if (last && Math.abs(last.scrollX - scrollX) < 0.5 && Math.abs(last.scrollY - scrollY) < 0.5 && Math.abs(last.zoom - zoom) < 0.001) {
+          return; // No meaningful viewport change — skip
+        }
+
+        // Viewport changed — send update with last known pointer position
+        this.lastBroadcastViewport = { scrollX, scrollY, zoom };
+
+        const lp = this.lastKnownPointer;
         this.client.sendPointerUpdate(
-          viewportCenterX, viewportCenterY, button, tool,
-          appState.scrollX, appState.scrollY, zoom,
+          lp.x, lp.y, lp.button, lp.tool,
+          scrollX, scrollY, zoom,
         );
       } catch {
         // Silently ignore — API might be stale
