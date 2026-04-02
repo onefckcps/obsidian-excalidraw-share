@@ -131,7 +131,7 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | POST | `/api/upload` | Bearer | Upload/update drawing (supports `id`, `password` fields) |
-| GET | `/api/view/{id}?key=...` | Public | Get drawing by ID (requires `key` param if password-protected) |
+| GET | `/api/view/{id}?key=...` | Public | Get drawing by ID (requires `key` param if password-protected; Bearer token bypasses password) |
 | DELETE | `/api/drawings/{id}` | Bearer | Delete drawing |
 | GET | `/api/drawings` | Bearer | List all drawings (includes `size_bytes`, `password_protected`) |
 | GET | `/api/public/drawings` | Public | List drawings (id, created_at, source_path, password_protected) |
@@ -144,7 +144,7 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 | POST | `/api/persistent-collab/enable` | Bearer | Enable persistent collab for a drawing (supports `password` field) |
 | POST | `/api/persistent-collab/disable` | Bearer | Disable persistent collab for a drawing |
 | POST | `/api/persistent-collab/activate/{drawing_id}` | Public | Activate (create on demand) persistent collab session for a drawing |
-| WS | `/ws/collab/{session_id}?name=...&password=...` | Public | WebSocket for real-time collaboration (password verified before upgrade) |
+| WS | `/ws/collab/{session_id}?name=...&password=...&api_key=...` | Public | WebSocket for real-time collaboration (password verified before upgrade; `api_key` bypasses session password) |
 
 ### Upload Request Format
 ```json
@@ -214,12 +214,12 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 - `error.rs` — `AppError` enum with `IntoResponse` impl (includes PasswordRequired, InvalidPassword)
 - `password.rs` — Argon2id password hashing and verification utilities
 - `collab.rs` — `SessionManager`, `CollabSession`, message types, version-based element merging
-- `ws.rs` — WebSocket upgrade handler, bidirectional message routing, password verification before upgrade
+- `ws.rs` — WebSocket upgrade handler, bidirectional message routing, password verification before upgrade, API key bypass for admin
 
 **Route Organization**
 - **Public routes** (no auth): `/api/health`, `/api/public/drawings`, `/api/view/{id}`, `/api/collab/status/{drawing_id}`, `/api/collab/verify-password`, `/api/persistent-collab/activate/{drawing_id}`
 - **Protected routes** (Bearer token): `/api/upload`, `/api/drawings/{id}` (DELETE), `/api/drawings` (GET), `/api/collab/start`, `/api/collab/stop`, `/api/collab/sessions`, `/api/persistent-collab/enable`, `/api/persistent-collab/disable`
-- **WebSocket**: `/ws/collab/{session_id}` (no auth, but session must exist — security via unguessable UUID + optional password)
+- **WebSocket**: `/ws/collab/{session_id}` (no auth, but session must exist — security via unguessable UUID + optional password; `api_key` query param bypasses session password)
 
 **Rate Limiting**
 - Public: 120 req/sec per IP (burst)
@@ -334,7 +334,7 @@ interface ExcaliShareSettings {
 2. **Version-based element merging** — Server merges elements by ID + version to prevent deletion flickering
 3. **Drawing interruption deferral** — Remote scene updates are queued while user is actively drawing (dragging/resizing/editing), flushed on pointer up or via 300ms safety interval
 4. **Follow mode** — Viewport syncing via pointer_update messages carrying scrollX/scrollY/zoom
-5. **Unguessable session IDs** — Full 128-bit UUIDs for session security (no auth on WebSocket)
+5. **Unguessable session IDs** — Full 128-bit UUIDs for session security (optional password + API key bypass on WebSocket)
 6. **Constant-time auth** — `subtle::ConstantTimeEq` for API key comparison
 7. **Expired session auto-save** — Background task saves expired sessions to storage before cleanup
 8. **Event-driven native collab** — Obsidian plugin uses `excalidrawAPI.onChange()` imperative subscription for instant, zero-waste change detection. Falls back to 2s polling for older Excalidraw versions. Host cursor is broadcast via DOM `pointermove` listener with screen→scene coordinate conversion. Laser pointer detected via `appState.activeTool.type`. Follow mode uses lerp-based viewport interpolation (same algorithm as frontend). Adaptive debouncing: 16ms idle / 50ms batch / 80ms during drawing. Version-based echo suppression via `remoteAppliedVersions` map + double-`requestAnimationFrame` cooldown.
