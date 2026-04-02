@@ -59,8 +59,6 @@ export class CollabClient {
     const host = urlObj.host;
     const url = `${wsProtocol}//${host}/ws/collab/${this.sessionId}?name=${encodeURIComponent(this.displayName)}`;
 
-    console.log('ExcaliShare Collab: Connecting to', url);
-
     try {
       this.ws = new WebSocket(url);
     } catch (e) {
@@ -70,7 +68,6 @@ export class CollabClient {
     }
 
     this.ws.onopen = () => {
-      console.log('ExcaliShare Collab: WebSocket connected');
       this.reconnectAttempt = 0;
       this.resetDeltaTracking();
       this._emit('_connected', {} as ServerMessage);
@@ -85,8 +82,7 @@ export class CollabClient {
       }
     };
 
-    this.ws.onclose = (event) => {
-      console.log('ExcaliShare Collab: WebSocket closed', event.code, event.reason);
+    this.ws.onclose = () => {
       this.ws = null;
       if (!this.intentionalClose) {
         this._scheduleReconnect();
@@ -101,13 +97,11 @@ export class CollabClient {
 
   private _scheduleReconnect(): void {
     if (this.reconnectAttempt >= RECONNECT_DELAYS.length) {
-      console.log('ExcaliShare Collab: Max reconnect attempts reached');
       this._emit('_reconnect_failed', {} as ServerMessage);
       return;
     }
 
     const delay = RECONNECT_DELAYS[this.reconnectAttempt];
-    console.log(`ExcaliShare Collab: Reconnecting in ${delay}ms (attempt ${this.reconnectAttempt + 1})`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectAttempt++;
       this._connect();

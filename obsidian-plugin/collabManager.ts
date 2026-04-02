@@ -163,7 +163,6 @@ export class CollabManager {
     this.followingUserId = userId;
     this.followTarget = null;
     this.followCurrent = null;
-    console.log(`ExcaliShare Collab: Now following user ${userId}`);
     this.callbacks.onFollowChanged?.(userId);
   }
 
@@ -179,7 +178,6 @@ export class CollabManager {
       cancelAnimationFrame(this.followLerpRaf);
       this.followLerpRaf = null;
     }
-    console.log('ExcaliShare Collab: Stopped following');
     this.callbacks.onFollowChanged?.(null);
   }
 
@@ -188,7 +186,6 @@ export class CollabManager {
    */
   async startAndJoin(drawingId: string, sessionId: string): Promise<void> {
     if (this.client) {
-      console.log('ExcaliShare Collab: Already connected, disconnecting first');
       this.leave();
     }
 
@@ -206,13 +203,11 @@ export class CollabManager {
       this._isConnected = true;
       this._isJoined = true;
       this.callbacks.onConnectionChanged?.(true);
-      console.log('ExcaliShare Collab: Connected to session', sessionId);
     });
 
     client.on('_disconnected', () => {
       this._isConnected = false;
       this.callbacks.onConnectionChanged?.(false);
-      console.log('ExcaliShare Collab: Disconnected from session');
     });
 
     client.on('_reconnect_failed', () => {
@@ -387,8 +382,6 @@ export class CollabManager {
   // ──────────────────────────────────────────────
 
   private handleSnapshot(msg: Extract<ServerMessage, { type: 'snapshot' }>): void {
-    console.log('ExcaliShare Collab: Received snapshot with', (msg.elements as unknown[]).length, 'elements');
-
     const api = this.getAPI();
     if (!api) {
       console.error('ExcaliShare Collab: No Excalidraw API available for snapshot');
@@ -524,8 +517,6 @@ export class CollabManager {
     const api = this.getAPI();
     if (!api) return;
 
-    console.log('ExcaliShare Collab: Received full sync');
-
     this.isApplyingRemoteUpdate = true;
     try {
       api.updateScene({
@@ -593,7 +584,6 @@ export class CollabManager {
   }
 
   private handleUserJoined(msg: Extract<ServerMessage, { type: 'user_joined' }>): void {
-    console.log('ExcaliShare Collab: User joined:', msg.name);
     this.collaborators = msg.collaborators;
     this.buildCollaboratorMap(msg.collaborators);
     this.syncCollaboratorsToExcalidraw();
@@ -602,7 +592,6 @@ export class CollabManager {
   }
 
   private handleUserLeft(msg: Extract<ServerMessage, { type: 'user_left' }>): void {
-    console.log('ExcaliShare Collab: User left:', msg.name);
     this.collaborators = msg.collaborators;
     this.buildCollaboratorMap(msg.collaborators);
     this.syncCollaboratorsToExcalidraw();
@@ -617,7 +606,6 @@ export class CollabManager {
   }
 
   private handleSessionEnded(msg: Extract<ServerMessage, { type: 'session_ended' }>): void {
-    console.log('ExcaliShare Collab: Session ended, saved:', msg.saved);
     new Notice(msg.saved
       ? 'ExcaliShare: Collab session ended and saved.'
       : 'ExcaliShare: Collab session ended. Changes discarded.');
@@ -668,7 +656,6 @@ export class CollabManager {
    */
   private startEventDrivenDetection(api: ExcalidrawAPI): void {
     this.detectionStrategy = 'event-driven';
-    console.log('ExcaliShare Collab: Using event-driven change detection (onChange API)');
 
     // ── Subscribe to scene changes ──
     this.onChangeUnsubscribe = api.onChange!(
@@ -761,7 +748,6 @@ export class CollabManager {
     if (this.pollTimer) return;
 
     this.detectionStrategy = 'polling';
-    console.log(`ExcaliShare Collab: onChange API not available, using fallback polling (${CollabManager.FALLBACK_POLL_INTERVAL_MS}ms)`);
 
     this.pollTimer = setInterval(() => {
       this.detectAndSendChanges();
@@ -843,14 +829,12 @@ export class CollabManager {
     if (followSocketId) {
       // Excalidraw's UI activated follow — bridge to our system
       if (this.followingUserId !== followSocketId) {
-        console.log(`ExcaliShare Collab: Excalidraw follow mode activated for ${userToFollow?.username ?? followSocketId}`);
         this.startFollowing(followSocketId);
         this.callbacks.onFollowChanged?.(followSocketId);
       }
     } else {
       // Excalidraw's UI deactivated follow
       if (this.followingUserId) {
-        console.log('ExcaliShare Collab: Excalidraw follow mode deactivated');
         this.stopFollowing();
         this.callbacks.onFollowChanged?.(null);
       }
@@ -958,7 +942,6 @@ export class CollabManager {
     // Schedule retry with exponential backoff
     if (this.pointerTrackingRetryCount < CollabManager.POINTER_TRACKING_RETRY_DELAYS.length) {
       const delay = CollabManager.POINTER_TRACKING_RETRY_DELAYS[this.pointerTrackingRetryCount];
-      console.log(`ExcaliShare Collab: Canvas not found, retrying pointer tracking in ${delay}ms (attempt ${this.pointerTrackingRetryCount + 1}/${CollabManager.POINTER_TRACKING_RETRY_DELAYS.length})`);
       this.pointerTrackingRetryTimer = setTimeout(() => {
         this.pointerTrackingRetryTimer = null;
         if (this.detectionStrategy !== 'none' && !this.pointerMoveCleanup) {
@@ -966,8 +949,6 @@ export class CollabManager {
           this.attemptPointerTracking();
         }
       }, delay);
-    } else {
-      console.warn('ExcaliShare Collab: Canvas element not found after all retries. Pointer tracking disabled — host cursor will not be visible to other participants. Viewport broadcast fallback is still active for follow mode.');
     }
   }
 
@@ -1019,7 +1000,6 @@ export class CollabManager {
       canvasEl.removeEventListener('pointermove', handlePointerMove);
     };
 
-    console.log('ExcaliShare Collab: Pointer tracking enabled on canvas element');
   }
 
   /**
@@ -1050,16 +1030,13 @@ export class CollabManager {
         for (const selector of CollabManager.CANVAS_SELECTORS) {
           const el = container.querySelector<HTMLElement>(selector);
           if (el) {
-            console.log(`ExcaliShare Collab: Found canvas via container + selector '${selector}' (tag=${el.tagName}, class=${el.className}, size=${el.offsetWidth}x${el.offsetHeight})`);
             return el;
           }
         }
         // If no child matched, use the container itself (it might be the canvas)
         if (container.tagName === 'CANVAS') {
-          console.log(`ExcaliShare Collab: Using container element directly as canvas (class=${container.className})`);
           return container;
         }
-        console.log(`ExcaliShare Collab: Container found but no canvas element inside (container tag=${container.tagName}, class=${container.className}, children=${container.children.length})`);
       }
     }
 
@@ -1067,7 +1044,6 @@ export class CollabManager {
     for (const selector of CollabManager.CANVAS_SELECTORS) {
       const el = document.querySelector<HTMLElement>(selector);
       if (el) {
-        console.log(`ExcaliShare Collab: Found canvas via document selector '${selector}' (tag=${el.tagName}, class=${el.className}, size=${el.offsetWidth}x${el.offsetHeight})`);
         return el;
       }
     }
@@ -1082,7 +1058,6 @@ export class CollabManager {
           for (const selector of CollabManager.CANVAS_SELECTORS) {
             const el = iframeDoc.querySelector<HTMLElement>(selector);
             if (el) {
-              console.log(`ExcaliShare Collab: Found canvas inside iframe via selector '${selector}'`);
               return el;
             }
           }
@@ -1094,7 +1069,6 @@ export class CollabManager {
       // Ignore iframe search errors
     }
 
-    console.log('ExcaliShare Collab: No canvas element found in DOM');
     return null;
   }
 
@@ -1329,6 +1303,5 @@ export class CollabManager {
       }
     }, CollabManager.VIEWPORT_BROADCAST_INTERVAL_MS);
 
-    console.log('ExcaliShare Collab: Viewport broadcast fallback started');
   }
 }

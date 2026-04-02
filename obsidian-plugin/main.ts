@@ -420,7 +420,6 @@ export default class ExcaliSharePlugin extends Plugin {
     setTimeout(() => {
       const leaf = this.app.workspace.activeLeaf;
       if (leaf) {
-        console.log('ExcaliShare: Initial leaf check, viewType:', leaf.view.getViewType());
         this.handleLeafChange(leaf);
       }
     }, 1000);
@@ -506,13 +505,10 @@ export default class ExcaliSharePlugin extends Plugin {
     const viewType = view.getViewType();
     const leafId = (leaf as any).id || 'default';
 
-    console.log('ExcaliShare: handleLeafChange viewType:', viewType, 'leafId:', leafId);
-
     // Check if this is an Excalidraw view
     if (viewType === 'excalidraw') {
       const file = this.app.workspace.getActiveFile();
       if (!file) {
-        console.log('ExcaliShare: No active file for Excalidraw view');
         return;
       }
 
@@ -521,7 +517,6 @@ export default class ExcaliSharePlugin extends Plugin {
       const existingToolbar = this.toolbarInstances.get(leafId);
       const existingFilePath = this._leafFilePaths.get(leafId);
       if (existingToolbar && existingToolbar.isInjected() && existingFilePath === file.path) {
-        console.log('ExcaliShare: Toolbar already injected for same file, updating state only');
         this.updateToolbarState(existingToolbar, file);
         return;
       }
@@ -563,7 +558,6 @@ export default class ExcaliSharePlugin extends Plugin {
 
     if (wrapper) {
       // Ideal container found — inject directly
-      console.log('ExcaliShare: ✓ .excalidraw-wrapper found immediately, injecting toolbar');
       this.doInject(toolbar, wrapper, file, leafId);
       return;
     }
@@ -572,7 +566,6 @@ export default class ExcaliSharePlugin extends Plugin {
     // Inject into a temporary container so the toolbar is visible while waiting,
     // then use MutationObserver to re-inject into the ideal container.
     const tempContainer = (containerEl.querySelector('.view-content') || containerEl) as HTMLElement;
-    console.log('ExcaliShare: .excalidraw-wrapper not found yet, injecting into temporary container:', tempContainer.className || tempContainer.tagName);
     toolbar.inject(tempContainer);
     this.updateToolbarState(toolbar, file);
 
@@ -580,7 +573,6 @@ export default class ExcaliSharePlugin extends Plugin {
     const observer = new MutationObserver((mutations, obs) => {
       const wrapper = containerEl.querySelector('.excalidraw-wrapper') as HTMLElement | null;
       if (wrapper) {
-        console.log('ExcaliShare: ✓ MutationObserver detected .excalidraw-wrapper, re-injecting toolbar');
         obs.disconnect();
         this._mountObservers.delete(leafId);
 
@@ -605,7 +597,6 @@ export default class ExcaliSharePlugin extends Plugin {
           obs.disconnect();
           this._mountObservers.delete(leafId);
         }
-        console.log('ExcaliShare: ✗ Timeout (15s) waiting for .excalidraw-wrapper');
 
         // Try one final injection with whatever container is available
         if (this.toolbarInstances.has(leafId)) {
@@ -644,7 +635,6 @@ export default class ExcaliSharePlugin extends Plugin {
     const observer = new MutationObserver(() => {
       // Check if toolbar was removed from DOM
       if (!toolbar.isInjected()) {
-        console.log('ExcaliShare: ⚠ Toolbar orphaned (removed from DOM), re-injecting for leaf', leafId);
 
         // Verify this leaf's toolbar is still managed
         if (!this.toolbarInstances.has(leafId)) {
@@ -824,7 +814,6 @@ export default class ExcaliSharePlugin extends Plugin {
     }
 
     this.autoSyncTimer = setTimeout(async () => {
-      console.log('ExcaliShare: Auto-syncing', file.name);
       try {
         // Update toolbar to show syncing state
         this.refreshActiveToolbar();
@@ -856,10 +845,8 @@ export default class ExcaliSharePlugin extends Plugin {
       if (plugin2) return plugin2 as ExcalidrawPlugin;
 
       const plugins = (this.app as unknown as { plugins: { plugins: Record<string, unknown> } }).plugins.plugins;
-      console.log('ExcaliShare: Available plugins:', Object.keys(plugins));
       return null;
     } catch (e) {
-      console.log('ExcaliShare: Error getting plugin', e);
       return null;
     }
   }
@@ -895,7 +882,6 @@ export default class ExcaliSharePlugin extends Plugin {
   // ── API Methods ──
 
   async publishDrawing(file: TFile, existingId?: string, silent = false) {
-    console.log('ExcaliShare: Publishing', file.name);
 
     if (!this.settings.apiKey) {
       if (!silent) new Notice('Please configure API key in plugin settings');
@@ -953,15 +939,13 @@ export default class ExcaliSharePlugin extends Plugin {
                 };
               }
             }
-            console.log('ExcaliShare: Fetched images from active Excalidraw view', Object.keys(files).length);
           }
         }
-      } catch (e) {
-        console.log('ExcaliShare: Could not fetch files from active view, falling back to manual parse', e);
+      } catch {
+        // Fall back to manual parse below
       }
 
       if (Object.keys(files).length === 0) {
-        console.log('ExcaliShare: Parsing embedded files manually from markdown');
         const fileContent = await this.app.vault.read(file);
 
         const embeddedFilesMatch = fileContent.match(/## Embedded Files\n([\s\S]*?)(?:# |$)/);
@@ -1004,7 +988,6 @@ export default class ExcaliSharePlugin extends Plugin {
                     dataURL: `data:image/png;base64,${pngBase64}`,
                     created: linkedFile.stat.ctime,
                   };
-                  console.log(`ExcaliShare: Converted PDF ${linkPath} page ${pageNum} to PNG (${fileId})`);
                 } catch (e) {
                   console.error(`ExcaliShare: Failed to convert PDF ${linkPath}`, e);
                 }
@@ -1013,7 +996,6 @@ export default class ExcaliSharePlugin extends Plugin {
 
               const supportedImageTypes = ['png', 'jpg', 'jpeg', 'svg', 'gif'];
               if (!supportedImageTypes.includes(ext)) {
-                console.log(`ExcaliShare: Skipping unsupported embedded file type ${ext} for ${linkPath}`);
                 continue;
               }
 
@@ -1032,7 +1014,6 @@ export default class ExcaliSharePlugin extends Plugin {
                   dataURL: `data:${mimeType};base64,${base64}`,
                   created: linkedFile.stat.ctime,
                 };
-                console.log(`ExcaliShare: Processed image ${linkPath} (${fileId})`);
               } catch (e) {
                 console.error(`ExcaliShare: Failed to read image ${linkPath}`, e);
               }
@@ -1221,7 +1202,6 @@ export default class ExcaliSharePlugin extends Plugin {
                 appState: JSON.parse(JSON.stringify(api.getAppState())),
                 files: JSON.parse(JSON.stringify(api.getFiles())),
               };
-              console.log('ExcaliShare: Captured pre-collab snapshot with', this.preCollabSnapshot.elements.length, 'elements');
             }
           }
         } catch (e) {
@@ -1235,7 +1215,6 @@ export default class ExcaliSharePlugin extends Plugin {
         window.open(viewUrl, '_blank');
       }
 
-      console.log('ExcaliShare: Collab session started', result);
     } catch (error) {
       console.error('ExcaliShare: Failed to start collab session', error);
       new Notice(`Failed to start collab: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -1336,7 +1315,6 @@ export default class ExcaliSharePlugin extends Plugin {
    */
   private restorePreCollabSnapshot(snapshot: typeof this.preCollabSnapshot): void {
     if (!snapshot) {
-      console.log('ExcaliShare: No pre-collab snapshot to restore');
       return;
     }
 
@@ -1353,7 +1331,6 @@ export default class ExcaliSharePlugin extends Plugin {
             elements: snapshot.elements,
             collaborators: new Map(),
           });
-          console.log('ExcaliShare: Restored pre-collab snapshot with', snapshot.elements.length, 'elements');
         }
       }
     } catch (e) {
@@ -1369,7 +1346,6 @@ export default class ExcaliSharePlugin extends Plugin {
   private async joinCollabFromObsidian(drawingId: string, sessionId: string): Promise<void> {
     const excalidrawPlugin = this.getExcalidrawPlugin();
     if (!excalidrawPlugin?.ea) {
-      console.log('ExcaliShare: Excalidraw plugin not available, skipping native collab join');
       return;
     }
 
@@ -1438,12 +1414,8 @@ export default class ExcaliSharePlugin extends Plugin {
             // Refresh toolbar to show updated participant count
             this.refreshActiveToolbar();
           },
-          onConnectionChanged: (connected) => {
-            if (connected) {
-              console.log('ExcaliShare: Native collab connected');
-            } else {
-              console.log('ExcaliShare: Native collab disconnected');
-            }
+          onConnectionChanged: () => {
+            // No-op — connection state tracked internally by CollabManager
           },
           onSessionEnded: (saved) => {
             // Session was ended by someone else (or server timeout)
@@ -1471,7 +1443,6 @@ export default class ExcaliSharePlugin extends Plugin {
       });
 
       await this.collabManager.startAndJoin(drawingId, sessionId);
-      console.log('ExcaliShare: Native collab joined successfully');
     } catch (error) {
       console.error('ExcaliShare: Failed to join collab from Obsidian', error);
       new Notice('Failed to join collab session from Obsidian. You can still use the browser.');
