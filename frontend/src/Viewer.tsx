@@ -6,6 +6,7 @@ import type { BinaryFiles } from '@excalidraw/excalidraw/types'
 import type { ExcalidrawData } from './types'
 import { drawingCache } from './utils/cache'
 import { useCollab } from './hooks/useCollab'
+import { useBreakpoint } from './hooks/useBreakpoint'
 import { useMediaQuery } from './hooks/useMediaQuery'
 import CollabStatus from './CollabStatus'
 import CollabPopover from './CollabPopover'
@@ -53,7 +54,10 @@ function Viewer() {
   // so it can be reused for subsequent re-fetches (e.g. after session ends).
   const currentPasswordRef = useRef<string | undefined>(undefined)
 
-  const isMobile = useMediaQuery('(max-width: 730px)')
+  const breakpoint = useBreakpoint()
+  const isPhone = breakpoint === 'phone'
+  // Excalidraw's internal mobile breakpoint — at ≤730px it shows the bottom toolbar
+  const isExcalidrawMobile = useMediaQuery('(max-width: 730px)')
 
   // Collaboration hook
   const collab = useCollab({ drawingId: id, excalidrawAPI })
@@ -519,196 +523,341 @@ function Viewer() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [showEditWarning])
 
-  // Inject buttons into Excalidraw toolbar on mobile
+  // Inject ExcaliShare buttons into Excalidraw's native toolbar (all screen sizes)
+  // Phone: inject into bottom toolbar (.App-toolbar-content)
+  // Tablet/Desktop: inject a new Island into the upper toolbar (.App-toolbar-container)
   useEffect(() => {
-    // Skip on desktop
-    if (!isMobile) return
-
     const currentMode = mode as string
-    const containerClass = 'excalishare-mobile-buttons'
+    const containerClass = 'excalishare-toolbar'
     let observer: MutationObserver | null = null
+    const collabIsJoined = collab.isJoined
+    const collabIsPersistent = collab.isPersistentCollab
+
+    // Common button styles for phone (bottom toolbar)
+    const getPhoneButtonStyle = (isActive: boolean, activeColor: string) => `
+      background: ${isActive ? activeColor : (theme === 'dark' ? '#333' : '#fff')};
+      border: 1px solid ${isActive ? activeColor : (theme === 'dark' ? '#555' : '#ccc')};
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-size: 16px;
+      color: ${theme === 'dark' ? '#fff' : '#000'};
+      opacity: 1;
+    `
+
+    const getPhoneSmallButtonStyle = () => `
+      background: ${theme === 'dark' ? '#333' : '#fff'};
+      border: 1px solid ${theme === 'dark' ? '#555' : '#ccc'};
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-size: 16px;
+      color: ${theme === 'dark' ? '#fff' : '#000'};
+      opacity: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 32px;
+    `
+
+    // Desktop/Tablet button style (matches Excalidraw ToolIcon look)
+    const getDesktopButtonStyle = (isActive: boolean, activeColor: string) => `
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      cursor: pointer;
+      border: none;
+      background: ${isActive ? activeColor : 'transparent'};
+      color: ${isActive ? '#fff' : 'inherit'};
+      transition: background 0.15s ease;
+      padding: 0;
+      line-height: 1;
+    `
 
     const injectButtons = () => {
       // Remove existing containers first
       document.querySelectorAll(`.${containerClass}`).forEach(el => el.remove())
 
-      // Find the toolbar
-      const toolbar = document.querySelector('.App-toolbar-content')
-      if (!toolbar) return
+      if (isExcalidrawMobile) {
+        // ═══════════════════════════════════════════
+        // EXCALIDRAW MOBILE (≤730px): inject into bottom toolbar
+        // ═══════════════════════════════════════════
+        const toolbar = document.querySelector('.App-toolbar-content')
+        if (!toolbar) return
+        if (toolbar.querySelector(`.${containerClass}`)) return
 
-      // Check if buttons already injected
-      if (toolbar.querySelector(`.${containerClass}`)) return
+        // PRESENT MODE - inject navigation and exit button
+        if (currentMode === 'present') {
+          const container = document.createElement('div')
+          container.className = containerClass
+          container.style.cssText = `
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+            margin-right: 8px;
+            padding: 4px 0;
+            align-items: center;
+          `
 
-      // Common button styles
-      const getButtonStyle = (isActive: boolean, activeColor: string) => `
-        background: ${isActive ? activeColor : (theme === 'dark' ? '#333' : '#fff')};
-        border: 1px solid ${isActive ? activeColor : (theme === 'dark' ? '#555' : '#ccc')};
-        border-radius: 4px;
-        padding: 4px 10px;
-        cursor: pointer;
-        font-size: 16px;
-        color: ${theme === 'dark' ? '#fff' : '#000'};
-        opacity: 1;
-      `
+          const prevBtn = document.createElement('button')
+          prevBtn.textContent = '◀'
+          prevBtn.title = 'Previous (←)'
+          prevBtn.style.cssText = getPhoneSmallButtonStyle()
+          prevBtn.onclick = () => {
+            if (drawingsList.length === 0) { loadDrawingsList(); return }
+            const idx = drawingsList.findIndex(d => d.id === id)
+            if (idx > 0) navigate(`/d/${drawingsList[idx - 1].id}`)
+          }
 
-      const getSmallButtonStyle = () => `
-        background: ${theme === 'dark' ? '#333' : '#fff'};
-        border: 1px solid ${theme === 'dark' ? '#555' : '#ccc'};
-        border-radius: 4px;
-        padding: 4px 10px;
-        cursor: pointer;
-        font-size: 16px;
-        color: ${theme === 'dark' ? '#fff' : '#000'};
-        opacity: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 32px;
-      `
+          const counter = document.createElement('span')
+          const idx = drawingsList.findIndex(d => d.id === id)
+          counter.textContent = drawingsList.length > 0 ? `${idx + 1} / ${drawingsList.length}` : '...'
+          counter.style.cssText = `
+            color: ${theme === 'dark' ? '#e0e0e0' : '#333'};
+            font-size: 16px;
+            padding: 4px 8px;
+            font-family: system-ui, -apple-system, sans-serif;
+          `
 
-      // PRESENT MODE - inject navigation and exit button
-      if (currentMode === 'present') {
+          const nextBtn = document.createElement('button')
+          nextBtn.textContent = '▶'
+          nextBtn.title = 'Next (→)'
+          nextBtn.style.cssText = getPhoneSmallButtonStyle()
+          nextBtn.onclick = () => {
+            if (drawingsList.length === 0) { loadDrawingsList(); return }
+            const idx = drawingsList.findIndex(d => d.id === id)
+            if (idx < drawingsList.length - 1) navigate(`/d/${drawingsList[idx + 1].id}`)
+          }
+
+          const exitBtn = document.createElement('button')
+          exitBtn.textContent = '✕'
+          exitBtn.title = 'Exit present mode'
+          exitBtn.style.cssText = getPhoneSmallButtonStyle()
+          exitBtn.onclick = () => setMode('view')
+
+          container.append(prevBtn, counter, nextBtn, exitBtn)
+          toolbar.appendChild(container)
+          return
+        }
+
+        // NON-PRESENT MODE - inject normal buttons + collab button
         const container = document.createElement('div')
         container.className = containerClass
         container.style.cssText = `
           display: flex;
           gap: 8px;
-          margin-left: auto;
-          margin-right: 8px;
+          margin-left: 12px;
           padding: 4px 0;
           align-items: center;
         `
 
-        // Previous button
-        const prevBtn = document.createElement('button')
-        prevBtn.textContent = '◀'
-        prevBtn.title = 'Previous (←)'
-        prevBtn.style.cssText = getSmallButtonStyle()
-        prevBtn.onclick = () => {
-          if (drawingsList.length === 0) {
-            loadDrawingsList()
-            return
-          }
-          const currentIndex = drawingsList.findIndex(d => d.id === id)
-          if (currentIndex > 0) {
-            const prevId = drawingsList[currentIndex - 1].id
-            navigate(`/d/${prevId}`)
-          }
-        }
-
-        // Counter
-        const counter = document.createElement('span')
-        const currentIndex = drawingsList.findIndex(d => d.id === id)
-        counter.textContent = drawingsList.length > 0 
-          ? `${currentIndex + 1} / ${drawingsList.length}` 
-          : '...'
-        counter.style.cssText = `
-          color: ${theme === 'dark' ? '#e0e0e0' : '#333'};
-          font-size: 16px;
-          padding: 4px 8px;
-          font-family: system-ui, -apple-system, sans-serif;
-        `
-
-        // Next button
-        const nextBtn = document.createElement('button')
-        nextBtn.textContent = '▶'
-        nextBtn.title = 'Next (→)'
-        nextBtn.style.cssText = getSmallButtonStyle()
-        nextBtn.onclick = () => {
-          if (drawingsList.length === 0) {
-            loadDrawingsList()
-            return
-          }
-          const currentIndex = drawingsList.findIndex(d => d.id === id)
-          if (currentIndex < drawingsList.length - 1) {
-            const nextId = drawingsList[currentIndex + 1].id
-            navigate(`/d/${nextId}`)
-          }
-        }
-
-        // Exit present button
-        const exitBtn = document.createElement('button')
-        exitBtn.textContent = '✕'
-        exitBtn.title = 'Exit present mode'
-        exitBtn.style.cssText = getSmallButtonStyle()
-        exitBtn.onclick = () => setMode('view')
-
-        container.append(prevBtn, counter, nextBtn, exitBtn)
-        toolbar.appendChild(container)
-        return
-      }
-
-      // NON-PRESENT MODE - inject normal buttons
-      const container = document.createElement('div')
-      container.className = containerClass
-      container.style.cssText = `
-        display: flex;
-        gap: 8px;
-        margin-left: 12px;
-        padding: 4px 0;
-        align-items: center;
-      `
-
-      // Present button
-      const presentBtn = document.createElement('button')
-      presentBtn.textContent = '▶️'
-      presentBtn.title = 'Present mode (p/q)'
-      const isPresent = currentMode === 'present'
-      presentBtn.style.cssText = getButtonStyle(isPresent, '#2196F3')
-      presentBtn.onclick = () => {
-        if (isPresent) {
-          setMode('view')
-        } else {
+        const presentBtn = document.createElement('button')
+        presentBtn.textContent = '▶️'
+        presentBtn.title = 'Present mode (p/q)'
+        presentBtn.style.cssText = getPhoneButtonStyle(false, '#2196F3')
+        presentBtn.onclick = () => {
           setMode('present')
-          // Only load drawings if not already loaded
           if (drawingsList.length === 0 && !loadingDrawings) {
             setLoadingDrawings(true)
             fetch('/api/public/drawings')
               .then(res => res.json())
-              .then(data => {
-                const drawings = data.drawings || []
-                setDrawingsList(drawings)
-                setLoadingDrawings(false)
-              })
-              .catch(() => {
-                setLoadingDrawings(false)
-              })
+              .then(data => { setDrawingsList(data.drawings || []); setLoadingDrawings(false) })
+              .catch(() => setLoadingDrawings(false))
           }
         }
-      }
 
-      // Edit button
-      const editBtn = document.createElement('button')
-      const isEdit = currentMode === 'edit'
-      editBtn.textContent = isEdit ? '✏️' : '🔒'
-      editBtn.title = isEdit ? 'Exit edit mode' : 'Edit mode (w)'
-      editBtn.style.cssText = getButtonStyle(isEdit, '#ff9800')
-      editBtn.onclick = () => {
-        if (isEdit) {
-          setMode('view')
-        } else {
-          setShowEditWarning(true)
+        const editBtn = document.createElement('button')
+        const isEdit = currentMode === 'edit'
+        editBtn.textContent = isEdit ? '✏️' : '🔒'
+        editBtn.title = isEdit ? 'Exit edit mode' : 'Edit mode (w)'
+        editBtn.style.cssText = getPhoneButtonStyle(isEdit, '#ff9800')
+        editBtn.onclick = () => { isEdit ? setMode('view') : setShowEditWarning(true) }
+
+        const browseBtn = document.createElement('button')
+        browseBtn.textContent = '📂'
+        browseBtn.title = 'Browse all drawings (e)'
+        browseBtn.style.cssText = getPhoneButtonStyle(false, '')
+        browseBtn.onclick = () => setShowOverlay(true)
+
+        container.append(presentBtn, editBtn, browseBtn)
+
+        // Collab button — only when joined to a session (replaces renderTopRightUI on phone)
+        if (collabIsJoined) {
+          const collabBtn = document.createElement('button')
+          collabBtn.textContent = '🤝'
+          collabBtn.title = 'Collaboration'
+          collabBtn.style.cssText = getPhoneButtonStyle(true, '#4CAF50')
+          collabBtn.style.position = 'relative'
+          // Green dot indicator
+          const dot = document.createElement('span')
+          dot.style.cssText = `
+            position: absolute; top: -2px; right: -2px;
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #4CAF50; border: 1px solid ${theme === 'dark' ? '#333' : '#fff'};
+          `
+          collabBtn.appendChild(dot)
+          collabBtn.onclick = () => setShowCollabPopover((prev: boolean) => !prev)
+          container.append(collabBtn)
         }
+
+        toolbar.appendChild(container)
+      } else {
+        // ═══════════════════════════════════════════
+        // UPPER TOOLBAR (>730px): inject new Island
+        // Covers: phone 731–1140px, tablet, desktop
+        // ═══════════════════════════════════════════
+        const toolbarContainer = document.querySelector('.App-toolbar-container')
+        if (!toolbarContainer) return
+        if (toolbarContainer.querySelector(`.${containerClass}`)) return
+
+        const island = document.createElement('div')
+        island.className = `Island ${containerClass}`
+        island.style.cssText = `
+          margin-left: 8px;
+          align-self: center;
+          height: fit-content;
+          padding: 4px;
+          display: flex;
+          gap: 4px;
+          align-items: center;
+        `
+
+        // PRESENT MODE on desktop/tablet
+        if (currentMode === 'present') {
+          const prevBtn = document.createElement('button')
+          prevBtn.textContent = '◀'
+          prevBtn.title = 'Previous (←)'
+          prevBtn.style.cssText = getDesktopButtonStyle(false, '')
+          prevBtn.onclick = () => navigateToPrevDrawing()
+
+          const counter = document.createElement('span')
+          const idx = drawingsList.findIndex(d => d.id === id)
+          counter.textContent = drawingsList.length > 0 ? `${idx + 1}/${drawingsList.length}` : '...'
+          counter.style.cssText = `
+            font-size: 12px; padding: 0 4px;
+            color: ${theme === 'dark' ? '#e0e0e0' : '#333'};
+            font-family: system-ui, -apple-system, sans-serif;
+          `
+
+          const nextBtn = document.createElement('button')
+          nextBtn.textContent = '▶'
+          nextBtn.title = 'Next (→)'
+          nextBtn.style.cssText = getDesktopButtonStyle(false, '')
+          nextBtn.onclick = () => navigateToNextDrawing()
+
+          const divider = document.createElement('div')
+          divider.className = 'App-toolbar__divider'
+
+          const exitBtn = document.createElement('button')
+          exitBtn.textContent = '✕'
+          exitBtn.title = 'Exit present mode'
+          exitBtn.style.cssText = getDesktopButtonStyle(false, '')
+          exitBtn.onclick = () => setMode('view')
+
+          island.append(prevBtn, counter, nextBtn, divider, exitBtn)
+          toolbarContainer.appendChild(island)
+          return
+        }
+
+        // NON-PRESENT MODE
+        const presentBtn = document.createElement('button')
+        presentBtn.textContent = '▶️'
+        presentBtn.title = 'Present mode (p/q)'
+        presentBtn.style.cssText = getDesktopButtonStyle(currentMode === 'present', '#2196F3')
+        presentBtn.classList.add('excalishare-btn')
+        presentBtn.onclick = () => {
+          setMode('present')
+          if (drawingsList.length === 0 && !loadingDrawings) loadDrawingsList()
+        }
+
+        const editBtn = document.createElement('button')
+        const isEdit = currentMode === 'edit'
+        editBtn.textContent = isEdit ? '✏️' : '🔒'
+        editBtn.title = isEdit ? 'Exit edit mode' : 'Edit mode (w)'
+        editBtn.style.cssText = getDesktopButtonStyle(isEdit, '#ff9800')
+        editBtn.classList.add('excalishare-btn')
+        editBtn.onclick = () => { isEdit ? setMode('view') : setShowEditWarning(true) }
+
+        const browseBtn = document.createElement('button')
+        browseBtn.textContent = '📂'
+        browseBtn.title = 'Browse all drawings (e)'
+        browseBtn.style.cssText = getDesktopButtonStyle(false, '')
+        browseBtn.classList.add('excalishare-btn')
+        browseBtn.onclick = () => setShowOverlay(true)
+
+        island.append(presentBtn, editBtn, browseBtn)
+
+        // Persistent collab badge
+        if (collabIsPersistent) {
+          const divider = document.createElement('div')
+          divider.className = 'App-toolbar__divider'
+          island.appendChild(divider)
+
+          if (breakpoint === 'desktop') {
+            // Desktop: full text badge
+            const badge = document.createElement('div')
+            badge.style.cssText = `
+              display: flex; align-items: center; gap: 4px;
+              padding: 2px 8px; border-radius: 10px;
+              background: rgba(34, 197, 94, 0.1);
+              border: 1px solid rgba(34, 197, 94, 0.2);
+              font-size: 11px; color: #16a34a;
+              font-family: system-ui, -apple-system, sans-serif;
+              white-space: nowrap; pointer-events: none;
+            `
+            badge.innerHTML = '<span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block"></span> Collaborative'
+            island.appendChild(badge)
+          } else {
+            // Tablet: compact green dot with tooltip
+            const dot = document.createElement('div')
+            dot.title = 'Collaborative drawing'
+            dot.style.cssText = `
+              width: 8px; height: 8px; border-radius: 50%;
+              background: #22c55e; flex-shrink: 0;
+            `
+            island.appendChild(dot)
+          }
+        }
+
+        // Collab button — for isPhone range (≤1140px) where renderTopRightUI is null
+        if (isPhone && collabIsJoined) {
+          const divider2 = document.createElement('div')
+          divider2.className = 'App-toolbar__divider'
+          island.appendChild(divider2)
+
+          const collabBtn = document.createElement('button')
+          collabBtn.textContent = '🤝'
+          collabBtn.title = 'Collaboration'
+          collabBtn.style.cssText = getDesktopButtonStyle(true, '#4CAF50')
+          collabBtn.classList.add('excalishare-btn')
+          collabBtn.style.position = 'relative'
+          const dot = document.createElement('span')
+          dot.style.cssText = `
+            position: absolute; top: -2px; right: -2px;
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #4CAF50; border: 1px solid ${theme === 'dark' ? '#1e1e1e' : '#fff'};
+          `
+          collabBtn.appendChild(dot)
+          collabBtn.onclick = () => setShowCollabPopover((prev: boolean) => !prev)
+          island.appendChild(collabBtn)
+        }
+
+        toolbarContainer.appendChild(island)
       }
-
-      // Browse button
-      const browseBtn = document.createElement('button')
-      browseBtn.textContent = '📂'
-      browseBtn.title = 'Browse all drawings (e)'
-      browseBtn.style.cssText = getButtonStyle(false, '')
-      browseBtn.onclick = () => setShowOverlay(true)
-
-      container.append(presentBtn, editBtn, browseBtn)
-      toolbar.appendChild(container)
     }
 
-    // Try immediate injection first - use rAF for faster execution after paint
+    // Try immediate injection - use rAF for faster execution after paint
     const tryInject = () => {
-      if (document.querySelector('.App-toolbar-content')) {
-        injectButtons()
-      }
+      const target = isExcalidrawMobile
+        ? document.querySelector('.App-toolbar-content')
+        : document.querySelector('.App-toolbar-container')
+      if (target) injectButtons()
     }
-    
+
     // Track all timers for proper cleanup
     const rAfId = requestAnimationFrame(tryInject)
     const timers = [
@@ -718,14 +867,15 @@ function Viewer() {
       setTimeout(injectButtons, 300)
     ]
 
-    // Set up MutationObserver to detect when toolbar is added
-    // Observe document.body since .excalidraw may not exist yet
+    // MutationObserver to detect when toolbar is added
     observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (node instanceof HTMLElement) {
-            if (node.classList.contains('App-toolbar-content') || 
-                node.querySelector?.('.App-toolbar-content')) {
+            if (node.classList.contains('App-toolbar-content') ||
+                node.classList.contains('App-toolbar-container') ||
+                node.querySelector?.('.App-toolbar-content') ||
+                node.querySelector?.('.App-toolbar-container')) {
               injectButtons()
             }
           }
@@ -733,14 +883,14 @@ function Viewer() {
       }
     })
     observer.observe(document.body, { childList: true, subtree: true })
-    
+
     return () => {
       cancelAnimationFrame(rAfId)
       timers.forEach(clearTimeout)
       if (observer) observer.disconnect()
-      document.querySelectorAll('.excalishare-mobile-buttons').forEach(el => el.remove())
+      document.querySelectorAll(`.${containerClass}`).forEach(el => el.remove())
     }
-  }, [isMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData])
+  }, [breakpoint, isPhone, isExcalidrawMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData, collab.isJoined, collab.isPersistentCollab, drawingsList, loadingDrawings, navigate, navigateToPrevDrawing, navigateToNextDrawing])
 
   // Inject ExcaliShare links into Excalidraw help dropdown
   useEffect(() => {
@@ -926,7 +1076,7 @@ function Viewer() {
               🏠 Home
             </Link>
           </div>
-          {!isMobile && (
+          {!isPhone && (
           <button 
             style={{...styles.link, background: 'none', border: 'none', cursor: 'pointer', display: 'block', margin: '16px auto 0'}} 
             onClick={() => setShowOverlay(true)}
@@ -974,12 +1124,15 @@ function Viewer() {
           },
         }}
         renderTopRightUI={() =>
-          collab.isJoined ? (
-            <LiveCollaborationTrigger
-              isCollaborating={true}
-              onSelect={() => setShowCollabPopover(prev => !prev)}
-            />
-          ) : null
+          // On phone, collab button is injected into the bottom toolbar instead
+          isPhone ? null : (
+            collab.isJoined ? (
+              <LiveCollaborationTrigger
+                isCollaborating={true}
+                onSelect={() => setShowCollabPopover(prev => !prev)}
+              />
+            ) : null
+          )
         }
       />
 
@@ -995,6 +1148,7 @@ function Viewer() {
         passwordError={collab.collabPasswordError}
         onJoin={collab.joinSession}
         isPersistentCollab={collab.isPersistentCollab}
+        isPhone={isPhone}
         onDismissSessionEnded={() => {
           collab.dismissSessionEnded()
           // Reload the drawing to get the latest saved state.
@@ -1018,7 +1172,7 @@ function Viewer() {
         }}
       />
 
-      {/* Collab Popover — shown when clicking LiveCollaborationTrigger */}
+      {/* Collab Popover — shown when clicking LiveCollaborationTrigger or phone collab button */}
       {collab.isJoined && showCollabPopover && (
         <CollabPopover
           theme={theme}
@@ -1033,167 +1187,11 @@ function Viewer() {
           onStartFollowing={collab.startFollowing}
           onStopFollowing={collab.stopFollowing}
           onClose={() => setShowCollabPopover(false)}
+          isPhone={isPhone}
         />
       )}
-      
-      {/* Floating Action Buttons - hidden on mobile, use Obsidian ribbon instead */}
-      {!isMobile && (
-      <div style={styles.floatingButtons}>
-        {/* Persistent collab badge — placed next to floating buttons */}
-        {collab.isPersistentCollab && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '4px 10px',
-            borderRadius: 12,
-            background: theme === 'dark' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(34, 197, 94, 0.1)',
-            border: `1px solid ${theme === 'dark' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(34, 197, 94, 0.2)'}`,
-            fontSize: 12,
-            color: theme === 'dark' ? '#4ade80' : '#16a34a',
-            pointerEvents: 'none' as const,
-            fontFamily: 'system-ui, -apple-system, sans-serif',
-            height: 36,
-            boxSizing: 'border-box' as const,
-          }}>
-            <span style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              background: '#22c55e',
-              display: 'inline-block',
-            }} />
-            Collaborative
-          </div>
-        )}
-        <button
-          style={{
-            ...styles.floatingButton,
-            backgroundColor: mode === 'present' ? '#2196F3' : (theme === 'dark' ? '#1e1e1e' : '#fff'),
-            borderColor: mode === 'present' ? '#1976D2' : (theme === 'dark' ? '#555' : '#ccc'),
-          }}
-          onClick={() => {
-            if (mode === 'present') {
-              setMode('view')
-            } else {
-              setMode('present')
-              // Only load if not already loaded
-              if (drawingsList.length === 0 && !loadingDrawings) {
-                loadDrawingsList()
-              }
-            }
-          }}
-          title="Present mode (p/q)"
-        >
-          <span style={{ filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none' }}>▶️</span>
-        </button>
 
-        <button 
-          style={{
-            ...styles.floatingButton,
-            backgroundColor: mode === 'edit' ? '#ff9800' : (theme === 'dark' ? '#1e1e1e' : '#fff'),
-            borderColor: mode === 'edit' ? '#f57c00' : (theme === 'dark' ? '#555' : '#ccc'),
-          }}
-          onClick={() => {
-            if (mode === 'edit') {
-              setMode('view')
-            } else if (mode === 'present') {
-              setShowEditWarning(true)
-            } else if (mode === 'view') {
-              setShowEditWarning(true)
-            }
-          }}
-          title={mode === 'edit' ? 'Exit edit mode' : 'Edit mode (w)'}
-        >
-          <span style={{ filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none' }}>
-            {mode === 'edit' ? '✏️' : '🔒'}
-          </span>
-        </button>
-        
-        <button 
-          style={{
-            ...styles.floatingButton,
-            backgroundColor: theme === 'dark' ? '#1e1e1e' : '#fff',
-            borderColor: theme === 'dark' ? '#555' : '#ccc',
-          }}
-          onClick={() => setShowOverlay(true)}
-          title="Browse all drawings (e)"
-        >
-          <span style={{ filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none' }}>📂</span>
-        </button>
-      </div>
-      )}
-
-      {/* Presentation Mode Navigation - Bottom Center - Desktop only */}
-      {mode === 'present' && !isMobile && (
-        <div style={{
-          position: 'absolute',
-          bottom: '24px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          zIndex: 100,
-          backgroundColor: theme === 'dark' ? 'rgba(30,30,30,0.95)' : 'rgba(255,255,255,0.95)',
-          padding: '6px 12px',
-          borderRadius: '4px',
-          border: `1px solid ${theme === 'dark' ? '#444' : '#ddd'}`,
-        }}>
-          <button 
-            style={{
-              width: '32px',
-              height: '32px',
-              borderRadius: '4px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '14px',
-              cursor: 'pointer',
-              border: '1px solid',
-              backgroundColor: theme === 'dark' ? '#1e1e1e' : '#fff',
-              borderColor: theme === 'dark' ? '#555' : '#ccc',
-              color: theme === 'dark' ? '#aaa' : '#666',
-            }}
-            onClick={navigateToPrevDrawing}
-            title="Previous (←)"
-          >
-            <span style={{ filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none' }}>◀</span>
-          </button>
-          <span style={{ 
-            color: theme === 'dark' ? '#e0e0e0' : '#333',
-            fontSize: '13px',
-            padding: '0 8px',
-            fontFamily: 'system-ui, -apple-system, sans-serif',
-          }}>
-            {drawingsList.length > 0 ? (
-              `${drawingsList.findIndex(d => d.id === id) + 1} / ${drawingsList.length}`
-            ) : (
-              '...'
-            )}
-          </span>
-          <button 
-            style={{
-              width: '32px',
-              height: '32px',
-              borderRadius: '4px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '14px',
-              cursor: 'pointer',
-              border: '1px solid',
-              backgroundColor: theme === 'dark' ? '#1e1e1e' : '#fff',
-              borderColor: theme === 'dark' ? '#555' : '#ccc',
-              color: theme === 'dark' ? '#aaa' : '#666',
-            }}
-            onClick={navigateToNextDrawing}
-            title="Next (→)"
-          >
-            <span style={{ filter: theme === 'dark' ? 'brightness(0.9) contrast(1.2)' : 'none' }}>▶</span>
-          </button>
-        </div>
-      )}
+      {/* Floating buttons and presentation nav are now injected into the toolbar */}
       
       {/* Edit Warning Modal */}
       {showEditWarning && (
@@ -1269,26 +1267,6 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100vw',
     height: '100vh',
     position: 'relative',
-  },
-  floatingButtons: {
-    position: 'absolute',
-    top: '1rem',
-    left: '60px',
-    display: 'flex',
-    gap: '6px',
-    zIndex: 100,
-  },
-floatingButton: {
-    width: '36px',
-    height: '36px',
-    borderRadius: '4px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '18px',
-    cursor: 'pointer',
-    border: '1px solid',
-    transition: 'all 0.15s ease',
   },
   modalOverlay: {
     position: 'fixed',

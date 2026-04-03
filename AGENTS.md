@@ -453,8 +453,15 @@ export default Component
 - `const styles: Record<string, React.CSSProperties> = { ... }`
 
 **Mobile Responsiveness**
-- Use `useMediaQuery('(max-width: 730px)')` hook for mobile detection (defined locally in components)
-- Mobile breakpoint is 730px (not 640px)
+- Use `useBreakpoint()` hook from `frontend/src/hooks/useBreakpoint.ts` for 3-tier responsive detection in `Viewer.tsx`
+- Use `useMediaQuery()` hook directly in other components (e.g. `DrawingsBrowser.tsx`)
+- **3-tier breakpoint system** (Viewer.tsx):
+  - `phone` ≤ 1140px — toolbar injection mode; `renderTopRightUI` returns null; collab button in toolbar
+  - `tablet` 1141–1400px — compact toolbar Island; green dot for "Collaborative"
+  - `desktop` > 1400px — full toolbar Island; "Collaborative" text badge
+- **Excalidraw's own mobile breakpoint** is 730px (hardcoded in library) — at ≤730px Excalidraw shows the bottom toolbar (`.App-toolbar-content`); at >730px it shows the top toolbar (`.App-toolbar-container`)
+- `isExcalidrawMobile` (730px check) determines which DOM element to inject buttons into
+- `isPhone` (1140px check) determines UI behavior (collab button placement, renderTopRightUI)
 
 **Caching**
 - Drawing data is cached client-side via an LRU cache (`frontend/src/utils/cache.ts`)
@@ -665,7 +672,7 @@ The project is feature-complete with the live collaboration system fully impleme
 - [x] Present mode (slideshow navigation with arrows)
 - [x] DrawingsBrowser with tree view, search, overlay mode
 - [x] LRU drawing cache (50 MB limit)
-- [x] Mobile toolbar injection (present/edit/browse buttons)
+- [x] Unified toolbar injection (present/edit/browse buttons) — all screen sizes via native Excalidraw toolbar
 - [x] ExcaliShare links in Excalidraw help dropdown
 - [x] About modal
 - [x] Keyboard shortcuts (e, w, p/q, r, arrows, Escape)
@@ -821,6 +828,23 @@ Fixed a bug where enabling persistent collab after unpublishing and republishing
 
 Fix applied:
 - [x] Added `collabManager` cleanup in `unpublishDrawing()` in `main.ts`: if the active `collabManager` is joined to the drawing being unpublished, `cleanupCollabState()` is called to destroy the WebSocket connection and clear all session tracking state.
+
+**Mobile & Tablet Responsive Redesign (April 2026)**
+Completely overhauled the responsive layout system in the frontend viewer to fix toolbar overlap and collab session toolbar shift issues.
+
+Root causes:
+- `LiveCollaborationTrigger` via `renderTopRightUI` caused toolbar shift on narrow screens
+- Floating buttons overlay (`position: absolute`) overlapped Excalidraw's native toolbar on tablets
+- Single binary `isMobile` breakpoint (730px) — no tablet tier
+
+Fixes applied:
+- [x] Created `useBreakpoint()` hook with 3-tier system: `phone` (≤1140px) / `tablet` (1141–1400px) / `desktop` (>1400px)
+- [x] Added `isExcalidrawMobile` (730px) check to determine DOM injection target (bottom vs top toolbar)
+- [x] `renderTopRightUI` returns `null` on phone (≤1140px) — eliminates toolbar shift
+- [x] Collab button (🤝) injected into toolbar alongside Present/Edit/Browse on phone
+- [x] Removed floating buttons overlay entirely — buttons now injected as native Excalidraw Island
+- [x] `CollabPopover` renders as bottom sheet on phone, dropdown on tablet/desktop
+- [x] `CollabStatus` join banner repositioned below toolbar on phone
 
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)

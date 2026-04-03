@@ -15,6 +15,7 @@ interface CollabStatusProps {
   onJoin: (name: string, password?: string) => void;
   onDismissSessionEnded: () => void;
   isPersistentCollab?: boolean;
+  isPhone?: boolean;
 }
 
 function CollabStatus({
@@ -29,6 +30,7 @@ function CollabStatus({
   onJoin,
   onDismissSessionEnded,
   isPersistentCollab,
+  isPhone = false,
 }: CollabStatusProps) {
   const [showJoinDialog, setShowJoinDialog] = useState(false);
   const [nameInput, setNameInput] = useState(displayName);
@@ -219,6 +221,8 @@ function CollabStatus({
     <div
       style={{
         ...styles.badge,
+        // On phone, position below the top toolbar area to avoid overlap
+        ...(isPhone ? { top: '52px', right: '8px', left: '8px', justifyContent: 'center' } : {}),
         backgroundColor: isDark ? 'rgba(30,30,30,0.95)' : 'rgba(255,255,255,0.95)',
         borderColor: isDark ? '#444' : '#ddd',
       }}

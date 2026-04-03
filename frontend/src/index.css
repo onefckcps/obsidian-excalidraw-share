@@ -2,3 +2,30 @@
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+/* ExcaliShare injected toolbar buttons — hover effect for desktop/tablet */
+.excalishare-toolbar .excalishare-btn:hover {
+  background: var(--color-surface-mid, rgba(0, 0, 0, 0.05)) !important;
+}
+
+.excalidraw.theme--dark .excalishare-toolbar .excalishare-btn:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Ensure the injected Island matches Excalidraw's native Island styling */
+.excalishare-toolbar.Island {
+  --padding: 1;
+}
+
+/* Phone bottom sheet animation */
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@media (max-width: 730px) {
+  /* Animate the collab popover bottom sheet */
+  .excalidraw ~ div [style*="position: fixed"][style*="bottom: 0"] {
+    animation: slideUp 0.2s ease-out;
+  }
+}

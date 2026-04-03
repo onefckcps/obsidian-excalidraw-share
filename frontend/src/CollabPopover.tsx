@@ -30,6 +30,7 @@ interface CollabPopoverProps {
   onStartFollowing: (userId: string) => void;
   onStopFollowing: () => void;
   onClose: () => void;
+  isPhone?: boolean;
 }
 
 function CollabPopover({
@@ -42,6 +43,7 @@ function CollabPopover({
   onStartFollowing,
   onStopFollowing,
   onClose,
+  isPhone = false,
 }: CollabPopoverProps) {
   const isDark = theme === 'dark';
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -72,10 +74,27 @@ function CollabPopover({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  return (
-    <div
-      ref={popoverRef}
-      style={{
+  // Phone: bottom sheet with backdrop
+  // Tablet/Desktop: top-right dropdown
+  const popoverStyle: React.CSSProperties = isPhone
+    ? {
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        zIndex: 1001,
+        backgroundColor: isDark ? '#232323' : '#fff',
+        borderTop: `1px solid ${isDark ? '#444' : '#ddd'}`,
+        borderRadius: '16px 16px 0 0',
+        boxShadow: isDark
+          ? '0 -8px 24px rgba(0,0,0,0.5)'
+          : '0 -8px 24px rgba(0,0,0,0.15)',
+        padding: '8px 16px 24px',
+        maxHeight: '60vh',
+        overflowY: 'auto',
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+      }
+    : {
         position: 'absolute',
         top: '48px',
         right: '8px',
@@ -90,8 +109,39 @@ function CollabPopover({
         minWidth: '220px',
         maxWidth: '300px',
         fontFamily: 'system-ui, -apple-system, sans-serif',
-      }}
+      };
+
+  return (
+    <>
+      {/* Backdrop overlay on phone */}
+      {isPhone && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.4)',
+            zIndex: 1000,
+          }}
+          onClick={onClose}
+        />
+      )}
+    <div
+      ref={popoverRef}
+      style={popoverStyle}
     >
+      {/* Drag handle on phone */}
+      {isPhone && (
+        <div style={{
+          width: 40,
+          height: 4,
+          borderRadius: 2,
+          background: isDark ? '#555' : '#ccc',
+          margin: '4px auto 12px',
+        }} />
+      )}
       {/* Header */}
       <div style={{
         display: 'flex',
@@ -271,6 +321,7 @@ function CollabPopover({
         Leave Session
       </button>
     </div>
+    </>
   );
 }
 
