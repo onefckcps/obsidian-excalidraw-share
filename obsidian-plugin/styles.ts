@@ -7,10 +7,13 @@ export const TOOLBAR_CLASS = 'excalishare-toolbar';
 export const TOOLBAR_COLLAPSED_CLASS = 'excalishare-toolbar-collapsed';
 export const TOOLBAR_EXPANDED_CLASS = 'excalishare-toolbar-expanded';
 
-export type ToolbarPosition = 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left';
+export type ToolbarPosition = 'auto' | 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left';
 
 export function getPositionStyles(position: ToolbarPosition): Partial<CSSStyleDeclaration> {
   switch (position) {
+    case 'auto':
+      // No absolute positioning — handled by injection into native toolbar
+      return { top: '', right: '', bottom: '', left: '' };
     case 'top-right':
       return { top: '50px', right: '12px', bottom: '', left: '' };
     case 'top-left':
@@ -23,7 +26,7 @@ export function getPositionStyles(position: ToolbarPosition): Partial<CSSStyleDe
 }
 
 export const styles = {
-  /** Outer container — absolutely positioned within the Excalidraw view */
+  /** Outer container — absolutely positioned within the Excalidraw view (floating mode) */
   container: {
     position: 'absolute',
     zIndex: '100',
@@ -32,6 +35,84 @@ export const styles = {
     userSelect: 'none',
     transition: 'all 0.2s ease',
     pointerEvents: 'auto',
+  } as Partial<CSSStyleDeclaration>,
+
+  /** Container for auto mode — injected into native Excalidraw toolbar as Island */
+  autoContainer: {
+    position: 'relative',
+    zIndex: '1',
+    fontFamily: 'var(--font-interface, var(--default-font))',
+    fontSize: '13px',
+    userSelect: 'none',
+    pointerEvents: 'auto',
+  } as Partial<CSSStyleDeclaration>,
+
+  /** Island button for auto mode — matches Excalidraw's native toolbar button style */
+  islandButton: {
+    width: '32px',
+    height: '32px',
+    borderRadius: '8px',
+    border: 'none',
+    backgroundColor: 'transparent',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    transition: 'background-color 0.15s ease',
+    padding: '0',
+    color: 'var(--icon-color, var(--text-normal))',
+  } as Partial<CSSStyleDeclaration>,
+
+  /** Status dot on the island button (smaller than floating) */
+  islandStatusDot: {
+    position: 'absolute',
+    bottom: '1px',
+    right: '1px',
+    width: '8px',
+    height: '8px',
+    borderRadius: '50%',
+    border: '1.5px solid var(--island-bg-color, var(--background-primary))',
+    transition: 'background-color 0.3s ease',
+    pointerEvents: 'none',
+  } as Partial<CSSStyleDeclaration>,
+
+  /** Popover panel for auto mode — positioned below the trigger button */
+  popoverPanel: {
+    position: 'absolute',
+    top: '100%',
+    right: '0',
+    marginTop: '6px',
+    minWidth: '200px',
+    maxWidth: '240px',
+    maxHeight: '70vh',
+    overflowY: 'auto',
+    borderRadius: '12px',
+    border: '1px solid var(--background-modifier-border)',
+    backgroundColor: 'var(--background-primary)',
+    boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+    zIndex: '1000',
+    transition: 'opacity 0.2s ease, transform 0.2s ease',
+  } as Partial<CSSStyleDeclaration>,
+
+  /** Mobile popover — bottom sheet style */
+  mobilePopoverPanel: {
+    position: 'fixed',
+    bottom: '0',
+    left: '0',
+    right: '0',
+    top: '',
+    marginTop: '0',
+    minWidth: '100%',
+    maxWidth: '100%',
+    maxHeight: '60vh',
+    overflowY: 'auto',
+    borderRadius: '16px 16px 0 0',
+    border: '1px solid var(--background-modifier-border)',
+    backgroundColor: 'var(--background-primary)',
+    boxShadow: '0 -4px 24px rgba(0,0,0,0.25)',
+    zIndex: '1000',
+    transition: 'transform 0.25s ease',
   } as Partial<CSSStyleDeclaration>,
 
   /** Collapsed pill button */
@@ -220,6 +301,10 @@ export function injectGlobalStyles(): void {
       from { opacity: 0; transform: translateY(-4px) scale(0.96); }
       to { opacity: 1; transform: translateY(0) scale(1); }
     }
+    @keyframes excalishare-slide-up {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
     .excalishare-toolbar button:hover {
       background-color: var(--background-modifier-hover) !important;
     }
@@ -229,6 +314,31 @@ export function injectGlobalStyles(): void {
     .excalishare-toolbar-collapsed:hover {
       transform: scale(1.08);
       box-shadow: 0 3px 12px rgba(0,0,0,0.2);
+    }
+    /* Auto mode: Island button hover */
+    .excalishare-island-btn:hover {
+      background-color: var(--island-bg-color-hover, rgba(0,0,0,0.06)) !important;
+    }
+    .excalishare-island-btn:active {
+      background-color: var(--island-bg-color-hover, rgba(0,0,0,0.1)) !important;
+    }
+    /* Dark mode island hover */
+    .theme-dark .excalishare-island-btn:hover {
+      background-color: rgba(255,255,255,0.1) !important;
+    }
+    .theme-dark .excalishare-island-btn:active {
+      background-color: rgba(255,255,255,0.15) !important;
+    }
+    /* Mobile popover backdrop */
+    .excalishare-popover-backdrop {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.3);
+      z-index: 999;
+    }
+    /* Mobile popover slide-up animation */
+    .excalishare-mobile-popover {
+      animation: excalishare-slide-up 0.25s ease forwards;
     }
 
     /* ── Excalidraw built-in collaborator UI fixes for Obsidian ──

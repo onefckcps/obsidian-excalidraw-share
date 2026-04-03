@@ -40,7 +40,7 @@ export const DEFAULT_SETTINGS: ExcaliShareSettings = {
   collabJoinFromObsidian: true,
   collabDisplayName: 'Host',
   showFloatingToolbar: true,
-  toolbarPosition: 'top-left',
+  toolbarPosition: 'auto',
   autoSyncOnSave: false,
   autoSyncDelaySecs: 5,
   toolbarCollapsedByDefault: true,
@@ -109,11 +109,11 @@ export class ExcaliShareSettingTab extends PluginSettingTab {
       });
 
     // ── Toolbar Settings ──
-    containerEl.createEl('h3', { text: 'Floating Toolbar' });
+    containerEl.createEl('h3', { text: 'Toolbar' });
 
     new Setting(containerEl)
-      .setName('Show Floating Toolbar')
-      .setDesc('Display the ExcaliShare toolbar directly inside the Excalidraw canvas for quick access to all actions.')
+      .setName('Show Toolbar')
+      .setDesc('Display the ExcaliShare toolbar for quick access to all actions (publish, sync, collab, etc.).')
       .addToggle(toggle => {
         toggle.setValue(this.pluginRef.settings.showFloatingToolbar)
           .onChange(value => {
@@ -123,14 +123,15 @@ export class ExcaliShareSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('Toolbar Position')
-      .setDesc('Where to place the floating toolbar in the Excalidraw view.')
+      .setName('Toolbar Mode')
+      .setDesc('Auto: inject into Excalidraw\'s native toolbar (recommended). Floating: overlay at a fixed position.')
       .addDropdown(dropdown => {
         dropdown
-          .addOption('top-right', 'Top Right')
-          .addOption('top-left', 'Top Left')
-          .addOption('bottom-right', 'Bottom Right')
-          .addOption('bottom-left', 'Bottom Left')
+          .addOption('auto', 'Auto (Native Toolbar)')
+          .addOption('top-right', 'Floating — Top Right')
+          .addOption('top-left', 'Floating — Top Left')
+          .addOption('bottom-right', 'Floating — Bottom Right')
+          .addOption('bottom-left', 'Floating — Bottom Left')
           .setValue(this.pluginRef.settings.toolbarPosition)
           .onChange(value => {
             this.pluginRef.settings.toolbarPosition = value as ToolbarPosition;

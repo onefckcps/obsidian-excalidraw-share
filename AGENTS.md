@@ -66,7 +66,7 @@ ExcaliShare fills the gap between Obsidian's local-only Excalidraw drawings and 
 - **Collab Mode** — When joined to a live session, full editing with real-time sync
 
 ### Obsidian Plugin Features
-- **Floating Toolbar** — Injected directly into the Excalidraw canvas view, shows publish/sync/collab status
+- **Toolbar** — Two modes: **Auto** (injected into Excalidraw's native toolbar as Island element, popover on click) or **Floating** (absolute-positioned overlay at configurable corner). Auto is default, with floating as fallback.
 - **Auto-Sync** — Optionally auto-sync published drawings on save (debounced)
 - **Context Menu** — Right-click on `.excalidraw` files for all actions
 - **Command Palette** — All actions available as commands
@@ -307,8 +307,8 @@ interface ExcaliShareSettings {
   collabJoinFromObsidian: boolean;     // auto-join collab from Obsidian (default: true)
   collabDisplayName: string;           // display name for collab (default: 'Host')
   collabPollIntervalMs: number;        // change detection interval (default: 250)
-  showFloatingToolbar: boolean;        // toggle floating toolbar
-  toolbarPosition: ToolbarPosition;    // top-right, top-left, bottom-right, bottom-left
+  showFloatingToolbar: boolean;        // toggle toolbar visibility
+  toolbarPosition: ToolbarPosition;    // 'auto' (native toolbar injection, default), top-right, top-left, bottom-right, bottom-left
   autoSyncOnSave: boolean;             // auto-sync on file modify
   autoSyncDelaySecs: number;           // debounce delay (1-30s)
   toolbarCollapsedByDefault: boolean;  // start collapsed
@@ -768,10 +768,13 @@ The project is feature-complete with the live collaboration system fully impleme
 
 **Plugin UI**
 - [x] Modular file structure (settings.ts, toolbar.ts, styles.ts)
-- [x] Floating toolbar with status dot
-- [x] Expandable toolbar panel with all actions
+- [x] Auto mode: toolbar injected into Excalidraw's native toolbar as Island element (default)
+- [x] Floating mode: absolute-positioned overlay at configurable corner (fallback/alternative)
+- [x] Popover panel on click (auto mode) or expandable panel (floating mode)
+- [x] Mobile bottom-sheet popover with backdrop (auto mode on mobile)
+- [x] MutationObserver-based injection with fallback to floating if native toolbar not found
 - [x] Auto-sync on save (debounced)
-- [x] Toolbar position configuration (4 positions)
+- [x] Toolbar position configuration (auto + 4 floating positions)
 - [x] Toolbar retry injection for mobile
 - [x] CSS-in-JS with Obsidian theme variables
 - [x] Context menu integration

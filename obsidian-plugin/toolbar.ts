@@ -1,4 +1,4 @@
-import { Notice } from 'obsidian';
+import { Notice, Platform } from 'obsidian';
 import {
   styles,
   ICONS,
@@ -55,9 +55,27 @@ export interface ToolbarCallbacks {
   onDisablePersistentCollab: () => Promise<void>;
 }
 
+// ── Selectors for finding Excalidraw's native toolbar ──
+const TOOLBAR_SELECTORS = {
+  /** Desktop/tablet: upper toolbar container (>987px Excalidraw breakpoint) */
+  topBar: '.App-toolbar-container',
+  /** Mobile: bottom toolbar content (≤987px Excalidraw breakpoint) */
+  bottomBar: '.App-toolbar-content',
+  /** Alternative: the top bar wrapper */
+  appTopBar: '.App-top-bar',
+  /** Fallback: plugins container */
+  pluginsContainer: '.plugins-container',
+};
+
 /**
- * Floating toolbar that injects into the Excalidraw view container.
- * Provides quick access to all ExcaliShare actions with visual state feedback.
+ * ExcaliShare toolbar that can operate in two modes:
+ *
+ * 1. **Auto mode** (`position === 'auto'`): Injects a small icon into Excalidraw's
+ *    native toolbar (as an Island element). Clicking opens a popover panel.
+ *    Falls back to floating mode if the native toolbar is not found.
+ *
+ * 2. **Floating mode** (`position !== 'auto'`): Absolutely positioned overlay
+ *    at a configurable corner of the Excalidraw view. Original behavior.
  */
 export class ExcaliShareToolbar {
   private containerEl: HTMLElement | null = null;
@@ -75,9 +93,15 @@ export class ExcaliShareToolbar {
   private expandedPanelEl: HTMLElement | null = null;
   private collapsedBtnEl: HTMLElement | null = null;
 
+  // Auto mode specific
+  private injectionMode: 'auto-injected' | 'floating' = 'floating';
+  private nativeToolbarObserver: MutationObserver | null = null;
+  private popoverBackdropEl: HTMLElement | null = null;
+  private islandBtnEl: HTMLElement | null = null;
+
   constructor(
     callbacks: ToolbarCallbacks,
-    position: ToolbarPosition = 'top-right',
+    position: ToolbarPosition = 'auto',
     startCollapsed = true,
   ) {
     this.callbacks = callbacks;
@@ -94,12 +118,19 @@ export class ExcaliShareToolbar {
 
   /**
    * Inject the toolbar into the given container element (Excalidraw view).
+   * In auto mode, tries to find and inject into the native Excalidraw toolbar.
+   * Falls back to floating mode if not found.
    */
   inject(containerEl: HTMLElement): void {
     this.remove(); // Clean up any existing toolbar
     this.containerEl = containerEl;
     this.expanded = !this.startCollapsed;
-    this.render();
+
+    if (this.position === 'auto') {
+      this.tryAutoInject();
+    } else {
+      this.injectFloating();
+    }
   }
 
   /**
@@ -114,7 +145,14 @@ export class ExcaliShareToolbar {
     this.statusDotEl = null;
     this.expandedPanelEl = null;
     this.collapsedBtnEl = null;
+    this.islandBtnEl = null;
     this.removeClickOutsideListener();
+    this.removePopoverBackdrop();
+    if (this.nativeToolbarObserver) {
+      this.nativeToolbarObserver.disconnect();
+      this.nativeToolbarObserver = null;
+    }
+    this.injectionMode = 'floating';
   }
 
   /**
@@ -127,12 +165,14 @@ export class ExcaliShareToolbar {
 
   /**
    * Update the toolbar position.
+   * Only re-injects if the position actually changed.
    */
   setPosition(position: ToolbarPosition): void {
+    if (this.position === position) return; // No change
     this.position = position;
-    if (this.rootEl) {
-      const posStyles = getPositionStyles(this.position);
-      applyStyles(this.rootEl, posStyles);
+    // Re-inject with new position
+    if (this.containerEl) {
+      this.inject(this.containerEl);
     }
   }
 
@@ -143,10 +183,253 @@ export class ExcaliShareToolbar {
     return this.rootEl !== null && this.rootEl.parentElement !== null;
   }
 
-  // ── Private Methods ──
+  // ══════════════════════════════════════════════
+  // AUTO MODE: Inject into native Excalidraw toolbar
+  // ══════════════════════════════════════════════
 
-  private render(): void {
+  private tryAutoInject(): void {
     if (!this.containerEl) return;
+
+    // Try to find the native toolbar
+    const nativeToolbar = this.findNativeToolbar();
+    if (nativeToolbar) {
+      this.injectIntoNativeToolbar(nativeToolbar);
+      return;
+    }
+
+    // Native toolbar not yet in DOM — set up observer to wait for it
+    // Meanwhile, inject as floating as a temporary fallback
+    this.injectFloating();
+
+    this.nativeToolbarObserver = new MutationObserver(() => {
+      const toolbar = this.findNativeToolbar();
+      if (toolbar) {
+        this.nativeToolbarObserver?.disconnect();
+        this.nativeToolbarObserver = null;
+
+        // Remove floating toolbar and re-inject into native
+        if (this.rootEl && this.rootEl.parentElement) {
+          this.rootEl.parentElement.removeChild(this.rootEl);
+        }
+        this.rootEl = null;
+        this.statusDotEl = null;
+        this.expandedPanelEl = null;
+        this.collapsedBtnEl = null;
+        this.removeClickOutsideListener();
+
+        this.injectIntoNativeToolbar(toolbar);
+      }
+    });
+
+    this.nativeToolbarObserver.observe(this.containerEl, {
+      childList: true,
+      subtree: true,
+    });
+
+    // Timeout: if native toolbar never appears, keep floating
+    setTimeout(() => {
+      if (this.nativeToolbarObserver) {
+        this.nativeToolbarObserver.disconnect();
+        this.nativeToolbarObserver = null;
+      }
+    }, 15000);
+  }
+
+  /**
+   * Find the native Excalidraw toolbar within the container.
+   * Tries multiple selectors for compatibility with different versions.
+   */
+  private findNativeToolbar(): HTMLElement | null {
+    if (!this.containerEl) return null;
+
+    // Try the main toolbar container first (desktop/tablet)
+    for (const selector of [
+      TOOLBAR_SELECTORS.topBar,
+      TOOLBAR_SELECTORS.bottomBar,
+      TOOLBAR_SELECTORS.appTopBar,
+    ]) {
+      const el = this.containerEl.querySelector<HTMLElement>(selector);
+      if (el) return el;
+    }
+
+    return null;
+  }
+
+  /**
+   * Inject the ExcaliShare button into the native Excalidraw toolbar.
+   * Creates an Island-style element that matches Excalidraw's native look.
+   */
+  private injectIntoNativeToolbar(toolbar: HTMLElement): void {
+    this.injectionMode = 'auto-injected';
+
+    // Create the Island wrapper (matches Excalidraw's .Island class)
+    this.rootEl = document.createElement('div');
+    this.rootEl.className = `Island ${TOOLBAR_CLASS}`;
+    applyStyles(this.rootEl, styles.autoContainer);
+    this.rootEl.style.marginLeft = '4px';
+    this.rootEl.style.alignSelf = 'center';
+    this.rootEl.style.height = 'fit-content';
+    this.rootEl.style.padding = '2px';
+    this.rootEl.style.display = 'flex';
+    this.rootEl.style.alignItems = 'center';
+
+    // Create the island button
+    this.renderIslandButton();
+
+    toolbar.appendChild(this.rootEl);
+  }
+
+  /**
+   * Render the small icon button for auto mode (inside the Island).
+   */
+  private renderIslandButton(): void {
+    if (!this.rootEl) return;
+
+    // Remove existing button content (but keep rootEl)
+    const existingBtn = this.rootEl.querySelector('.excalishare-island-btn');
+    if (existingBtn) existingBtn.remove();
+
+    const btn = document.createElement('button');
+    btn.className = 'excalishare-island-btn';
+    applyStyles(btn, styles.islandButton);
+    btn.innerHTML = ICONS.cloud;
+    btn.setAttribute('aria-label', 'ExcaliShare');
+    btn.title = 'ExcaliShare — Click to open';
+
+    // Status dot
+    this.statusDotEl = document.createElement('div');
+    applyStyles(this.statusDotEl, styles.islandStatusDot);
+    this.updateStatusDot();
+    btn.appendChild(this.statusDotEl);
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (this.expanded) {
+        this.collapseAuto();
+      } else {
+        this.expandAuto();
+      }
+    });
+
+    this.islandBtnEl = btn;
+    this.rootEl.appendChild(btn);
+  }
+
+  /**
+   * Expand: show the popover panel below the island button.
+   */
+  private expandAuto(): void {
+    this.expanded = true;
+
+    if (!this.rootEl) return;
+
+    // Remove any existing popover
+    this.removePopover();
+
+    const isMobile = Platform.isMobile || Platform.isMobileApp;
+
+    if (isMobile) {
+      this.renderMobilePopover();
+    } else {
+      this.renderDesktopPopover();
+    }
+  }
+
+  /**
+   * Desktop popover: positioned below the island button.
+   */
+  private renderDesktopPopover(): void {
+    if (!this.rootEl) return;
+
+    const panel = document.createElement('div');
+    panel.className = 'excalishare-toolbar-expanded excalishare-popover';
+    applyStyles(panel, styles.popoverPanel);
+    panel.style.animation = 'excalishare-fade-in 0.2s ease';
+
+    this.expandedPanelEl = panel;
+    this.buildExpandedContent(panel);
+
+    // Position relative to rootEl (the Island)
+    this.rootEl.appendChild(panel);
+    this.addClickOutsideListener();
+  }
+
+  /**
+   * Mobile popover: bottom sheet style.
+   */
+  private renderMobilePopover(): void {
+    // Create backdrop
+    this.popoverBackdropEl = document.createElement('div');
+    this.popoverBackdropEl.className = 'excalishare-popover-backdrop';
+    this.popoverBackdropEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.collapseAuto();
+    });
+    document.body.appendChild(this.popoverBackdropEl);
+
+    // Create bottom sheet panel
+    const panel = document.createElement('div');
+    panel.className = 'excalishare-toolbar-expanded excalishare-popover excalishare-mobile-popover';
+    applyStyles(panel, styles.mobilePopoverPanel);
+
+    // Drag handle
+    const handle = document.createElement('div');
+    handle.style.cssText = `
+      width: 36px; height: 4px; border-radius: 2px;
+      background: var(--text-faint); margin: 8px auto 4px;
+    `;
+    panel.appendChild(handle);
+
+    this.expandedPanelEl = panel;
+    this.buildExpandedContent(panel);
+
+    document.body.appendChild(panel);
+  }
+
+  /**
+   * Collapse the auto-mode popover.
+   */
+  private collapseAuto(): void {
+    this.expanded = false;
+    this.removePopover();
+    this.removeClickOutsideListener();
+  }
+
+  /**
+   * Remove the popover panel (both desktop and mobile).
+   */
+  private removePopover(): void {
+    // Remove desktop popover (child of rootEl)
+    if (this.rootEl) {
+      const popover = this.rootEl.querySelector('.excalishare-popover');
+      if (popover) popover.remove();
+    }
+
+    // Remove mobile popover (child of document.body)
+    const mobilePopover = document.querySelector('.excalishare-mobile-popover');
+    if (mobilePopover) mobilePopover.remove();
+
+    this.removePopoverBackdrop();
+    this.expandedPanelEl = null;
+  }
+
+  private removePopoverBackdrop(): void {
+    if (this.popoverBackdropEl) {
+      this.popoverBackdropEl.remove();
+      this.popoverBackdropEl = null;
+    }
+    // Also clean up any orphaned backdrops
+    document.querySelectorAll('.excalishare-popover-backdrop').forEach(el => el.remove());
+  }
+
+  // ══════════════════════════════════════════════
+  // FLOATING MODE: Original absolute-positioned overlay
+  // ══════════════════════════════════════════════
+
+  private injectFloating(): void {
+    if (!this.containerEl) return;
+    this.injectionMode = 'floating';
 
     // Ensure the container has relative positioning for absolute children
     const containerPosition = getComputedStyle(this.containerEl).position;
@@ -158,7 +441,8 @@ export class ExcaliShareToolbar {
     this.rootEl = document.createElement('div');
     this.rootEl.className = TOOLBAR_CLASS;
     applyStyles(this.rootEl, styles.container);
-    applyStyles(this.rootEl, getPositionStyles(this.position));
+    const posStyles = getPositionStyles(this.position === 'auto' ? 'top-right' : this.position);
+    applyStyles(this.rootEl, posStyles);
 
     if (this.expanded) {
       this.renderExpanded();
@@ -211,6 +495,10 @@ export class ExcaliShareToolbar {
     this.rootEl.appendChild(panel);
     this.addClickOutsideListener();
   }
+
+  // ══════════════════════════════════════════════
+  // SHARED: Content building (used by both modes)
+  // ══════════════════════════════════════════════
 
   private buildExpandedContent(panel: HTMLElement): void {
     panel.empty();
@@ -395,7 +683,7 @@ export class ExcaliShareToolbar {
       panel.appendChild(unpublishBtn);
     }
 
-    // ── Collapse button at bottom ──
+    // ── Collapse/Close button at bottom ──
     const collapseRow = document.createElement('div');
     collapseRow.style.borderTop = '1px solid var(--background-modifier-border)';
     collapseRow.style.padding = '4px';
@@ -411,10 +699,14 @@ export class ExcaliShareToolbar {
     collapseBtn.style.padding = '4px 8px';
     collapseBtn.style.borderRadius = '4px';
     collapseBtn.style.fontFamily = 'inherit';
-    collapseBtn.textContent = '▲ Collapse';
+    collapseBtn.textContent = this.injectionMode === 'auto-injected' ? '✕ Close' : '▲ Collapse';
     collapseBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.collapse();
+      if (this.injectionMode === 'auto-injected') {
+        this.collapseAuto();
+      } else {
+        this.collapse();
+      }
     });
     collapseRow.appendChild(collapseBtn);
     panel.appendChild(collapseRow);
@@ -470,6 +762,17 @@ export class ExcaliShareToolbar {
   private updateContent(): void {
     if (!this.rootEl) return;
 
+    if (this.injectionMode === 'auto-injected') {
+      // Update status dot on the island button
+      this.updateStatusDot();
+      // If popover is open, rebuild its content
+      if (this.expanded && this.expandedPanelEl) {
+        this.buildExpandedContent(this.expandedPanelEl);
+      }
+      return;
+    }
+
+    // Floating mode
     if (this.expanded && this.expandedPanelEl) {
       this.buildExpandedContent(this.expandedPanelEl);
     }
@@ -741,7 +1044,15 @@ export class ExcaliShareToolbar {
   private addClickOutsideListener(): void {
     this.removeClickOutsideListener();
     this.clickOutsideHandler = (e: MouseEvent) => {
-      if (this.rootEl && !this.rootEl.contains(e.target as Node)) {
+      const target = e.target as Node;
+      // Don't close if clicking inside the rootEl (Island + popover)
+      if (this.rootEl && this.rootEl.contains(target)) return;
+      // Don't close if clicking inside a mobile popover
+      if (this.expandedPanelEl && this.expandedPanelEl.contains(target)) return;
+
+      if (this.injectionMode === 'auto-injected') {
+        this.collapseAuto();
+      } else {
         this.collapse();
       }
     };
