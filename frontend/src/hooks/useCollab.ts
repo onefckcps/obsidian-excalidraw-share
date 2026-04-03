@@ -700,7 +700,9 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
 
       client.on('_disconnected', () => {
         setIsConnected(false);
-        setReconnectState('reconnecting');
+        // Do NOT set reconnectState here — _reconnecting and _reconnect_failed handle it.
+        // Setting 'reconnecting' here would overwrite 'failed' (since _disconnected fires
+        // after _reconnect_failed in the onclose handler).
       });
 
       client.on('_reconnecting', (msg: ServerMessage) => {
