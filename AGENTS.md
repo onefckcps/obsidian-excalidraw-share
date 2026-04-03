@@ -85,6 +85,7 @@ ExcaliShare fills the gap between Obsidian's local-only Excalidraw drawings and 
 ## Build Commands
 
 ### Development Environment (Nix)
+**IMPORTANT:** All build and run commands MUST be executed inside the Nix development shell. Use `nix develop --command bash -c "<command>"` for one-off commands, or enter the shell interactively with `nix develop`.
 ```bash
 nix develop                           # Enter development shell
 ```
@@ -916,6 +917,44 @@ Fixes applied:
 - [x] Added `if (payload.pointersMap.size > 1) return;` guard in `handlePointerUpdate` in `Viewer.tsx` — skips all pointer broadcasts during multi-touch gestures
 - [x] Added active pointer counter (`pointerdown`/`pointerup`/`pointercancel` listeners) in `attachPointerListener` in `collabManager.ts` — skips `pointermove` broadcast when `activePointerCount > 1`
 - [x] Added `isPrimary` check in `attachPointerListener` as second layer — skips non-primary touch points
+
+**Mobile Two-Finger Pan Scene Update Bug Fix (April 2026)**
+Fixed a bug where two-finger pan gestures on a tablet during a live collab session caused a freedraw stroke/line to appear on the other client (Obsidian plugin), but NOT locally on the tablet. The stroke was only visible locally after the plugin synced changes back.
+
+Root cause:
+- `handleExcalidrawChange` (the `onChange` callback) had **no multi-touch guard**. When the first finger touched down, Excalidraw started a freedraw stroke and fired `onChange` with the in-progress element. `sendSceneUpdate` was called unconditionally, broadcasting the partial stroke to the server and then to the plugin.
+- Excalidraw cancelled the stroke locally when the second finger arrived (converting the gesture to a pan), but the partial element was already in the server's state and the plugin had applied it.
+- The existing `pointersMap.size > 1` guard in `handlePointerUpdate` only blocked **cursor position broadcasts** — it did NOT block **scene element broadcasts** from `onChange`.
+- The timing made it worse: `touchstart` for the second finger fires before `onChange` for the in-progress stroke, but `onPointerUpdate` (which provides `pointersMap`) may lag behind `onChange`.
+
+Fixes applied:
+- [x] Added `activeTouchCountRef` in `Viewer.tsx` — tracks active touch count via native `touchstart`/`touchend` DOM events (more reliable than `pointersMap` which only updates on `onPointerUpdate`)
+- [x] Added `useEffect` in `Viewer.tsx` that attaches `touchstart`/`touchend`/`touchcancel` listeners to `document` when collab is joined — updates `activeTouchCountRef.current` synchronously before `onChange` fires
+- [x] Added guard in `handleExcalidrawChange`: `if (activeTouchCountRef.current <= 1)` — suppresses `sendSceneUpdate` during multi-touch gestures
+- [x] Added `cancelPendingSceneUpdate()` method to `CollabClient` in `collabClient.ts` — clears the debounce timer and pending update, resets delta tracking
+- [x] Added `cancelPendingSceneUpdate` to `UseCollabReturn` interface and implementation in `useCollab.ts`
+- [x] `touchend`/`touchcancel` handlers call `cancelPendingSceneUpdate()` when transitioning from multi-touch back to zero fingers — discards any partial stroke that slipped through before the second finger was detected
+
+**Plugin Two-Finger Pan Scene Update Bug Fix (April 2026)**
+Fixed the same two-finger pan bug in the Obsidian plugin's `collabManager.ts`. When two-finger dragging on a tablet in Obsidian during a collab session, a freedraw stroke/line appeared on the remote client between the two finger positions, but NOT locally. The stroke only became visible locally after the remote client synced changes back.
+
+Root cause:
+- The plugin's `onChange` callback in `startEventDrivenDetection()` called `handleLocalSceneChange()` **without any multi-touch guard** — the exact same issue that was fixed in the frontend's `Viewer.tsx` but never ported to the plugin.
+- When the first finger touched down, Excalidraw started a freedraw stroke and fired `onChange`. `handleLocalSceneChange()` saw a new element with a higher version and called `client.sendSceneUpdate()`, broadcasting the partial stroke to the server.
+- The existing `activePointerCount > 1` guard in `attachPointerListener()` only blocked **cursor position broadcasts**, NOT **scene element broadcasts** from `onChange`.
+- The plugin's `CollabClient` had no `cancelPendingSceneUpdate()` method to discard debounced partial strokes.
+- **Critical timing issue**: Excalidraw's `onChange` fires BEFORE native `touchstart` events reach the plugin's listeners. This means `activeTouchCount` is still 0 when the first `handleLocalSceneChange` is called. The 80ms debounce timer fires before the fingers lift, so `cancelPendingSceneUpdate()` on `touchend` alone cannot prevent the update.
+
+Fixes applied:
+- [x] Added `activeTouchCount` class property and `touchListenerCleanup` to `CollabManager` in `collabManager.ts`
+- [x] Added `startTouchTracking()` method in `collabManager.ts` — attaches native `touchstart`/`touchend`/`touchcancel` listeners to `document` (capture phase) to track active touch count
+- [x] Added multi-touch guard in `handleLocalSceneChange()`: `if (this.activeTouchCount > 1) return;` — fast-path suppression for subsequent onChange calls during multi-touch
+- [x] Added `cancelPendingSceneUpdate()` method to plugin's `CollabClient` in `collabClient.ts` — clears debounce timer, pending update, and resets delta tracking
+- [x] Added `shouldSendCheck` callback parameter to `CollabClient.sendSceneUpdate()` — evaluated at debounce-fire time (not queue time). If the check returns false, the pending update is cancelled and delta tracking is reset. This is the **primary defense**: by the time the 80ms debounce fires, native touch events have arrived and `activeTouchCount` is accurate.
+- [x] `handleLocalSceneChange()` passes `() => this.activeTouchCount <= 1` as `shouldSendCheck` to `sendSceneUpdate()`
+- [x] `touchend`/`touchcancel` handlers use `wasMultiTouchGesture` flag (persists across individual finger lifts) to call `cancelPendingSceneUpdate()` when all fingers are lifted after a multi-touch gesture — safety net for edge cases
+- [x] Touch listener cleanup added to `stopChangeDetection()` in `collabManager.ts`
+- [x] `startTouchTracking()` called in `startChangeDetection()` before pointer tracking
 
 **Mobile & Tablet Responsive Redesign (April 2026)**
 Completely overhauled the responsive layout system in the frontend viewer to fix toolbar overlap and collab session toolbar shift issues.

@@ -39,6 +39,7 @@ export class CollabClient {
   private intentionalClose = false;
   private sceneUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingSceneUpdate: ClientMessage | null = null;
+  private pendingShouldSendCheck: (() => boolean) | null = null;
   private lastSentVersions: Map<string, number> = new Map();
   private localSeq: number = 0;
   /** Buffer of outgoing scene updates accumulated while disconnected */
@@ -224,8 +225,12 @@ export class CollabClient {
    * Send a scene update with adaptive debouncing.
    * @param elements  All current scene elements
    * @param isDrawing Whether the user is actively drawing (longer debounce)
+   * @param shouldSendCheck Optional callback evaluated at debounce-fire time.
+   *   If provided and returns false, the pending update is cancelled and delta
+   *   tracking is reset. This is used to re-check multi-touch state at send time
+   *   because native touch events may arrive AFTER Excalidraw's onChange fires.
    */
-  sendSceneUpdate(elements: ExcalidrawElement[], isDrawing: boolean = false): void {
+  sendSceneUpdate(elements: ExcalidrawElement[], isDrawing: boolean = false, shouldSendCheck?: () => boolean): void {
     // Compute delta: find elements that changed since last send
     const changedElements: ExcalidrawElement[] = [];
     for (const el of elements) {
@@ -274,6 +279,8 @@ export class CollabClient {
 
     // Always replace the pending update with the latest
     this.pendingSceneUpdate = msg;
+    // Store the latest shouldSendCheck so the timer uses the most recent one
+    this.pendingShouldSendCheck = shouldSendCheck ?? null;
 
     // Clear existing timer and set a new one with the appropriate delay
     if (this.sceneUpdateTimer) {
@@ -282,10 +289,38 @@ export class CollabClient {
     this.sceneUpdateTimer = setTimeout(() => {
       this.sceneUpdateTimer = null;
       if (this.pendingSceneUpdate) {
+        // Re-check at send time: if the check fails (e.g., multi-touch detected),
+        // cancel the update and reset delta tracking
+        if (this.pendingShouldSendCheck && !this.pendingShouldSendCheck()) {
+          this.pendingSceneUpdate = null;
+          this.pendingShouldSendCheck = null;
+          this.lastSentVersions.clear();
+          return;
+        }
         this._send(this.pendingSceneUpdate);
         this.pendingSceneUpdate = null;
+        this.pendingShouldSendCheck = null;
       }
     }, debounceMs);
+  }
+
+  /**
+   * Cancel any pending debounced scene update without sending it.
+   * Used to discard in-progress freedraw strokes accumulated during multi-touch gestures
+   * (two-finger pan/pinch-zoom) that should not be broadcast to other clients.
+   * Also resets the delta tracking versions for the discarded elements so they will be
+   * re-sent correctly on the next real scene change.
+   */
+  cancelPendingSceneUpdate(): void {
+    if (this.sceneUpdateTimer) {
+      clearTimeout(this.sceneUpdateTimer);
+      this.sceneUpdateTimer = null;
+    }
+    this.pendingSceneUpdate = null;
+    this.pendingShouldSendCheck = null;
+    // Reset delta tracking so the next real scene change sends a full diff
+    // (the cancelled elements may have had their versions bumped during the gesture)
+    this.lastSentVersions.clear();
   }
 
   /**

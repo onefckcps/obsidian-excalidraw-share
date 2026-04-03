@@ -91,6 +91,10 @@ export class CollabManager {
   // ── Drawing state (event-driven via onPointerDown/Up) ──
   private isUserActivelyDrawing = false;
 
+  // ── Multi-touch tracking (suppresses scene updates during two-finger pan/pinch) ──
+  private activeTouchCount = 0;
+  private touchListenerCleanup: (() => void) | null = null;
+
   // ── Deferred remote updates (prevents stutter during drawing) ──
   private pendingRemoteUpdates: ExcalidrawElement[][] = [];
   private flushTimer: ReturnType<typeof setInterval> | null = null;
@@ -777,6 +781,11 @@ export class CollabManager {
       this.startPollingDetection();
     }
 
+    // Start multi-touch tracking to suppress scene updates during two-finger pan/pinch.
+    // Must be started before pointer tracking so activeTouchCount is accurate when
+    // onChange fires.
+    this.startTouchTracking();
+
     // Always start pointer tracking regardless of detection strategy.
     // Previously this was only called inside startEventDrivenDetection(),
     // which meant pointer tracking was never started when using polling fallback.
@@ -901,6 +910,17 @@ export class CollabManager {
     // Skip if not connected
     if (!this.client?.isConnected) return;
 
+    // Suppress scene updates during multi-touch gestures (two-finger pan/pinch-zoom).
+    // When the first finger touches down, Excalidraw starts a freedraw stroke and fires
+    // onChange with the in-progress element. The second finger converts the gesture to a
+    // pan and cancels the stroke locally, but by then the partial element has already been
+    // sent to the server. This guard prevents that by checking the active touch count
+    // (updated synchronously by native touchstart/touchend listeners).
+    // Note: This is a fast-path check. The definitive check happens at debounce-fire time
+    // via the shouldSendCheck callback passed to CollabClient.sendSceneUpdate(), because
+    // native touch events may arrive AFTER Excalidraw's onChange fires.
+    if (this.activeTouchCount > 1) return;
+
     // Detect file reload from external sync (e.g., LiveSync overwrote the file)
     // This must be checked BEFORE version tracking is updated
     if (this.detectFileReload(elements)) {
@@ -947,9 +967,12 @@ export class CollabManager {
     // Send changes via WebSocket (CollabClient handles delta vs full + debouncing)
     // Pass the full elements array so CollabClient can compute delta/full correctly
     // The isDrawing flag enables adaptive debouncing
+    // The shouldSendCheck callback re-checks activeTouchCount at debounce-fire time
+    // because native touch events may arrive AFTER Excalidraw's onChange fires
     this.client.sendSceneUpdate(
       elements as ExcalidrawElement[],
       this.isUserActivelyDrawing,
+      () => this.activeTouchCount <= 1,
     );
   }
 
@@ -1011,8 +1034,12 @@ export class CollabManager {
       }
     }
 
-    // Send changes via WebSocket
-    this.client.sendSceneUpdate(currentElements, this.isUserDrawing());
+    // Send changes via WebSocket (with multi-touch re-check at send time)
+    this.client.sendSceneUpdate(
+      currentElements,
+      this.isUserDrawing(),
+      () => this.activeTouchCount <= 1,
+    );
 
     // Also send any new files (polling fallback doesn't get onChange files param)
     try {
@@ -1123,6 +1150,12 @@ export class CollabManager {
       this.onPointerUpUnsubscribe = null;
     }
 
+    // Stop multi-touch tracking
+    if (this.touchListenerCleanup) {
+      try { this.touchListenerCleanup(); } catch { /* ignore */ }
+      this.touchListenerCleanup = null;
+    }
+
     // Stop pointer tracking
     if (this.pointerMoveCleanup) {
       try { this.pointerMoveCleanup(); } catch { /* ignore */ }
@@ -1151,6 +1184,69 @@ export class CollabManager {
     // Clear version tracking
     this.remoteAppliedVersions.clear();
     this.detectionStrategy = 'none';
+  }
+
+  // ──────────────────────────────────────────────
+  // Multi-Touch Tracking (suppresses scene updates during pan/pinch)
+  // ──────────────────────────────────────────────
+
+  /**
+   * Attach native touchstart/touchend/touchcancel listeners to the document
+   * to track the number of active touch contacts. When activeTouchCount > 1,
+   * handleLocalSceneChange() suppresses scene updates to prevent in-progress
+   * freedraw strokes (started by the first finger) from being broadcast before
+   * the second finger converts the gesture to a pan.
+   *
+   * This mirrors the fix applied to the frontend Viewer.tsx (activeTouchCountRef).
+   * Native touch events are used instead of pointer events because touchstart fires
+   * synchronously before Excalidraw's onChange, ensuring the count is accurate.
+   */
+  private startTouchTracking(): void {
+    // Don't start if already tracking
+    if (this.touchListenerCleanup) return;
+
+    // Track whether multi-touch occurred during the current gesture.
+    // This persists across individual touchend events (fingers lifting one at a time)
+    // and is only reset when all fingers are lifted.
+    let wasMultiTouchGesture = false;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      this.activeTouchCount = e.touches.length;
+      if (e.touches.length > 1) {
+        wasMultiTouchGesture = true;
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      this.activeTouchCount = e.touches.length;
+      // When all fingers are lifted after a multi-touch gesture, cancel any pending
+      // debounced scene update that may contain a partial freedraw stroke from the
+      // first finger before the second finger converted the gesture to a pan.
+      if (wasMultiTouchGesture && e.touches.length === 0) {
+        this.client?.cancelPendingSceneUpdate();
+        wasMultiTouchGesture = false;
+      }
+    };
+
+    const handleTouchCancel = (e: TouchEvent) => {
+      this.activeTouchCount = e.touches.length;
+      if (wasMultiTouchGesture && e.touches.length === 0) {
+        this.client?.cancelPendingSceneUpdate();
+        wasMultiTouchGesture = false;
+      }
+    };
+
+    // Use capture phase to ensure we see the events before Excalidraw processes them
+    document.addEventListener('touchstart', handleTouchStart, true);
+    document.addEventListener('touchend', handleTouchEnd, true);
+    document.addEventListener('touchcancel', handleTouchCancel, true);
+
+    this.touchListenerCleanup = () => {
+      document.removeEventListener('touchstart', handleTouchStart, true);
+      document.removeEventListener('touchend', handleTouchEnd, true);
+      document.removeEventListener('touchcancel', handleTouchCancel, true);
+      this.activeTouchCount = 0;
+    };
   }
 
   // ──────────────────────────────────────────────
