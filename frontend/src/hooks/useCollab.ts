@@ -96,6 +96,8 @@ interface UseCollabReturn {
   stopFollowing: () => void;
   /** Flush any pending scene updates that were deferred during active drawing */
   flushPendingSceneUpdates: () => void;
+  /** Cancel any pending debounced scene update (used to discard strokes from multi-touch gestures) */
+  cancelPendingSceneUpdate: () => void;
   /** Get collaborator IDs in the same order as the Excalidraw collaborator Map (for badge matching) */
   getCollaboratorIds: () => string[];
   /** Whether this drawing has persistent collab enabled */
@@ -808,6 +810,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     }
   }, [drawingId]);
 
+  // Cancel any pending debounced scene update — used to discard in-progress freedraw strokes
+  // accumulated during multi-touch gestures (two-finger pan/pinch-zoom).
+  const cancelPendingSceneUpdate = useCallback(() => {
+    clientRef.current?.cancelPendingSceneUpdate();
+  }, []);
+
   // Send files update — only new files that haven't been sent yet (delta tracked by CollabClient)
   const sendFilesUpdate = useCallback((files: BinaryFiles) => {
     if (collabDrawingIdRef.current && collabDrawingIdRef.current === drawingId) {
@@ -1004,6 +1012,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     startFollowing,
     stopFollowing,
     flushPendingSceneUpdates,
+    cancelPendingSceneUpdate,
     getCollaboratorIds,
     isPersistentCollab,
     suppressFollowSyncRef,

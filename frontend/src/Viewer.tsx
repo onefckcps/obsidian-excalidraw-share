@@ -52,6 +52,11 @@ function Viewer() {
   const [drawingsList, setDrawingsList] = useState<{id: string, created_at: string, source_path: string | null}[]>([])
   const [loadingDrawings, setLoadingDrawings] = useState(false)
   const loadingDrawingsRef = useRef(false)
+  /** Tracks the number of active touch/pointer contacts on the Excalidraw canvas.
+   * Incremented on touchstart, decremented on touchend/touchcancel.
+   * When > 1, we suppress scene updates in handleExcalidrawChange to prevent
+   * in-progress freedraw strokes from being broadcast during two-finger pan/pinch. */
+  const activeTouchCountRef = useRef(0)
   const [showCollabPopover, setShowCollabPopover] = useState(false)
   const [passwordRequired, setPasswordRequired] = useState(false)
   const [passwordError, setPasswordError] = useState<string | null>(null)
@@ -274,12 +279,19 @@ function Viewer() {
       }
     }
 
-    // Send scene updates to collab session if joined
+    // Send scene updates to collab session if joined.
+    // Guard: suppress scene updates during multi-touch gestures (two-finger pan/pinch-zoom).
+    // When the first finger touches down, Excalidraw may start a freedraw stroke and fire
+    // onChange with the in-progress element — if a second finger then arrives (converting the
+    // gesture to a pan), the partial stroke must NOT be broadcast to other clients.
+    // activeTouchCountRef is updated by native touchstart/touchend listeners (see useEffect below).
     if (collab.isJoined && collab.isConnected) {
-      collab.sendSceneUpdate(elements as ExcalidrawElement[])
-      // Send any new binary files (images) — CollabClient handles delta tracking
-      if (files && Object.keys(files).length > 0) {
-        collab.sendFilesUpdate(files)
+      if (activeTouchCountRef.current <= 1) {
+        collab.sendSceneUpdate(elements as ExcalidrawElement[])
+        // Send any new binary files (images) — CollabClient handles delta tracking
+        if (files && Object.keys(files).length > 0) {
+          collab.sendFilesUpdate(files)
+        }
       }
     }
   }, [collab.isJoined, collab.isConnected, collab.followingUserId, collab.collaborators, collab.stopFollowing, collab.suppressFollowSyncRef, collab.sendSceneUpdate, collab.sendFilesUpdate, excalidrawAPI])
@@ -291,6 +303,8 @@ function Viewer() {
       // two-finger pan the cursor would jump between both finger positions and — with the
       // laser/pen tool active — draw lines between them. Skip all pointer broadcasts
       // whenever more than one touch point is active.
+      // Note: activeTouchCountRef (updated by native touchstart/touchend) is the primary guard
+      // for scene updates in handleExcalidrawChange. pointersMap.size guards pointer broadcasts here.
       if (payload.pointersMap.size > 1) return;
 
       // Include viewport data for follow mode
@@ -383,6 +397,56 @@ function Viewer() {
 
   // Note: The visual follow indicator (is-followed CSS class on the Avatar) is now handled
   // natively by Excalidraw via appState.userToFollow, which is synced in startFollowing/stopFollowing.
+
+  // ──────────────────────────────────────────────
+  // Multi-touch tracking for scene update suppression
+  // Track the number of active touch contacts on the Excalidraw canvas using native
+  // touchstart/touchend events. When activeTouchCountRef > 1, handleExcalidrawChange
+  // suppresses scene updates to prevent in-progress freedraw strokes (started by the
+  // first finger before the second finger arrives) from being broadcast to other clients.
+  //
+  // Why native touch events instead of pointersMap from onPointerUpdate:
+  // - touchstart fires synchronously before onChange, so the count is already > 1
+  //   when the second finger arrives and onChange fires with the in-progress stroke.
+  // - pointersMap only updates when onPointerUpdate fires, which may lag behind onChange.
+  // ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!collab.isJoined) return;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      activeTouchCountRef.current = e.touches.length;
+    };
+    const handleTouchEnd = (e: TouchEvent) => {
+      const wasMultiTouch = activeTouchCountRef.current > 1;
+      activeTouchCountRef.current = e.touches.length;
+      // When transitioning from multi-touch back to zero fingers, cancel any pending
+      // debounced scene update that was accumulated during the gesture (e.g., the partial
+      // freedraw stroke started by the first finger before the second finger arrived).
+      // Only cancel if we were in multi-touch — single-finger strokes should still be sent.
+      if (wasMultiTouch && e.touches.length === 0) {
+        collab.cancelPendingSceneUpdate();
+      }
+    };
+    const handleTouchCancel = (e: TouchEvent) => {
+      const wasMultiTouch = activeTouchCountRef.current > 1;
+      activeTouchCountRef.current = e.touches.length;
+      if (wasMultiTouch && e.touches.length === 0) {
+        collab.cancelPendingSceneUpdate();
+      }
+    };
+
+    // Attach to document to catch all touch events regardless of target
+    document.addEventListener('touchstart', handleTouchStart, { passive: true, capture: true });
+    document.addEventListener('touchend', handleTouchEnd, { passive: true, capture: true });
+    document.addEventListener('touchcancel', handleTouchCancel, { passive: true, capture: true });
+
+    return () => {
+      document.removeEventListener('touchstart', handleTouchStart, true);
+      document.removeEventListener('touchend', handleTouchEnd, true);
+      document.removeEventListener('touchcancel', handleTouchCancel, true);
+      activeTouchCountRef.current = 0;
+    };
+  }, [collab.isJoined, collab.cancelPendingSceneUpdate]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

@@ -344,6 +344,24 @@ export class CollabClient {
   }
 
   /**
+   * Cancel any pending debounced scene update without sending it.
+   * Used to discard in-progress freedraw strokes accumulated during multi-touch gestures
+   * (two-finger pan/pinch-zoom) that should not be broadcast to other clients.
+   * Also resets the delta tracking versions for the discarded elements so they will be
+   * re-sent correctly on the next real scene change.
+   */
+  cancelPendingSceneUpdate(): void {
+    if (this.sceneUpdateTimer) {
+      clearTimeout(this.sceneUpdateTimer);
+      this.sceneUpdateTimer = null;
+    }
+    this.pendingSceneUpdate = null;
+    // Reset delta tracking so the next real scene change sends a full diff
+    // (the cancelled elements may have had their versions bumped during the gesture)
+    this.lastSentVersions.clear();
+  }
+
+  /**
    * Send new binary files (images) to the server.
    * Only sends files that haven't been sent before (delta tracking via sentFileIds).
    * Debounced to batch multiple file additions.
