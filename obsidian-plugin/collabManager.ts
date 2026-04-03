@@ -34,6 +34,9 @@ export interface CollabManagerCallbacks {
   onSessionEnded?: (saved: boolean) => void;
   /** Called when follow mode changes (userId being followed, or null to stop) */
   onFollowChanged?: (followingUserId: string | null) => void;
+  /** Called when all reconnect attempts have been exhausted.
+   *  For persistent sessions, the caller should re-activate the session. */
+  onReconnectFailed?: () => void;
 }
 
 /** Detection strategy currently in use */
@@ -214,8 +217,10 @@ export class CollabManager {
     });
 
     client.on('_reconnect_failed', () => {
-      new Notice('ExcaliShare: Failed to reconnect to collab session after multiple attempts.');
+      console.log('ExcaliShare Collab: All reconnect attempts exhausted');
       this.leave();
+      // Notify the caller so it can re-activate persistent sessions
+      this.callbacks.onReconnectFailed?.();
     });
 
     client.on('snapshot', (msg: ServerMessage) => {

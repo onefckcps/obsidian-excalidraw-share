@@ -234,6 +234,10 @@ export default class ExcaliSharePlugin extends Plugin {
   /** Debounce timer for layout-change events */
   private _layoutChangeTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // ── Collab join guard ──
+  /** Prevents concurrent join attempts (race between backgroundReconcile, handleLeafChange, etc.) */
+  private _joiningCollabInProgress = false;
+
   // ── Server State Reconciliation ──
   /** Dedup guard: drawing IDs currently being reconciled */
   private _reconcileInFlight: Set<string> = new Set();
@@ -1782,6 +1786,15 @@ export default class ExcaliSharePlugin extends Plugin {
       return;
     }
 
+    // Destroy any existing collabManager to prevent zombie WebSocket connections.
+    // This can happen when _reconnect_failed fires (sets _isJoined=false but doesn't null the manager)
+    // and then a new join is triggered by backgroundReconcile or handleLeafChange.
+    if (this.collabManager) {
+      console.log('ExcaliShare: Destroying existing collabManager before creating new one');
+      this.collabManager.destroy();
+      this.collabManager = null;
+    }
+
     try {
       this.collabManager = new CollabManager({
         baseUrl: this.settings.baseUrl,
@@ -1871,6 +1884,36 @@ export default class ExcaliSharePlugin extends Plugin {
           onFollowChanged: (_followingUserId) => {
             // Refresh toolbar to update follow state in the collaborator list
             this.refreshActiveToolbar();
+          },
+          onReconnectFailed: () => {
+            // All reconnect attempts exhausted (e.g. after overnight sleep).
+            // For persistent collab sessions, clean up and schedule a re-activation attempt.
+            // The collabManager already called leave() before this callback.
+            console.log('ExcaliShare: Reconnect failed — cleaning up and scheduling re-activation for persistent collab');
+            const failedDrawingId = this.activeCollabDrawingId;
+            this.cleanupCollabState();
+            this.refreshActiveToolbar();
+
+            if (failedDrawingId) {
+              // Check if this was a persistent collab drawing and try to re-activate after a short delay.
+              // The delay gives the server time to clean up the old session and allows the network
+              // to stabilize (e.g. after waking from sleep).
+              setTimeout(async () => {
+                try {
+                  const file = this.app.workspace.getActiveFile();
+                  if (file && this.isExcalidrawFile(file)) {
+                    const publishedId = this.getPublishedId(file);
+                    if (publishedId === failedDrawingId && this.isPersistentCollabEnabled(file)) {
+                      console.log('ExcaliShare: Attempting to re-activate persistent collab after reconnect failure');
+                      new Notice('Reconnecting to persistent collab session...');
+                      await this.autoJoinPersistentCollab(failedDrawingId);
+                    }
+                  }
+                } catch (e) {
+                  console.error('ExcaliShare: Failed to re-activate persistent collab after reconnect failure', e);
+                }
+              }, 5000); // 5 second delay before re-activation attempt
+            }
           },
         },
       });
@@ -2251,7 +2294,9 @@ export default class ExcaliSharePlugin extends Plugin {
    */
   private async autoJoinPersistentCollab(drawingId: string): Promise<void> {
     if (this.collabManager?.isJoined) return; // Already joined
+    if (this._joiningCollabInProgress) return; // Another join attempt is in progress
 
+    this._joiningCollabInProgress = true;
     try {
       const statusRes = await requestUrl({
         url: `${this.settings.baseUrl}/api/collab/status/${drawingId}`,
@@ -2259,6 +2304,9 @@ export default class ExcaliSharePlugin extends Plugin {
         throw: false,
       });
       const status = statusRes.json;
+
+      // Re-check after async call — another path may have joined while we were waiting
+      if (this.collabManager?.isJoined) return;
 
       if (status.active && status.session_id) {
         // Set active session tracking so the toolbar shows collaborator list + follow buttons
@@ -2280,6 +2328,10 @@ export default class ExcaliSharePlugin extends Plugin {
           method: 'POST',
           throw: false,
         });
+
+        // Re-check after async call
+        if (this.collabManager?.isJoined) return;
+
         if (activateRes.status < 400 && activateRes.json?.session_id) {
           const sessionId = activateRes.json.session_id;
           this.activeCollabSessionId = sessionId;
@@ -2297,6 +2349,8 @@ export default class ExcaliSharePlugin extends Plugin {
       }
     } catch {
       // Ignore — session may not be active
+    } finally {
+      this._joiningCollabInProgress = false;
     }
   }
 
