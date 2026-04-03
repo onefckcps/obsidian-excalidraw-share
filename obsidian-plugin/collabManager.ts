@@ -195,7 +195,7 @@ export class CollabManager {
   /**
    * Connect to a collab session via WebSocket and start participating.
    */
-  async startAndJoin(drawingId: string, sessionId: string, password?: string | null, apiKey?: string | null): Promise<void> {
+  async startAndJoin(drawingId: string, sessionId: string, password?: string | null, apiKey?: string | null, persistentMode?: boolean): Promise<void> {
     if (this.client) {
       this.leave();
     }
@@ -206,7 +206,7 @@ export class CollabManager {
     // Cache the API reference once at join time
     this.cachedAPI = this.getExcalidrawAPIFn();
 
-    const client = new CollabClient(this.baseUrl, sessionId, this.displayName, password, apiKey);
+    const client = new CollabClient(this.baseUrl, sessionId, this.displayName, password, apiKey, persistentMode ?? false);
 
     // ── Register message handlers ──
 
@@ -222,10 +222,12 @@ export class CollabManager {
     });
 
     client.on('_disconnected', () => {
+      const wasConnected = this._isConnected;
       this._isConnected = false;
       this.callbacks.onConnectionChanged?.(false);
-      // Show disconnect notice on first disconnect
-      if (this._isJoined) {
+      // Only show the disconnect notice on the FIRST disconnect (wasConnected=true),
+      // not on every subsequent failed reconnect attempt (wasConnected=false).
+      if (this._isJoined && wasConnected) {
         new Notice('Connection to collab session lost. Reconnecting...');
       }
     });
@@ -293,6 +295,26 @@ export class CollabManager {
     client.on('error', (msg: ServerMessage) => {
       if (msg.type !== 'error') return;
       console.error('ExcaliShare Collab: Server error:', msg.message);
+
+      // Detect fatal errors where reconnecting to the same session ID will never succeed.
+      // "Collab session not found" means the session was cleaned up (server restart, timeout, etc.).
+      // In this case we must stop reconnecting and notify the caller so it can re-activate
+      // the session (get a fresh session ID) rather than hammering a dead session ID.
+      const isFatalSessionError =
+        msg.message.toLowerCase().includes('session not found') ||
+        msg.message.toLowerCase().includes('not found');
+
+      if (isFatalSessionError) {
+        // Stop the reconnect loop immediately by marking the close as intentional.
+        // The server will close the WS after sending this error, so onclose will fire
+        // but _scheduleReconnect will be skipped because intentionalClose=true.
+        client.disconnect();
+        // Clean up and notify caller (triggers re-activation for persistent sessions)
+        this.leave();
+        this.callbacks.onReconnectFailed?.();
+        return;
+      }
+
       new Notice(`ExcaliShare Collab error: ${msg.message}`);
     });
 

@@ -1921,7 +1921,7 @@ export default class ExcaliSharePlugin extends Plugin {
    * This allows the host to participate directly in the Excalidraw canvas
    * without opening a browser.
    */
-  private async joinCollabFromObsidian(drawingId: string, sessionId: string, password?: string | null): Promise<void> {
+  private async joinCollabFromObsidian(drawingId: string, sessionId: string, password?: string | null, persistentMode?: boolean): Promise<void> {
     const excalidrawPlugin = this.getExcalidrawPlugin();
     if (!excalidrawPlugin?.ea) {
       return;
@@ -2064,6 +2064,9 @@ export default class ExcaliSharePlugin extends Plugin {
             // All reconnect attempts exhausted (e.g. after overnight sleep).
             // For persistent collab sessions, clean up and schedule a re-activation attempt.
             // The collabManager already called leave() before this callback.
+            // NOTE: With persistentMode=true (set in autoJoinPersistentCollab), this callback
+            // should never fire for persistent sessions — the client reconnects indefinitely.
+            // This path is only reached for regular (non-persistent) collab sessions.
             console.log('ExcaliShare: Reconnect failed — cleaning up and scheduling re-activation for persistent collab');
             const failedDrawingId = this.activeCollabDrawingId;
             this.cleanupCollabState();
@@ -2096,7 +2099,7 @@ export default class ExcaliSharePlugin extends Plugin {
         },
       });
 
-      await this.collabManager.startAndJoin(drawingId, sessionId, password, this.settings.apiKey || null);
+      await this.collabManager.startAndJoin(drawingId, sessionId, password, this.settings.apiKey || null, persistentMode ?? false);
     } catch (error) {
       console.error('ExcaliShare: Failed to join collab from Obsidian', error);
       new Notice('Failed to join collab session from Obsidian. You can still use the browser.');
@@ -2496,8 +2499,8 @@ export default class ExcaliSharePlugin extends Plugin {
           this.collabStatusBarItem.show();
         }
 
-        // Join the persistent session (pass API key to bypass session password)
-        await this.joinCollabFromObsidian(drawingId, status.session_id, null);
+        // Join the persistent session (pass API key to bypass session password, persistentMode=true for infinite reconnect)
+        await this.joinCollabFromObsidian(drawingId, status.session_id, null, true);
         this.refreshActiveToolbar();
       } else if (status.persistent && !status.active) {
         // Persistent collab but no active session — need to activate it first
@@ -2520,8 +2523,8 @@ export default class ExcaliSharePlugin extends Plugin {
             this.collabStatusBarItem.show();
           }
 
-          // Join the activated session (pass API key to bypass session password)
-          await this.joinCollabFromObsidian(drawingId, sessionId, null);
+          // Join the activated session (pass API key to bypass session password, persistentMode=true for infinite reconnect)
+          await this.joinCollabFromObsidian(drawingId, sessionId, null, true);
           this.refreshActiveToolbar();
         }
       }

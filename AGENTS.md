@@ -938,6 +938,27 @@ Fixes applied:
 - [x] Added `checkServerHealth()` call in `onReconnectFailed` for instant toolbar update
 - [x] Added auto-join persistent collab in `onServerReachabilityChanged` when server comes back
 
+**Plugin Infinite Reconnect Loop Bug Fix (April 2026)**
+Fixed two infinite reconnect loop scenarios in the Obsidian plugin when the server is down or a collab session is stale.
+
+**Scenario 1: Persistent collab with server down**
+Root causes:
+- `CollabManager.startAndJoin()` created `new CollabClient(...)` without passing `persistentMode`, so it defaulted to `false`. The client exhausted 5 reconnect attempts, fired `_reconnect_failed` → `onReconnectFailed` → `autoJoinPersistentCollab()` after 5 seconds → new `CollabClient` again without `persistentMode=true` → infinite outer loop.
+- `_disconnected` handler showed "Connection to collab session lost. Reconnecting..." on every failed reconnect attempt (not just the first disconnect), because it checked `_isJoined` (always `true` during reconnect) instead of `wasConnected` (only `true` on the first real disconnect).
+
+Fixes applied:
+- [x] Added `persistentMode?: boolean` param to `CollabManager.startAndJoin()` in `collabManager.ts` — passes it to `new CollabClient(..., persistentMode ?? false)`
+- [x] Added `persistentMode?: boolean` param to `joinCollabFromObsidian()` in `main.ts` — passes it to `startAndJoin()`
+- [x] `autoJoinPersistentCollab()` now calls `joinCollabFromObsidian(..., true)` so the `CollabClient` uses `persistentMode=true` (infinite reconnect, no `_reconnect_failed`)
+- [x] `_disconnected` handler now uses `wasConnected` flag — notice only shown on first real disconnect, not on every failed reconnect attempt
+
+**Scenario 2: Stale session ID after server restart**
+Root cause:
+- When the server restarts, all in-memory sessions are lost. The plugin reconnects (WS connects successfully → "Reconnected!"), the server sends `{ type: 'error', message: 'Collab session not found' }` and closes the WS. The client (with `persistentMode=true`) immediately reconnects to the same dead session ID → infinite loop of: "Reconnected!" → "Collab session not found" → "Connection lost. Reconnecting..."
+
+Fix applied:
+- [x] `error` handler in `collabManager.ts` now detects fatal session errors (message contains "session not found" or "not found"). On fatal error: calls `client.disconnect()` (sets `intentionalClose=true` to prevent reconnect on WS close), then `leave()` + `onReconnectFailed()`. The `onReconnectFailed` callback in `main.ts` triggers `autoJoinPersistentCollab()` after 5 seconds, which gets a fresh session ID via `/api/persistent-collab/activate/{id}`.
+
 **Frontend Collab Reconnect Failure UI Bug Fix (April 2026)**
 Fixed a bug where after all WebSocket reconnect attempts were exhausted (5/5), the collab UI was torn down and replaced with the "Collaborative Drawing · 1 user · Join" pre-join banner instead of showing a "Disconnected" state with a retry button.
 
