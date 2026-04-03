@@ -212,7 +212,7 @@ function Viewer() {
     }
   }, [id, fetchDrawing])
 
-  const handleExcalidrawChange = useCallback((elements: readonly ExcalidrawElement[], appState: { theme?: Theme }, files: BinaryFiles) => {
+  const handleExcalidrawChange = useCallback((elements: readonly ExcalidrawElement[], appState: { theme?: Theme; userToFollow?: { socketId: string; username: string } | null; activeTool?: { type: string } }, files: BinaryFiles) => {
     setTheme(currentTheme => {
       // Nur updaten wenn sich das Theme wirklich geändert hat,
       // um endlose Re-Renders zu verhindern
@@ -222,6 +222,28 @@ function Viewer() {
       return currentTheme
     })
 
+    // Sync our follow state when Excalidraw's native follow mode is cleared
+    // (e.g. user clicks the "X" on the native "Following" badge, or pans the canvas).
+    // Guard against the loop: stopFollowing() calls updateScene({userToFollow:null}) which
+    // triggers onChange again — suppressFollowSyncRef prevents re-entering stopFollowing.
+    // Exception: laser pointer — Excalidraw clears userToFollow on every canvas click
+    // (handleCanvasPointerDown → maybeUnfollowRemoteUser), but we want follow mode to
+    // persist while the user is drawing with the laser pointer.
+    const isLaserActive = appState.activeTool?.type === 'laser';
+    if (collab.isJoined && collab.followingUserId && appState.userToFollow === null && !collab.suppressFollowSyncRef.current) {
+      if (isLaserActive) {
+        // Laser pointer cleared userToFollow — restore it so the "Following" badge stays visible.
+        // The next onChange will have userToFollow set (not null), so no loop occurs.
+        const api = excalidrawAPI as { updateScene?: (data: unknown) => void } | null;
+        if (api?.updateScene) {
+          const followedCollaborator = collab.collaborators.find(c => c.id === collab.followingUserId);
+          api.updateScene({ appState: { userToFollow: { socketId: collab.followingUserId, username: followedCollaborator?.name || '' } } });
+        }
+      } else {
+        collab.stopFollowing();
+      }
+    }
+
     // Send scene updates to collab session if joined
     if (collab.isJoined && collab.isConnected) {
       collab.sendSceneUpdate(elements as ExcalidrawElement[])
@@ -230,7 +252,7 @@ function Viewer() {
         collab.sendFilesUpdate(files)
       }
     }
-  }, [collab.isJoined, collab.isConnected, collab.sendSceneUpdate, collab.sendFilesUpdate])
+  }, [collab.isJoined, collab.isConnected, collab.followingUserId, collab.collaborators, collab.stopFollowing, collab.suppressFollowSyncRef, collab.sendSceneUpdate, collab.sendFilesUpdate, excalidrawAPI])
 
   const handlePointerUpdate = useCallback((payload: { pointer: { x: number; y: number; tool: string }; button: 'down' | 'up'; pointersMap: Map<number, Readonly<{ x: number; y: number }>> }) => {
     if (collab.isJoined && collab.isConnected) {
@@ -261,8 +283,9 @@ function Viewer() {
       }
 
       // Auto-exit follow mode only when user actively clicks/drags on canvas
-      // (not on every pointer move, which would make follow mode unusable)
-      if (collab.followingUserId && payload.button === 'down') {
+      // (not on every pointer move, which would make follow mode unusable).
+      // Exception: laser pointer — using the laser should not exit follow mode.
+      if (collab.followingUserId && payload.button === 'down' && tool !== 'laser') {
         collab.stopFollowing();
       }
     }
@@ -322,31 +345,8 @@ function Viewer() {
     return () => container.removeEventListener('click', handleAvatarClick, true);
   }, [collab.isJoined, collab.collaborators, collab.displayName, collab.followingUserId, collab.startFollowing, collab.stopFollowing, collab.getCollaboratorIds, excalidrawAPI]);
 
-  // Visual follow indicator: highlight the followed user's badge with a CSS outline
-  useEffect(() => {
-    if (!collab.isJoined || !collab.followingUserId) return;
-
-    // Find the followed user's avatar index using the collaborator Map order
-    const orderedIds = collab.getCollaboratorIds();
-    const followedIndex = orderedIds.indexOf(collab.followingUserId);
-    if (followedIndex < 0) return;
-
-    // Inject a style that highlights the followed user's badge
-    const style = document.createElement('style');
-    style.setAttribute('data-excalishare-follow', 'true');
-    style.textContent = `
-      .UserList .Avatar:nth-child(${followedIndex + 1}) {
-        outline: 2px solid #4CAF50 !important;
-        outline-offset: 2px;
-        border-radius: 50%;
-        box-shadow: 0 0 8px rgba(76, 175, 80, 0.4);
-      }
-    `;
-    document.head.appendChild(style);
-    return () => {
-      style.remove();
-    };
-  }, [collab.isJoined, collab.followingUserId, collab.getCollaboratorIds]);
+  // Note: The visual follow indicator (is-followed CSS class on the Avatar) is now handled
+  // natively by Excalidraw via appState.userToFollow, which is synced in startFollowing/stopFollowing.
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

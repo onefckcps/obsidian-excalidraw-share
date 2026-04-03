@@ -934,7 +934,31 @@ export class CollabManager {
         this.callbacks.onFollowChanged?.(followSocketId);
       }
     } else {
-      // Excalidraw's UI deactivated follow
+      // Excalidraw's UI deactivated follow.
+      // Exception: laser pointer — Excalidraw calls maybeUnfollowRemoteUser() on every
+      // canvas pointer down (handleCanvasPointerDown), including when using the laser.
+      // We want follow mode to persist while the laser is active, so we restore
+      // userToFollow instead of stopping follow mode.
+      const activeTool = (appState.activeTool as { type?: string } | undefined)?.type;
+      if (activeTool === 'laser' && this.followingUserId) {
+        // Restore Excalidraw's native follow state so the "Following" badge stays visible.
+        // The next onChange will have userToFollow set (not null), so no loop occurs.
+        const api = this.getAPI();
+        if (api?.updateScene) {
+          const followedCollaborator = this.collaboratorMap.get(this.followingUserId);
+          api.updateScene({
+            appState: {
+              userToFollow: {
+                socketId: this.followingUserId,
+                username: followedCollaborator?.username || '',
+              },
+            },
+          });
+          // Reset lastDetectedUserToFollow so the next onChange (with userToFollow set) is processed
+          this.lastDetectedUserToFollow = this.followingUserId;
+        }
+        return;
+      }
       if (this.followingUserId) {
         this.stopFollowing();
         this.callbacks.onFollowChanged?.(null);

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type MutableRefObject } from 'react';
 import { CollabClient } from '../utils/collabClient';
 import type {
   CollaboratorInfo,
@@ -92,6 +92,8 @@ interface UseCollabReturn {
   getCollaboratorIds: () => string[];
   /** Whether this drawing has persistent collab enabled */
   isPersistentCollab: boolean;
+  /** Ref that is true while stopFollowing is propagating to Excalidraw (prevents onChange loop) */
+  suppressFollowSyncRef: MutableRefObject<boolean>;
 }
 
 export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCollabReturn {
@@ -136,6 +138,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const lastBroadcastViewportRef = useRef<{ scrollX: number; scrollY: number; zoom: number } | null>(null);
   /** Viewport broadcast: interval handle */
   const viewportBroadcastRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Guard: true while stopFollowing is propagating to Excalidraw, to prevent onChange loop */
+  const suppressFollowSyncRef = useRef(false);
   /** Last known cursor position (from onPointerUpdate), reused by viewport broadcast */
   const lastPointerRef = useRef<{ x: number; y: number; button: 'down' | 'up'; tool: 'pointer' | 'laser' }>({ x: 0, y: 0, button: 'up', tool: 'pointer' });
 
@@ -775,6 +779,20 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   // Follow mode
   const startFollowing = useCallback((userId: string) => {
     setFollowingUserId(userId);
+    // Sync Excalidraw's native follow state so the "Following [name]" badge and
+    // is-followed outline appear regardless of which UI triggered the follow.
+    const api = excalidrawAPIRef.current as { updateScene: (data: unknown) => void } | null;
+    if (api) {
+      const collaborator = collaboratorMapRef.current.get(userId);
+      api.updateScene({
+        appState: {
+          userToFollow: {
+            socketId: userId,
+            username: collaborator?.username || '',
+          },
+        },
+      });
+    }
   }, []);
 
   const stopFollowing = useCallback(() => {
@@ -785,6 +803,15 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     if (followLerpRafRef.current !== null) {
       cancelAnimationFrame(followLerpRafRef.current);
       followLerpRafRef.current = null;
+    }
+    // Clear Excalidraw's native follow state.
+    // Set the guard flag first to prevent the onChange handler from calling stopFollowing again.
+    const api = excalidrawAPIRef.current as { updateScene: (data: unknown) => void } | null;
+    if (api) {
+      suppressFollowSyncRef.current = true;
+      api.updateScene({ appState: { userToFollow: null } });
+      // Reset the guard after a tick (updateScene is synchronous but onChange fires async)
+      setTimeout(() => { suppressFollowSyncRef.current = false; }, 0);
     }
   }, []);
 
@@ -898,5 +925,6 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     flushPendingSceneUpdates,
     getCollaboratorIds,
     isPersistentCollab,
+    suppressFollowSyncRef,
   };
 }
