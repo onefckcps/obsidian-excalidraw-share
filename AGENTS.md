@@ -312,6 +312,7 @@ interface ExcaliShareSettings {
   autoSyncOnSave: boolean;             // auto-sync on file modify
   autoSyncDelaySecs: number;           // debounce delay (1-30s)
   toolbarCollapsedByDefault: boolean;  // start collapsed
+  mobilePopoverBottomSheet: boolean;   // use bottom-sheet style on mobile (default: true); false = dropdown like desktop
   persistentCollabAutoSync: boolean;   // auto-pull server changes on open (default: true)
   enableZoomAdaptiveStroke: boolean;   // zoom-adaptive stroke width (default: true)
   zoomAdaptiveBaseStrokeWidth: number; // base stroke width at 100% zoom (default: 0.6)
