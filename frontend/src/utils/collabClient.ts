@@ -14,6 +14,7 @@ const MAX_BUFFERED_UPDATES = 10;
 export class CollabClient {
   private ws: WebSocket | null = null;
   private sessionId: string;
+  private drawingId: string;
   private displayName: string;
   private handlers: Map<string, MessageHandler[]> = new Map();
   private reconnectAttempt = 0;
@@ -35,11 +36,17 @@ export class CollabClient {
   /** When true, reconnect indefinitely (for persistent collab sessions) */
   private persistentMode: boolean = false;
 
-  constructor(sessionId: string, displayName: string, password?: string, persistentMode?: boolean) {
+  constructor(sessionId: string, drawingId: string, displayName: string, password?: string, persistentMode?: boolean) {
     this.sessionId = sessionId;
+    this.drawingId = drawingId;
     this.displayName = displayName;
     this.password = password;
     this.persistentMode = persistentMode ?? false;
+  }
+
+  /** Update the session ID (e.g., after re-activating a persistent session) */
+  updateSessionId(newSessionId: string): void {
+    this.sessionId = newSessionId;
   }
 
   connect(): void {
@@ -48,14 +55,56 @@ export class CollabClient {
     this._connect();
   }
 
-  /** Manually trigger a reconnect attempt, resetting the attempt counter */
-  manualReconnect(): void {
+  /** Manually trigger a reconnect attempt, resetting the attempt counter.
+   *  Checks session status via HTTP first to handle stale session IDs (e.g., after server restart). */
+  async manualReconnect(): Promise<void> {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.reconnectAttempt = 0;
     this.intentionalClose = false;
+
+    // Check session status before attempting WebSocket reconnect
+    try {
+      const statusRes = await fetch(`/api/collab/status/${this.drawingId}`);
+      if (statusRes.ok) {
+        const statusData = await statusRes.json();
+        if (statusData.active && statusData.session_id) {
+          // Session exists — update session ID if it changed
+          if (statusData.session_id !== this.sessionId) {
+            console.log(`ExcaliShare Collab: Session ID changed (${this.sessionId} → ${statusData.session_id}), updating`);
+            this.sessionId = statusData.session_id;
+          }
+          this._connect();
+          return;
+        } else if (statusData.persistent) {
+          // Persistent collab but no active session — activate it
+          console.log('ExcaliShare Collab: Persistent session not active, activating...');
+          try {
+            const activateRes = await fetch(`/api/persistent-collab/activate/${this.drawingId}`, { method: 'POST' });
+            if (activateRes.ok) {
+              const activateData = await activateRes.json();
+              console.log(`ExcaliShare Collab: Activated new persistent session ${activateData.session_id}`);
+              this.sessionId = activateData.session_id;
+              this._emit('_session_reactivated', { session_id: activateData.session_id } as unknown as ServerMessage);
+              this._connect();
+              return;
+            }
+          } catch (activateErr) {
+            console.error('ExcaliShare Collab: Failed to activate persistent session', activateErr);
+          }
+        }
+        // Session is gone and not persistent — emit session_lost
+        console.log('ExcaliShare Collab: Session no longer exists on server');
+        this._emit('_session_lost', {} as ServerMessage);
+        return;
+      }
+    } catch (err) {
+      // Network error — server may still be down, try WS anyway
+      console.warn('ExcaliShare Collab: Failed to check session status, attempting WS reconnect', err);
+    }
+
     this._connect();
   }
 
@@ -148,9 +197,52 @@ export class CollabClient {
     // Emit reconnecting event so UI can show progress
     this._emit('_reconnecting', { attempt: this.reconnectAttempt + 1, maxAttempts } as unknown as ServerMessage);
 
-    this.reconnectTimer = setTimeout(() => {
+    this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       this.reconnectAttempt++;
+
+      // Before attempting WebSocket reconnect, check if the session still exists
+      // via HTTP. This avoids wasting reconnect attempts on a stale session ID
+      // (e.g., after server restart where all in-memory sessions are lost).
+      try {
+        const statusRes = await fetch(`/api/collab/status/${this.drawingId}`);
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          if (statusData.active && statusData.session_id) {
+            // Session exists — update session ID if it changed (e.g., persistent session re-created)
+            if (statusData.session_id !== this.sessionId) {
+              console.log(`ExcaliShare Collab: Session ID changed (${this.sessionId} → ${statusData.session_id}), updating`);
+              this.sessionId = statusData.session_id;
+            }
+            this._connect();
+            return;
+          } else if (statusData.persistent) {
+            // Persistent collab but no active session — try to activate it
+            console.log('ExcaliShare Collab: Persistent session not active, activating...');
+            try {
+              const activateRes = await fetch(`/api/persistent-collab/activate/${this.drawingId}`, { method: 'POST' });
+              if (activateRes.ok) {
+                const activateData = await activateRes.json();
+                console.log(`ExcaliShare Collab: Activated new persistent session ${activateData.session_id}`);
+                this.sessionId = activateData.session_id;
+                this._emit('_session_reactivated', { session_id: activateData.session_id } as unknown as ServerMessage);
+                this._connect();
+                return;
+              }
+            } catch (activateErr) {
+              console.error('ExcaliShare Collab: Failed to activate persistent session', activateErr);
+            }
+          }
+          // Session is gone and not persistent — emit session_lost
+          console.log('ExcaliShare Collab: Session no longer exists on server');
+          this._emit('_session_lost', {} as ServerMessage);
+          return;
+        }
+      } catch (err) {
+        // Network error checking status — server may still be down, continue with WS reconnect
+        console.warn('ExcaliShare Collab: Failed to check session status, attempting WS reconnect anyway', err);
+      }
+
       this._connect();
     }, delay);
   }

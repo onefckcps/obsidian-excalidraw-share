@@ -417,7 +417,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       // Track which drawing this collab session belongs to
       collabDrawingIdRef.current = drawingId || null;
 
-      const client = new CollabClient(sessionId, finalName, password);
+      const client = new CollabClient(sessionId, drawingId || '', finalName, password);
 
       // Handle snapshot (initial state)
       client.on('snapshot', (msg: ServerMessage) => {
@@ -717,6 +717,41 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         // Do NOT null clientRef so manualReconnect() can still trigger a new attempt.
         setIsConnected(false);
         setReconnectState('failed');
+      });
+
+      // Handle session lost (session no longer exists on server, e.g., after server restart)
+      client.on('_session_lost', () => {
+        console.log('ExcaliShare Collab: Session lost — server no longer has this session');
+        // Treat as session ended (not saved, since server lost it)
+        setSessionEnded({ saved: false });
+        setIsJoined(false);
+        setIsConnected(false);
+        setIsCollabActive(false);
+        setSessionId(null);
+        setCollaborators([]);
+        setFollowingUserId(null);
+        setReconnectState('idle');
+        collabDrawingIdRef.current = null;
+        collaboratorMapRef.current = new Map();
+        client.disconnect();
+        clientRef.current = null;
+
+        // Clear collaborators from Excalidraw
+        const api = excalidrawAPIRef.current as {
+          updateScene: (data: unknown) => void;
+        } | null;
+        if (api) {
+          api.updateScene({ collaborators: new Map() });
+        }
+      });
+
+      // Handle session reactivated (persistent session was re-created with a new ID)
+      client.on('_session_reactivated', (msg: ServerMessage) => {
+        const data = msg as unknown as { session_id: string };
+        if (data.session_id) {
+          console.log(`ExcaliShare Collab: Session reactivated with new ID ${data.session_id}`);
+          setSessionId(data.session_id);
+        }
       });
 
       // Handle errors

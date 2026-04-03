@@ -229,6 +229,8 @@ export default class ExcaliSharePlugin extends Plugin {
   private _orphanObservers: Map<string, MutationObserver> = new Map();
   /** MutationObservers watching for excalidraw-loading → excalidraw transition, keyed by leafId */
   private _loadingLeafObservers: Map<string, MutationObserver> = new Map();
+  /** Polling intervals for excalidraw-loading → excalidraw transition fallback, keyed by leafId */
+  private _loadingLeafPollers: Map<string, ReturnType<typeof setInterval>> = new Map();
   /** Fallback retry timers for initial injection, keyed by leafId */
   private _retryTimers: Record<string, ReturnType<typeof setTimeout>> = {};
   /** Track which file path is associated with each leaf's toolbar */
@@ -573,14 +575,28 @@ export default class ExcaliSharePlugin extends Plugin {
       })
     );
 
-    // Initial toolbar injection for the current view
-    // Use longer delay on mobile where Excalidraw may take longer to initialize
-    setTimeout(() => {
+    // Initial toolbar injection for the current view.
+    // Use onLayoutReady to wait for the workspace to be fully restored after startup,
+    // instead of a fragile setTimeout. This ensures Excalidraw views are ready.
+    this.app.workspace.onLayoutReady(() => {
       const leaf = this.app.workspace.activeLeaf;
       if (leaf) {
         this.handleLeafChange(leaf);
       }
-    }, 1000);
+      // Also scan all open leaves — on startup, multiple Excalidraw tabs may be open
+      // but only the active one gets handled above. Scan the rest with a short delay
+      // to let Excalidraw finish initializing.
+      setTimeout(() => {
+        this.app.workspace.iterateAllLeaves((l: WorkspaceLeaf) => {
+          const leafId = (l as any).id || 'default';
+          if (l.view.getViewType() === 'excalidraw' && !this.toolbarInstances.has(leafId)) {
+            this.handleLeafChange(l);
+          } else if (l.view.getViewType() === 'excalidraw-loading' && !this._loadingLeafObservers.has(leafId)) {
+            this.watchLoadingLeaf(l, leafId);
+          }
+        });
+      }, 500);
+    });
 
     // ── Background Reconciliation: periodically check active drawing against server ──
     this._backgroundReconcileInterval = setInterval(() => {
@@ -609,13 +625,15 @@ export default class ExcaliSharePlugin extends Plugin {
     }
     this.toolbarInstances.clear();
 
-    // Disconnect all MutationObservers
+    // Disconnect all MutationObservers and polling intervals
     for (const obs of this._mountObservers.values()) obs.disconnect();
     this._mountObservers.clear();
     for (const obs of this._orphanObservers.values()) obs.disconnect();
     this._orphanObservers.clear();
     for (const obs of this._loadingLeafObservers.values()) obs.disconnect();
     this._loadingLeafObservers.clear();
+    for (const poller of this._loadingLeafPollers.values()) clearInterval(poller);
+    this._loadingLeafPollers.clear();
 
     // Remove global styles
     removeGlobalStyles();
@@ -781,6 +799,12 @@ export default class ExcaliSharePlugin extends Plugin {
       loadingObs.disconnect();
       this._loadingLeafObservers.delete(leafId);
     }
+    // Clear loading leaf polling interval
+    const loadingPoller = this._loadingLeafPollers.get(leafId);
+    if (loadingPoller) {
+      clearInterval(loadingPoller);
+      this._loadingLeafPollers.delete(leafId);
+    }
   }
 
   /**
@@ -795,28 +819,62 @@ export default class ExcaliSharePlugin extends Plugin {
 
     const containerEl = leaf.view.containerEl;
 
+    // Cleanup helper: stops both the MutationObserver and the polling interval
+    const cleanup = () => {
+      observer.disconnect();
+      this._loadingLeafObservers.delete(leafId);
+      const poller = this._loadingLeafPollers.get(leafId);
+      if (poller) {
+        clearInterval(poller);
+        this._loadingLeafPollers.delete(leafId);
+      }
+    };
+
+    const onReady = () => {
+      cleanup();
+      // Now handle the leaf as a fully loaded Excalidraw view
+      this.handleLeafChange(leaf);
+    };
+
     const observer = new MutationObserver(() => {
       // Check if Excalidraw has finished loading
       const viewType = leaf.view.getViewType();
       if (viewType === 'excalidraw') {
-        observer.disconnect();
-        this._loadingLeafObservers.delete(leafId);
-        // Now handle the leaf as a fully loaded Excalidraw view
-        this.handleLeafChange(leaf);
+        onReady();
       }
     });
 
     observer.observe(containerEl, { childList: true, subtree: true, attributes: true });
     this._loadingLeafObservers.set(leafId, observer);
 
+    // Polling fallback: the MutationObserver watches DOM mutations on containerEl,
+    // but the view type transition (excalidraw-loading → excalidraw) may happen
+    // without triggering a DOM mutation on the observed container (e.g., the Excalidraw
+    // plugin may swap the entire view object internally). Poll every 500ms as a safety net.
+    const pollInterval = setInterval(() => {
+      try {
+        const viewType = leaf.view.getViewType();
+        if (viewType === 'excalidraw') {
+          onReady();
+        }
+      } catch {
+        // Leaf may have been detached — clean up
+        cleanup();
+      }
+    }, 500);
+    this._loadingLeafPollers.set(leafId, pollInterval);
+
     // Safety timeout: stop watching after 30s to avoid memory leaks
     setTimeout(() => {
       if (this._loadingLeafObservers.has(leafId)) {
-        observer.disconnect();
-        this._loadingLeafObservers.delete(leafId);
-        // One final attempt in case the observer missed the transition
-        if (leaf.view.getViewType() === 'excalidraw') {
-          this.handleLeafChange(leaf);
+        cleanup();
+        // One final attempt in case both observer and polling missed the transition
+        try {
+          if (leaf.view.getViewType() === 'excalidraw') {
+            this.handleLeafChange(leaf);
+          }
+        } catch {
+          // Leaf may have been detached
         }
       }
     }, 30_000);
