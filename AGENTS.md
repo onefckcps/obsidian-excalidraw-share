@@ -850,6 +850,18 @@ Fixed a bug where enabling persistent collab after unpublishing and republishing
 Fix applied:
 - [x] Added `collabManager` cleanup in `unpublishDrawing()` in `main.ts`: if the active `collabManager` is joined to the drawing being unpublished, `cleanupCollabState()` is called to destroy the WebSocket connection and clear all session tracking state.
 
+**Mobile Multi-Touch Pan Bug Fix (April 2026)**
+Fixed a bug where two-finger pan gestures on mobile during a live collab session caused the cursor to jump wildly between both finger positions. With the laser pointer or pen tool active, lines were drawn between the two touch positions.
+
+Root cause:
+- `handlePointerUpdate` in `Viewer.tsx` received `pointersMap` (containing all active touch points) but never checked its size. Excalidraw fires `onPointerUpdate` for each touch point individually, so both finger positions were broadcast to collaborators.
+- `attachPointerListener` in `collabManager.ts` (plugin) used raw DOM `pointermove` events with no multi-touch guard — secondary touch points fired their own events and were broadcast.
+
+Fixes applied:
+- [x] Added `if (payload.pointersMap.size > 1) return;` guard in `handlePointerUpdate` in `Viewer.tsx` — skips all pointer broadcasts during multi-touch gestures
+- [x] Added active pointer counter (`pointerdown`/`pointerup`/`pointercancel` listeners) in `attachPointerListener` in `collabManager.ts` — skips `pointermove` broadcast when `activePointerCount > 1`
+- [x] Added `isPrimary` check in `attachPointerListener` as second layer — skips non-primary touch points
+
 **Mobile & Tablet Responsive Redesign (April 2026)**
 Completely overhauled the responsive layout system in the frontend viewer to fix toolbar overlap and collab session toolbar shift issues.
 
