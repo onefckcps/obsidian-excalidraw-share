@@ -295,26 +295,27 @@ export class CollabClient {
     // Store the latest shouldSendCheck so the timer uses the most recent one
     this.pendingShouldSendCheck = shouldSendCheck ?? null;
 
-    // Clear existing timer and set a new one with the appropriate delay
-    if (this.sceneUpdateTimer) {
-      clearTimeout(this.sceneUpdateTimer);
-    }
-    this.sceneUpdateTimer = setTimeout(() => {
-      this.sceneUpdateTimer = null;
-      if (this.pendingSceneUpdate) {
-        // Re-check at send time: if the check fails (e.g., multi-touch detected),
-        // cancel the update and reset delta tracking
-        if (this.pendingShouldSendCheck && !this.pendingShouldSendCheck()) {
+    // Leading-edge debounce (matching frontend): set timer once, don't restart on each call.
+    // This ensures updates are sent every ~debounceMs during continuous drawing,
+    // rather than waiting for a quiet period (trailing-edge) which delays until stroke ends.
+    if (!this.sceneUpdateTimer) {
+      this.sceneUpdateTimer = setTimeout(() => {
+        this.sceneUpdateTimer = null;
+        if (this.pendingSceneUpdate) {
+          // Re-check at send time: if the check fails (e.g., multi-touch detected),
+          // cancel the update and reset delta tracking
+          if (this.pendingShouldSendCheck && !this.pendingShouldSendCheck()) {
+            this.pendingSceneUpdate = null;
+            this.pendingShouldSendCheck = null;
+            this.lastSentVersions.clear();
+            return;
+          }
+          this._send(this.pendingSceneUpdate);
           this.pendingSceneUpdate = null;
           this.pendingShouldSendCheck = null;
-          this.lastSentVersions.clear();
-          return;
         }
-        this._send(this.pendingSceneUpdate);
-        this.pendingSceneUpdate = null;
-        this.pendingShouldSendCheck = null;
-      }
-    }, debounceMs);
+      }, debounceMs);
+    }
   }
 
   /**

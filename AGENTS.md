@@ -1043,6 +1043,12 @@ Fixes applied:
 - [x] Fixed ghost participant bug: `_connect()` in plugin `collabClient.ts` now closes old WebSocket (nulls event handlers first, then calls `close()`) before creating a new one
 - [x] Fixed ghost participant bug: `_connect()` in frontend `collabClient.ts` — same fix applied
 
+**Plugin Real-Time Stroke Transmission Fix (April 2026)**
+Fixed a behavioral difference where the Obsidian plugin delayed sending drawn strokes until the user stopped drawing, while the frontend transmitted strokes in real-time (~100ms intervals). Root cause: the plugin's `CollabClient.sendSceneUpdate()` used a **trailing-edge debounce** (clears and restarts the timer on every call), while the frontend used a **leading-edge debounce** (sets the timer once, doesn't restart). During a continuous freedraw stroke, Excalidraw fires `onChange` every ~16ms (60fps). With trailing-edge debounce and an 80ms window, the timer was perpetually reset and never fired until the user lifted the pen — causing the "waits until you stop moving" behavior.
+
+Fix applied:
+- [x] Changed `sendSceneUpdate()` in `obsidian-plugin/collabClient.ts` from trailing-edge to leading-edge debounce — `if (!this.sceneUpdateTimer)` instead of `clearTimeout + new setTimeout` on every call. This matches the frontend's behavior exactly: updates are sent every ~80ms during active drawing (or ~16ms when idle), rather than only after the stroke ends.
+
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)
 - Persistent collab sessions are **auto-recreated from disk** on first visitor after server restart
