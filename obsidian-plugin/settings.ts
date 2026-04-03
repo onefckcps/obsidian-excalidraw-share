@@ -35,6 +35,9 @@ export interface ExcaliShareSettings {
   /** Automatically suspend LiveSync (and other file sync plugins) during active collab sessions
    *  to prevent file-level sync from conflicting with real-time WebSocket collaboration */
   suspendLiveSyncDuringCollab: boolean;
+  /** Detect external file changes (e.g., from LiveSync) during collab and auto-restore from server.
+   *  Enable this if you use file-sync plugins alongside live collaboration. */
+  detectExternalFileChanges: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExcaliShareSettings = {
@@ -58,6 +61,7 @@ export const DEFAULT_SETTINGS: ExcaliShareSettings = {
   disableSmoothing: true,
   enableRightClickEraser: true,
   suspendLiveSyncDuringCollab: true,
+  detectExternalFileChanges: false,
 };
 
 /** Interface for the plugin reference needed by the settings tab */
@@ -252,6 +256,17 @@ export class ExcaliShareSettingTab extends PluginSettingTab {
         toggle.setValue(this.pluginRef.settings.suspendLiveSyncDuringCollab)
           .onChange(value => {
             this.pluginRef.settings.suspendLiveSyncDuringCollab = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Detect external file changes')
+      .setDesc('Detect when external tools (e.g., LiveSync) overwrite the drawing file during a collab session and automatically restore the authoritative state from the server. Only needed if you use file-sync plugins alongside live collaboration.')
+      .addToggle(toggle => {
+        toggle.setValue(this.pluginRef.settings.detectExternalFileChanges)
+          .onChange(value => {
+            this.pluginRef.settings.detectExternalFileChanges = value;
             this.pluginRef.saveSettings();
           });
       });

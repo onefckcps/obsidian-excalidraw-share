@@ -322,6 +322,7 @@ interface ExcaliShareSettings {
   disableSmoothing: boolean;           // disable smoothing/streamline (default: true)
   enableRightClickEraser: boolean;     // right-click eraser in freedraw (default: true)
   suspendLiveSyncDuringCollab: boolean; // pause LiveSync during collab sessions (default: true)
+  detectExternalFileChanges: boolean;  // detect external file changes during collab (default: false)
 }
 ```
 
@@ -1031,6 +1032,16 @@ Multi-layer fix applied:
 - [x] Added version regression guard in `handleLocalSceneChange()` — never sends individual elements whose version went backwards (safety net for partial file reloads)
 - [x] Added collab guard in `handleMetadataChange()` — skips frontmatter recovery/toolbar refresh for the active collab drawing during a session (prevents LiveSync-triggered frontmatter overwrites from disrupting collab)
 - [x] `cleanupCollabState()` and `onunload()` both call `resumeLiveSync()` as safety nets
+
+**External File Change Detection — Disabled by Default + Ghost Participant Bug Fix (April 2026)**
+The `detectFileReload()` feature (which detects when external tools like LiveSync overwrite the drawing file during collab and triggers a WebSocket reconnect to restore server state) was causing duplicate/ghost participants. Root cause: `_connect()` in both `CollabClient` implementations (plugin and frontend) created a new WebSocket without closing the old one. The old connection stayed alive on the server until TCP timeout, and each new connection got a new `user_id` via `Uuid::new_v4()`, creating ghost participants.
+
+Fixes applied:
+- [x] Added `detectExternalFileChanges` setting (default: `false`) — disables the feature by default since it's only needed with file-sync plugins
+- [x] Added settings UI toggle under "Live Collaboration" section in `settings.ts`
+- [x] Guarded `detectFileReload()` call in `handleLocalSceneChange()` with the new setting in `collabManager.ts`
+- [x] Fixed ghost participant bug: `_connect()` in plugin `collabClient.ts` now closes old WebSocket (nulls event handlers first, then calls `close()`) before creating a new one
+- [x] Fixed ghost participant bug: `_connect()` in frontend `collabClient.ts` — same fix applied
 
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)

@@ -124,6 +124,10 @@ export class CollabManager {
   // ── Canvas element finder (for pointer tracking) ──
   private getCanvasContainerFn: (() => HTMLElement | null) | null = null;
 
+  // ── Settings (set from main.ts) ──
+  /** When true, detect external file changes (e.g., LiveSync) during collab and auto-restore from server */
+  detectExternalFileChanges = false;
+
   constructor(options: {
     baseUrl: string;
     displayName: string;
@@ -923,7 +927,8 @@ export class CollabManager {
 
     // Detect file reload from external sync (e.g., LiveSync overwrote the file)
     // This must be checked BEFORE version tracking is updated
-    if (this.detectFileReload(elements)) {
+    // Only active when the setting is enabled (off by default)
+    if (this.detectExternalFileChanges && this.detectFileReload(elements)) {
       this.handleFileReloadDuringCollab();
       return; // Do NOT send stale state to server
     }

@@ -123,6 +123,19 @@ export class CollabClient {
   }
 
   private _connect(): void {
+    // Close any existing WebSocket to prevent ghost participants on the server.
+    // The old connection would stay alive until TCP timeout, causing duplicate
+    // participants because each new WS connection gets a new user_id.
+    if (this.ws) {
+      // Remove event handlers to prevent onclose from triggering reconnect
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      try { this.ws.close(); } catch (_) { /* ignore */ }
+      this.ws = null;
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
     let url = `${protocol}//${host}/ws/collab/${this.sessionId}?name=${encodeURIComponent(this.displayName)}`;

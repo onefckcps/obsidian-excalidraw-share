@@ -2376,6 +2376,9 @@ export default class ExcaliSharePlugin extends Plugin {
         },
       });
 
+      // Pass settings to collabManager
+      this.collabManager.detectExternalFileChanges = this.settings.detectExternalFileChanges;
+
       await this.collabManager.startAndJoin(drawingId, sessionId, password, this.settings.apiKey || null, persistentMode ?? false);
     } catch (error) {
       console.error('ExcaliShare: Failed to join collab from Obsidian', error);
