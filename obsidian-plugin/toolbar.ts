@@ -99,14 +99,19 @@ export class ExcaliShareToolbar {
   private popoverBackdropEl: HTMLElement | null = null;
   private islandBtnEl: HTMLElement | null = null;
 
+  /** Whether to use bottom-sheet style on mobile (true) or desktop dropdown style (false) */
+  private mobilePopoverBottomSheet: boolean;
+
   constructor(
     callbacks: ToolbarCallbacks,
     position: ToolbarPosition = 'auto',
     startCollapsed = true,
+    mobilePopoverBottomSheet = true,
   ) {
     this.callbacks = callbacks;
     this.position = position;
     this.startCollapsed = startCollapsed;
+    this.mobilePopoverBottomSheet = mobilePopoverBottomSheet;
     this.state = {
       status: 'unpublished',
       publishedId: null,
@@ -329,7 +334,7 @@ export class ExcaliShareToolbar {
 
     const isMobile = Platform.isMobile || Platform.isMobileApp;
 
-    if (isMobile) {
+    if (isMobile && this.mobilePopoverBottomSheet) {
       this.renderMobilePopover();
     } else {
       this.renderDesktopPopover();

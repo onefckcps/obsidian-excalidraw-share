@@ -965,6 +965,7 @@ export default class ExcaliSharePlugin extends Plugin {
       callbacks,
       this.settings.toolbarPosition,
       this.settings.toolbarCollapsedByDefault,
+      this.settings.mobilePopoverBottomSheet,
     );
   }
 

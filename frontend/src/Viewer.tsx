@@ -53,6 +53,14 @@ function Viewer() {
   // Store the password used to successfully load a password-protected drawing,
   // so it can be reused for subsequent re-fetches (e.g. after session ends).
   const currentPasswordRef = useRef<string | undefined>(undefined)
+  // Mobile collab popover style preference: bottom sheet (true) or dropdown (false)
+  const [mobileCollabBottomSheet, setMobileCollabBottomSheet] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('mobileCollabBottomSheet')
+      if (saved === 'false') return false
+    }
+    return true // default: bottom sheet on mobile
+  })
 
   const breakpoint = useBreakpoint()
   const isPhone = breakpoint === 'phone'
@@ -1190,6 +1198,11 @@ function Viewer() {
           onStopFollowing={collab.stopFollowing}
           onClose={() => setShowCollabPopover(false)}
           isPhone={isPhone}
+          useBottomSheet={mobileCollabBottomSheet}
+          onToggleBottomSheet={(value) => {
+            setMobileCollabBottomSheet(value)
+            localStorage.setItem('mobileCollabBottomSheet', String(value))
+          }}
         />
       )}
 

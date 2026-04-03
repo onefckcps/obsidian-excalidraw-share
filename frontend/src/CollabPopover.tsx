@@ -31,6 +31,10 @@ interface CollabPopoverProps {
   onStopFollowing: () => void;
   onClose: () => void;
   isPhone?: boolean;
+  /** Whether to use bottom-sheet style (only relevant when isPhone=true) */
+  useBottomSheet?: boolean;
+  /** Called when user toggles the bottom-sheet preference on mobile */
+  onToggleBottomSheet?: (value: boolean) => void;
 }
 
 function CollabPopover({
@@ -44,9 +48,14 @@ function CollabPopover({
   onStopFollowing,
   onClose,
   isPhone = false,
+  useBottomSheet = true,
+  onToggleBottomSheet,
 }: CollabPopoverProps) {
   const isDark = theme === 'dark';
   const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Effective bottom-sheet mode: only when on phone AND useBottomSheet is true
+  const isBottomSheet = isPhone && useBottomSheet;
 
   // Close on click outside
   useEffect(() => {
@@ -74,9 +83,9 @@ function CollabPopover({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  // Phone: bottom sheet with backdrop
-  // Tablet/Desktop: top-right dropdown
-  const popoverStyle: React.CSSProperties = isPhone
+  // Bottom sheet style (phone + useBottomSheet=true)
+  // Dropdown style (desktop/tablet, or phone with useBottomSheet=false)
+  const popoverStyle: React.CSSProperties = isBottomSheet
     ? {
         position: 'fixed',
         bottom: 0,
@@ -113,8 +122,8 @@ function CollabPopover({
 
   return (
     <>
-      {/* Backdrop overlay on phone */}
-      {isPhone && (
+      {/* Backdrop overlay on bottom sheet */}
+      {isBottomSheet && (
         <div
           style={{
             position: 'fixed',
@@ -132,8 +141,8 @@ function CollabPopover({
       ref={popoverRef}
       style={popoverStyle}
     >
-      {/* Drag handle on phone */}
-      {isPhone && (
+      {/* Drag handle on bottom sheet */}
+      {isBottomSheet && (
         <div style={{
           width: 40,
           height: 4,
@@ -320,6 +329,60 @@ function CollabPopover({
       >
         Leave Session
       </button>
+
+      {/* Mobile display style toggle — only shown on phone */}
+      {isPhone && onToggleBottomSheet && (
+        <div style={{
+          marginTop: '10px',
+          paddingTop: '10px',
+          borderTop: `1px solid ${isDark ? '#333' : '#eee'}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '8px',
+        }}>
+          <span style={{
+            fontSize: '11px',
+            color: isDark ? '#777' : '#aaa',
+          }}>
+            Bottom sheet on mobile
+          </span>
+          {/* Toggle switch */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleBottomSheet(!useBottomSheet);
+            }}
+            title={useBottomSheet ? 'Switch to dropdown style' : 'Switch to bottom sheet style'}
+            style={{
+              position: 'relative',
+              width: '36px',
+              height: '20px',
+              borderRadius: '10px',
+              border: 'none',
+              backgroundColor: useBottomSheet
+                ? (isDark ? '#4CAF50' : '#4CAF50')
+                : (isDark ? '#555' : '#ccc'),
+              cursor: 'pointer',
+              padding: 0,
+              flexShrink: 0,
+              transition: 'background-color 0.2s',
+            }}
+          >
+            <span style={{
+              position: 'absolute',
+              top: '2px',
+              left: useBottomSheet ? '18px' : '2px',
+              width: '16px',
+              height: '16px',
+              borderRadius: '50%',
+              backgroundColor: '#fff',
+              transition: 'left 0.2s',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+            }} />
+          </button>
+        </div>
+      )}
     </div>
     </>
   );

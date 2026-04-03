@@ -16,6 +16,9 @@ export interface ExcaliShareSettings {
   autoSyncOnSave: boolean;
   autoSyncDelaySecs: number;
   toolbarCollapsedByDefault: boolean;
+  /** Use bottom-sheet style for the toolbar popover on mobile devices (default: true).
+   *  When false, the same dropdown style as desktop is used on mobile. */
+  mobilePopoverBottomSheet: boolean;
   /** Auto-pull server changes when opening a persistent collab drawing */
   persistentCollabAutoSync: boolean;
   // ── Excalidraw Scripts ──
@@ -44,6 +47,7 @@ export const DEFAULT_SETTINGS: ExcaliShareSettings = {
   autoSyncOnSave: false,
   autoSyncDelaySecs: 5,
   toolbarCollapsedByDefault: true,
+  mobilePopoverBottomSheet: true,
   persistentCollabAutoSync: true,
   enableZoomAdaptiveStroke: true,
   zoomAdaptiveBaseStrokeWidth: 0.7,
@@ -146,6 +150,17 @@ export class ExcaliShareSettingTab extends PluginSettingTab {
         toggle.setValue(this.pluginRef.settings.toolbarCollapsedByDefault)
           .onChange(value => {
             this.pluginRef.settings.toolbarCollapsedByDefault = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Mobile: Bottom Sheet Popover')
+      .setDesc('On mobile devices, show the toolbar popover as a bottom sheet (slides up from the bottom). Disable to use the same dropdown style as on desktop.')
+      .addToggle(toggle => {
+        toggle.setValue(this.pluginRef.settings.mobilePopoverBottomSheet)
+          .onChange(value => {
+            this.pluginRef.settings.mobilePopoverBottomSheet = value;
             this.pluginRef.saveSettings();
           });
       });
