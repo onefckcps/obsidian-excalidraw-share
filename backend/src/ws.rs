@@ -8,7 +8,13 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
+use tokio::time::{interval, Duration};
 use uuid::Uuid;
+
+/// How often to send a WebSocket ping to keep the connection alive through proxies.
+/// Many reverse proxies (nginx, Cloudflare, etc.) drop idle WS connections after 60s.
+/// Sending a ping every 30s ensures the connection stays alive.
+const WS_PING_INTERVAL_SECS: u64 = 30;
 
 use crate::collab::{ClientMessage, ServerMessage, SessionManager};
 use crate::error::AppError;
@@ -164,29 +170,51 @@ async fn handle_ws_connection(
 
     let user_id_for_send = user_id.clone();
 
-    // Task: forward broadcast messages to this WebSocket client
+    // Task: forward broadcast messages to this WebSocket client + send periodic pings
+    // to keep the connection alive through reverse proxies (nginx, Cloudflare, etc.)
+    // that drop idle WebSocket connections after ~60 seconds.
     let mut send_task = tokio::spawn(async move {
-        while let Ok(msg) = broadcast_rx.recv().await {
-            // Don't send scene_update/scene_delta/files_update messages back to the sender
-            match &msg {
-                ServerMessage::SceneUpdate { from, .. } if from == &user_id_for_send => continue,
-                ServerMessage::SceneDelta { from, .. } if from == &user_id_for_send => continue,
-                ServerMessage::FilesUpdate { from, .. } if from == &user_id_for_send => continue,
-                ServerMessage::PointerUpdate { user_id: uid, .. } if uid == &user_id_for_send => {
-                    continue
-                }
-                _ => {}
-            }
+        let mut ping_interval = interval(Duration::from_secs(WS_PING_INTERVAL_SECS));
+        // Skip the first tick (fires immediately)
+        ping_interval.tick().await;
 
-            if let Ok(json) = serde_json::to_string(&msg) {
-                if ws_sender.send(Message::Text(json.into())).await.is_err() {
-                    break;
-                }
-            }
+        loop {
+            tokio::select! {
+                // Broadcast message from other participants
+                result = broadcast_rx.recv() => {
+                    match result {
+                        Ok(msg) => {
+                            // Don't send scene_update/scene_delta/files_update messages back to the sender
+                            match &msg {
+                                ServerMessage::SceneUpdate { from, .. } if from == &user_id_for_send => continue,
+                                ServerMessage::SceneDelta { from, .. } if from == &user_id_for_send => continue,
+                                ServerMessage::FilesUpdate { from, .. } if from == &user_id_for_send => continue,
+                                ServerMessage::PointerUpdate { user_id: uid, .. } if uid == &user_id_for_send => {
+                                    continue
+                                }
+                                _ => {}
+                            }
 
-            // If session ended, close after sending the message
-            if matches!(msg, ServerMessage::SessionEnded { .. }) {
-                break;
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+
+                            // If session ended, close after sending the message
+                            if matches!(msg, ServerMessage::SessionEnded { .. }) {
+                                break;
+                            }
+                        }
+                        Err(_) => break, // Channel closed
+                    }
+                }
+                // Periodic ping to keep the connection alive through proxies
+                _ = ping_interval.tick() => {
+                    if ws_sender.send(Message::Ping(vec![].into())).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });

@@ -101,6 +101,9 @@ export class CollabManager {
   // ── Connection state ──
   private _isConnected = false;
   private _isJoined = false;
+  /** True after the first snapshot has been received (i.e. initial join completed).
+   *  Used to suppress duplicate "Joined collab session" notices on WS reconnect. */
+  private _hasJoinedOnce = false;
 
   // ── Follow mode (lerp-based viewport interpolation) ──
   private followingUserId: string | null = null;
@@ -302,6 +305,7 @@ export class CollabManager {
 
     this._isConnected = false;
     this._isJoined = false;
+    this._hasJoinedOnce = false;
     this.sessionId = null;
     this.drawingId = null;
     this.collaborators = [];
@@ -431,7 +435,14 @@ export class CollabManager {
     this.startFlushTimer();
 
     this.callbacks.onCollaboratorsChanged?.(this.collaborators);
-    new Notice(`ExcaliShare: Joined collab session with ${this.collaborators.length} participant(s)`);
+    // Only show the "joined" notice on the initial connection, not on every WS reconnect.
+    // On reconnect the server sends a fresh snapshot, but the user is already in the session.
+    if (!this._hasJoinedOnce) {
+      this._hasJoinedOnce = true;
+      new Notice(`ExcaliShare: Joined collab session with ${this.collaborators.length} participant(s)`);
+    } else {
+      console.log('ExcaliShare Collab: Reconnected to session (snapshot received, suppressing duplicate notice)');
+    }
   }
 
   /**
@@ -660,7 +671,13 @@ export class CollabManager {
     this.buildCollaboratorMap(msg.collaborators);
     this.syncCollaboratorsToExcalidraw();
     this.callbacks.onCollaboratorsChanged?.(this.collaborators);
-    new Notice(`ExcaliShare: ${msg.name} joined the session`);
+    // Suppress the notice when the joining user is ourselves (happens on WS reconnect:
+    // the server broadcasts user_joined to all participants including the reconnecting client).
+    if (msg.name !== this.displayName) {
+      new Notice(`ExcaliShare: ${msg.name} joined the session`);
+    } else {
+      console.log(`ExcaliShare Collab: Suppressed self-join notice for "${msg.name}" (WS reconnect)`);
+    }
   }
 
   private handleUserLeft(msg: Extract<ServerMessage, { type: 'user_left' }>): void {
