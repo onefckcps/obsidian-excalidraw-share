@@ -270,6 +270,15 @@ export default class ExcaliSharePlugin extends Plugin {
   /** Dedup guard: file paths currently being recovered via server lookup */
   private _recoveryInFlight: Set<string> = new Set();
 
+  // ── LiveSync Integration ──
+  /** Whether LiveSync is currently suspended by us */
+  private _liveSyncSuspended = false;
+  /** Original LiveSync settings before we suspended them (for restoration) */
+  private _liveSyncOriginalSettings: {
+    suspendFileWatching: boolean;
+    suspendParseReplicationResult: boolean;
+  } | null = null;
+
   async onload() {
     await this.loadSettings();
     console.log('ExcaliShare: Plugin loaded');
@@ -669,6 +678,97 @@ export default class ExcaliSharePlugin extends Plugin {
     if (this._healthCheckInterval) {
       clearInterval(this._healthCheckInterval);
       this._healthCheckInterval = null;
+    }
+
+    // Resume LiveSync if we suspended it (safety net)
+    this.resumeLiveSync();
+  }
+
+  // ── LiveSync Integration ──
+
+  /**
+   * Suspend LiveSync file watching and database reflecting during active collab sessions.
+   * This prevents file-level sync from conflicting with real-time WebSocket collaboration.
+   * LiveSync's "Scram Switches" (suspendFileWatching, suspendParseReplicationResult) are
+   * toggled via the plugin's settings object, accessed through Obsidian's plugin API.
+   */
+  private async suspendLiveSync(): Promise<void> {
+    if (!this.settings.suspendLiveSyncDuringCollab) return;
+    if (this._liveSyncSuspended) return;
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const plugins = (this.app as any).plugins;
+      const liveSyncPlugin = plugins?.getPlugin?.('obsidian-livesync');
+      if (!liveSyncPlugin?.settings) {
+        console.log('ExcaliShare: LiveSync not found, skipping suspension');
+        return;
+      }
+
+      // Save original settings so we can restore them later
+      this._liveSyncOriginalSettings = {
+        suspendFileWatching: liveSyncPlugin.settings.suspendFileWatching ?? false,
+        suspendParseReplicationResult: liveSyncPlugin.settings.suspendParseReplicationResult ?? false,
+      };
+
+      // If LiveSync is already suspended by the user, don't touch it
+      if (this._liveSyncOriginalSettings.suspendFileWatching &&
+          this._liveSyncOriginalSettings.suspendParseReplicationResult) {
+        console.log('ExcaliShare: LiveSync already suspended by user, skipping');
+        this._liveSyncOriginalSettings = null;
+        return;
+      }
+
+      // Suspend both file watching and database reflecting
+      liveSyncPlugin.settings.suspendFileWatching = true;
+      liveSyncPlugin.settings.suspendParseReplicationResult = true;
+
+      if (typeof liveSyncPlugin.saveSettings === 'function') {
+        await liveSyncPlugin.saveSettings();
+      }
+
+      this._liveSyncSuspended = true;
+      console.log('ExcaliShare: LiveSync suspended for collab session');
+      new Notice('ExcaliShare: LiveSync paused during collab');
+    } catch (e) {
+      console.error('ExcaliShare: Failed to suspend LiveSync', e);
+    }
+  }
+
+  /**
+   * Resume LiveSync by restoring the original settings that were saved before suspension.
+   * Called when a collab session ends or on plugin unload (safety net).
+   */
+  private async resumeLiveSync(): Promise<void> {
+    if (!this._liveSyncSuspended) return;
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const plugins = (this.app as any).plugins;
+      const liveSyncPlugin = plugins?.getPlugin?.('obsidian-livesync');
+      if (!liveSyncPlugin?.settings || !this._liveSyncOriginalSettings) {
+        this._liveSyncSuspended = false;
+        this._liveSyncOriginalSettings = null;
+        return;
+      }
+
+      // Restore original settings
+      liveSyncPlugin.settings.suspendFileWatching = this._liveSyncOriginalSettings.suspendFileWatching;
+      liveSyncPlugin.settings.suspendParseReplicationResult = this._liveSyncOriginalSettings.suspendParseReplicationResult;
+
+      if (typeof liveSyncPlugin.saveSettings === 'function') {
+        await liveSyncPlugin.saveSettings();
+      }
+
+      this._liveSyncSuspended = false;
+      this._liveSyncOriginalSettings = null;
+      console.log('ExcaliShare: LiveSync resumed after collab session');
+      new Notice('ExcaliShare: LiveSync resumed');
+    } catch (e) {
+      console.error('ExcaliShare: Failed to resume LiveSync', e);
+      // Force-clear state even on error to avoid permanent suspension
+      this._liveSyncSuspended = false;
+      this._liveSyncOriginalSettings = null;
     }
   }
 
@@ -1321,6 +1421,14 @@ export default class ExcaliSharePlugin extends Plugin {
   // ── Metadata Change ──
 
   private handleMetadataChange(file: TFile): void {
+    // Skip metadata change handling for the active collab file — during a live collab session,
+    // file-level sync (e.g., LiveSync) may overwrite frontmatter, triggering unnecessary
+    // recovery attempts and toolbar refreshes that disrupt the session.
+    if (this.collabManager?.isJoined && this.activeCollabDrawingId) {
+      const publishedId = this.getPublishedId(file) || this._publishedIdCache.get(file.path);
+      if (publishedId === this.activeCollabDrawingId) return;
+    }
+
     const activeFile = this.app.workspace.getActiveFile();
     if (activeFile && activeFile.path === file.path) {
       // Check if frontmatter just lost excalishare-id but we had it in memory cache.
@@ -2048,6 +2156,9 @@ export default class ExcaliSharePlugin extends Plugin {
       clearInterval(this.collabHealthInterval);
       this.collabHealthInterval = null;
     }
+
+    // Resume LiveSync if we suspended it for this collab session
+    this.resumeLiveSync();
   }
 
   /**
@@ -2098,6 +2209,9 @@ export default class ExcaliSharePlugin extends Plugin {
       this.collabManager.destroy();
       this.collabManager = null;
     }
+
+    // Suspend LiveSync to prevent file-level sync from conflicting with WebSocket collab
+    await this.suspendLiveSync();
 
     try {
       this.collabManager = new CollabManager({

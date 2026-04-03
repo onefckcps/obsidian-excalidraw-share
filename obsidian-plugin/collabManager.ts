@@ -835,8 +835,64 @@ export class CollabManager {
   }
 
   /**
+   * Detect if a file reload occurred (e.g., LiveSync overwrote the .excalidraw.md file).
+   * A file reload is characterized by many elements having LOWER versions than what we
+   * are tracking — a genuine local edit would only change 1-2 elements with higher versions.
+   *
+   * Returns true if a file reload is detected, meaning the onChange should be suppressed
+   * to avoid sending stale state to the server.
+   */
+  private detectFileReload(elements: readonly ExcalidrawElement[]): boolean {
+    // Need enough tracked elements to make a meaningful comparison
+    if (this.lastKnownVersions.size < 3) return false;
+
+    let regressedCount = 0;
+    let checkedCount = 0;
+
+    for (const el of elements) {
+      if (!el.id) continue;
+      const lastVersion = this.lastKnownVersions.get(el.id);
+      if (lastVersion !== undefined) {
+        checkedCount++;
+        if (el.version < lastVersion) {
+          regressedCount++;
+        }
+      }
+    }
+
+    // If >30% of known elements have regressed versions, this is a file reload
+    if (checkedCount > 0 && regressedCount / checkedCount > 0.3) {
+      console.warn(`ExcaliShare Collab: File reload detected — ${regressedCount}/${checkedCount} elements have regressed versions`);
+      return true;
+    }
+
+    // Also detect if many elements disappeared (file was replaced with a shorter version)
+    if (this.lastKnownVersions.size > 5 && elements.length < this.lastKnownVersions.size * 0.5) {
+      console.warn(`ExcaliShare Collab: File reload detected — element count dropped from ${this.lastKnownVersions.size} to ${elements.length}`);
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Handle a file reload detected during an active collab session.
+   * Suppresses the stale state and requests a fresh snapshot from the server
+   * by triggering a WebSocket reconnect.
+   */
+  private handleFileReloadDuringCollab(): void {
+    new Notice('ExcaliShare: External file change detected. Restoring collab state...');
+
+    // Reconnect WebSocket to get a fresh snapshot from the server
+    if (this.client) {
+      this.client.manualReconnect();
+    }
+  }
+
+  /**
    * Handle a local scene change detected via onChange callback.
    * Performs version-diff filtering to avoid echoing remote changes back.
+   * Also detects file reloads from external sync tools (e.g., LiveSync).
    */
   private handleLocalSceneChange(elements: readonly ExcalidrawElement[]): void {
     // Skip if we're in the middle of applying a remote update
@@ -845,12 +901,28 @@ export class CollabManager {
     // Skip if not connected
     if (!this.client?.isConnected) return;
 
+    // Detect file reload from external sync (e.g., LiveSync overwrote the file)
+    // This must be checked BEFORE version tracking is updated
+    if (this.detectFileReload(elements)) {
+      this.handleFileReloadDuringCollab();
+      return; // Do NOT send stale state to server
+    }
+
     // Fast version-diff: only collect elements whose version exceeds our tracking
     const changedElements: ExcalidrawElement[] = [];
     for (const el of elements) {
       if (!el.id) continue;
 
       const lastVersion = this.lastKnownVersions.get(el.id) ?? -1;
+
+      // Version regression guard: never send elements whose version went backwards.
+      // This catches individual stale elements from file reloads that weren't detected
+      // as a bulk reload by detectFileReload() (e.g., partial file merge).
+      if (el.version < lastVersion) {
+        this.lastKnownVersions.set(el.id, el.version);
+        continue; // Do NOT send stale element to server
+      }
+
       if (el.version > lastVersion) {
         // Check if this is an echo of a remote update we applied
         const remoteVersion = this.remoteAppliedVersions.get(el.id);

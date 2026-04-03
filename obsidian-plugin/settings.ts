@@ -32,6 +32,9 @@ export interface ExcaliShareSettings {
   disableSmoothing: boolean;
   /** Enable right-click eraser toggle in freedraw mode */
   enableRightClickEraser: boolean;
+  /** Automatically suspend LiveSync (and other file sync plugins) during active collab sessions
+   *  to prevent file-level sync from conflicting with real-time WebSocket collaboration */
+  suspendLiveSyncDuringCollab: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExcaliShareSettings = {
@@ -54,6 +57,7 @@ export const DEFAULT_SETTINGS: ExcaliShareSettings = {
   zoomAdaptivePollIntervalMs: 200,
   disableSmoothing: true,
   enableRightClickEraser: true,
+  suspendLiveSyncDuringCollab: true,
 };
 
 /** Interface for the plugin reference needed by the settings tab */
@@ -237,6 +241,17 @@ export class ExcaliShareSettingTab extends PluginSettingTab {
         toggle.setValue(this.pluginRef.settings.collabAutoOpenBrowser)
           .onChange(value => {
             this.pluginRef.settings.collabAutoOpenBrowser = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Pause LiveSync during collab')
+      .setDesc('Automatically suspend Self-hosted LiveSync file synchronization while a collaboration session is active. Prevents file-level sync from conflicting with real-time WebSocket collaboration. LiveSync is resumed when the session ends.')
+      .addToggle(toggle => {
+        toggle.setValue(this.pluginRef.settings.suspendLiveSyncDuringCollab)
+          .onChange(value => {
+            this.pluginRef.settings.suspendLiveSyncDuringCollab = value;
             this.pluginRef.saveSettings();
           });
       });

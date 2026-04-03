@@ -320,6 +320,7 @@ interface ExcaliShareSettings {
   zoomAdaptivePollIntervalMs: number;  // zoom poll interval in ms, fallback only (default: 200)
   disableSmoothing: boolean;           // disable smoothing/streamline (default: true)
   enableRightClickEraser: boolean;     // right-click eraser in freedraw (default: true)
+  suspendLiveSyncDuringCollab: boolean; // pause LiveSync during collab sessions (default: true)
 }
 ```
 
@@ -979,6 +980,18 @@ Root cause:
 
 Fix applied:
 - [x] Removed `setIsJoined(false)` and `clientRef.current = null` from `_reconnect_failed` handler in `useCollab.ts` — `isJoined` stays `true`, `CollabPopover` stays visible, `reconnectState` is set to `'failed'` which shows the existing "Disconnected" + `↻ Reconnect` button UI in `CollabPopover`
+
+**LiveSync + Collab Conflict Fix (April 2026)**
+Fixed sync problems when two Obsidian devices participate in a live collab session while using Self-hosted LiveSync. Root cause: two sync mechanisms operated simultaneously on the same `.excalidraw.md` file — WebSocket collab (~50ms) and LiveSync file sync (~1-5s). When LiveSync wrote the file on Device B, Excalidraw reloaded from disk, overwriting the real-time WebSocket state with stale data → elements flickered/reverted/disappeared.
+
+Multi-layer fix applied:
+- [x] Added `suspendLiveSync()` / `resumeLiveSync()` methods in `main.ts` — programmatically toggles LiveSync's `suspendFileWatching` and `suspendParseReplicationResult` settings via `app.plugins.getPlugin('obsidian-livesync')` when joining/leaving collab sessions
+- [x] Added `suspendLiveSyncDuringCollab` setting (default: `true`) with toggle in settings UI under "Live Collaboration"
+- [x] Added `detectFileReload()` method in `collabManager.ts` — detects bulk version regression (>30% of tracked elements have lower versions) as signature of a file reload; triggers WebSocket reconnect to restore authoritative state from server
+- [x] Added `handleFileReloadDuringCollab()` in `collabManager.ts` — shows Notice and calls `client.manualReconnect()` to get fresh snapshot
+- [x] Added version regression guard in `handleLocalSceneChange()` — never sends individual elements whose version went backwards (safety net for partial file reloads)
+- [x] Added collab guard in `handleMetadataChange()` — skips frontmatter recovery/toolbar refresh for the active collab drawing during a session (prevents LiveSync-triggered frontmatter overwrites from disrupting collab)
+- [x] `cleanupCollabState()` and `onunload()` both call `resumeLiveSync()` as safety nets
 
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)
