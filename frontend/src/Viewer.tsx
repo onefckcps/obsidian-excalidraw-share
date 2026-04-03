@@ -234,6 +234,13 @@ function Viewer() {
 
   const handlePointerUpdate = useCallback((payload: { pointer: { x: number; y: number; tool: string }; button: 'down' | 'up'; pointersMap: Map<number, Readonly<{ x: number; y: number }>> }) => {
     if (collab.isJoined && collab.isConnected) {
+      // Suppress multi-touch gestures (two-finger pan/pinch-zoom).
+      // Excalidraw fires onPointerUpdate for each touch point individually, so during a
+      // two-finger pan the cursor would jump between both finger positions and — with the
+      // laser/pen tool active — draw lines between them. Skip all pointer broadcasts
+      // whenever more than one touch point is active.
+      if (payload.pointersMap.size > 1) return;
+
       // Include viewport data for follow mode
       const api = excalidrawAPI as { getAppState?: () => { scrollX: number; scrollY: number; zoom: { value: number } } } | null;
       let scrollX: number | undefined;

@@ -1057,12 +1057,46 @@ export class CollabManager {
     let lastSendTime = 0;
     const THROTTLE_MS = 50;
 
+    // Track active touch/pointer count to detect multi-touch gestures (pan/pinch).
+    // During a two-finger pan, both touch points fire pointermove events — we must
+    // suppress all broadcasts while more than one pointer is active to prevent the
+    // cursor from jumping between fingers and the laser/pen from drawing lines.
+    let activePointerCount = 0;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.pointerType === 'touch' || event.pointerType === 'pen') {
+        activePointerCount++;
+      }
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      if (event.pointerType === 'touch' || event.pointerType === 'pen') {
+        activePointerCount = Math.max(0, activePointerCount - 1);
+      }
+    };
+
+    const handlePointerCancel = (event: PointerEvent) => {
+      if (event.pointerType === 'touch' || event.pointerType === 'pen') {
+        activePointerCount = Math.max(0, activePointerCount - 1);
+      }
+    };
+
     const handlePointerMove = (event: PointerEvent) => {
       const now = Date.now();
       if (now - lastSendTime < THROTTLE_MS) return;
       lastSendTime = now;
 
       if (!this.client?.isConnected) return;
+
+      // Suppress multi-touch gestures (two-finger pan/pinch-zoom).
+      // When more than one touch point is active, skip broadcasting to prevent
+      // the cursor from jumping between fingers and the laser/pen from drawing
+      // lines between touch positions.
+      if (activePointerCount > 1) return;
+
+      // Also skip non-primary pointer events (secondary touch points).
+      // isPrimary is false for all touch points except the first one.
+      if (!event.isPrimary) return;
 
       // Convert screen coordinates to Excalidraw scene coordinates
       const api = this.getAPI();
@@ -1101,8 +1135,14 @@ export class CollabManager {
       }
     };
 
+    canvasEl.addEventListener('pointerdown', handlePointerDown, { passive: true });
+    canvasEl.addEventListener('pointerup', handlePointerUp, { passive: true });
+    canvasEl.addEventListener('pointercancel', handlePointerCancel, { passive: true });
     canvasEl.addEventListener('pointermove', handlePointerMove, { passive: true });
     this.pointerMoveCleanup = () => {
+      canvasEl.removeEventListener('pointerdown', handlePointerDown);
+      canvasEl.removeEventListener('pointerup', handlePointerUp);
+      canvasEl.removeEventListener('pointercancel', handlePointerCancel);
       canvasEl.removeEventListener('pointermove', handlePointerMove);
     };
 
