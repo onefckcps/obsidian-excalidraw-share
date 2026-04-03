@@ -1,536 +1,444 @@
-# ExcaliShare
+<p align="center">
+  <img src="docs/assets/logo.png" alt="ExcaliShare Logo" width="120" />
+</p>
 
-A self-hosted solution for sharing Excalidraw drawings from your Obsidian vault.
+<h1 align="center">ExcaliShare</h1>
 
-## Overview
+<p align="center">
+  <strong>Self-hosted Excalidraw sharing & real-time collaboration for Obsidian</strong>
+</p>
 
-This project enables you to share Excalidraw drawings from Obsidian via a self-hosted server. When you share a drawing, it's uploaded to your server and becomes accessible via a public link.
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#demo">Demo</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#installation">Installation</a> •
+  <a href="#obsidian-plugin">Obsidian Plugin</a> •
+  <a href="#deployment">Deployment</a> •
+  <a href="#api-reference">API</a> •
+  <a href="#contributing">Contributing</a>
+</p>
 
-### Architecture
-
-```
-┌─────────────────┐       POST /api/upload        ┌──────────────────────┐
-│  Obsidian        │  ──────────────────────────▶  │  NixOS Server        │
-│  (EA Script)     │                              │  notes.leyk.me       │
-│                  │                              │                      │
-│  Extracts JSON   │                              │  ┌─────────────────┐ │
-│  from .excalidraw│                              │  │ Rust/Axum API   │ │
-│  .md file        │                              │  └────────┬────────┘ │
-└─────────────────┘                              │           │          │
-                                                    │  ┌────────▼────────┐ │
-┌─────────────────┐    Browser opens link          │  │ React Viewer   │ │
-│  Recipient      │  ◀──────────────────────────   │  │ (viewMode=true)│ │
-│  (Read-only)    │                                │  └─────────────────┘ │
-└─────────────────┘                                └──────────────────────┘
-```
-
-## Project Structure
-
-```
-excalishare/
-├── backend/          # Rust/Axum server
-│   ├── src/
-│   │   ├── main.rs   # Entry point
-│   │   ├── routes.rs # API endpoints
-│   │   ├── storage.rs# File storage abstraction
-│   │   ├── auth.rs   # API key middleware
-│   │   └── error.rs  # Error types
-│   └── Cargo.toml
-├── frontend/         # React/Vite viewer
-│   ├── src/
-│   │   ├── Viewer.tsx
-│   │   └── ...
-│   └── package.json
-├── obsidian-script/  # ExcalidrawAutomate script
-│   └── Share Drawing.md
-└── nixos/           # NixOS deployment
-    ├── default.nix  # Package definition
-    └── module.nix   # Service module
-```
+<p align="center">
+  <!-- TODO: Uncomment when published -->
+  <!-- <a href="https://github.com/YOUR_USERNAME/excalishare/actions"><img src="https://img.shields.io/github/actions/workflow/status/YOUR_USERNAME/excalishare/ci.yml?style=flat-square" alt="CI"></a> -->
+  <!-- <a href="https://github.com/YOUR_USERNAME/excalishare/releases"><img src="https://img.shields.io/github/v/release/YOUR_USERNAME/excalishare?style=flat-square" alt="Release"></a> -->
+  <!-- <a href="https://github.com/YOUR_USERNAME/excalishare/blob/main/LICENSE"><img src="https://img.shields.io/github/license/YOUR_USERNAME/excalishare?style=flat-square" alt="License"></a> -->
+  <img src="https://img.shields.io/badge/backend-Rust%20%2F%20Axum-orange?style=flat-square" alt="Backend: Rust/Axum">
+  <img src="https://img.shields.io/badge/frontend-React%20%2F%20TypeScript-blue?style=flat-square" alt="Frontend: React/TypeScript">
+  <img src="https://img.shields.io/badge/plugin-Obsidian-purple?style=flat-square" alt="Plugin: Obsidian">
+</p>
 
 ---
 
-## Quick Start (Automated)
+## What is ExcaliShare?
 
-### Using the Start Script
+ExcaliShare lets you **publish Excalidraw drawings from Obsidian** to your own server and **share them with anyone** via a simple link. No cloud accounts, no third-party services — just your drawings, your server, your data.
+
+<!-- TODO: Replace with actual hero GIF/screenshot -->
+<p align="center">
+  <img src="docs/assets/hero-demo.gif" alt="ExcaliShare Demo — Publish from Obsidian, view in browser" width="800" />
+  <br>
+  <em>Publish from Obsidian → Share a link → View & collaborate in the browser</em>
+</p>
+
+---
+
+## Features
+
+### 📤 One-Click Publish
+
+Publish any Excalidraw drawing from Obsidian with a single click. The plugin integrates directly into Excalidraw's toolbar — no context switching needed.
+
+<!-- TODO: Replace with actual GIF -->
+<p align="center">
+  <img src="docs/assets/feature-publish.gif" alt="One-click publish from Obsidian" width="700" />
+</p>
+
+### 🤝 Real-Time Collaboration
+
+Start a live collaboration session from Obsidian and invite anyone to edit together. See cursors, follow participants, and sync changes back to your vault.
+
+<!-- TODO: Replace with actual GIF -->
+<p align="center">
+  <img src="docs/assets/feature-collab.gif" alt="Real-time collaboration with cursors" width="700" />
+</p>
+
+### 🔄 Persistent Collaboration
+
+Enable always-on collaboration for any drawing. Guests can edit even when you're offline — the server is the source of truth. Changes auto-save and sync back to Obsidian.
+
+<!-- TODO: Replace with actual GIF -->
+<p align="center">
+  <img src="docs/assets/feature-persistent-collab.gif" alt="Persistent collaboration mode" width="700" />
+</p>
+
+### 🖥️ Web Viewer with Multiple Modes
+
+Drawings open in a full-featured web viewer with:
+- **View Mode** — Clean, read-only presentation
+- **Edit Mode** — Full Excalidraw editing (press `W` twice)
+- **Present Mode** — Navigate between drawings like slides (press `P`)
+- **Browse Mode** — Search and explore all shared drawings
+
+<!-- TODO: Replace with actual GIF -->
+<p align="center">
+  <img src="docs/assets/feature-viewer-modes.gif" alt="Viewer modes: view, edit, present, browse" width="700" />
+</p>
+
+### 🔒 Password Protection
+
+Optionally protect drawings and collaboration sessions with passwords. Uses Argon2id hashing — the same algorithm used by password managers.
+
+### 📱 Mobile & Tablet Support
+
+Fully responsive design with a 3-tier breakpoint system. Works on phones, tablets, and desktops. Installable as a PWA for offline access.
+
+### 🏠 Fully Self-Hosted
+
+Your data stays on your server. No telemetry, no tracking, no cloud dependencies. Deploy on NixOS, Docker, or any Linux server.
+
+---
+
+## Demo
+
+<!-- TODO: Replace with actual screenshot or link to demo instance -->
+<p align="center">
+  <img src="docs/assets/demo-screenshot.png" alt="ExcaliShare web viewer" width="800" />
+</p>
+
+<!-- TODO: Uncomment when demo instance is available -->
+<!-- 🌐 **Try it live:** [demo.excalishare.example.com](https://demo.excalishare.example.com) -->
+
+---
+
+## Architecture
+
+```
+┌─────────────────┐     HTTP/WS      ┌──────────────────┐     HTTP      ┌─────────────────┐
+│  Obsidian Plugin │ ──────────────→  │  Rust/Axum       │ ←──────────  │  React Frontend  │
+│  (TypeScript)    │  API + Collab    │  Backend         │  API + WS    │  (Vite + PWA)    │
+└─────────────────┘                   │  Port 8184       │              └─────────────────┘
+                                      │                  │
+                                      │  ┌────────────┐  │
+                                      │  │ FileSystem  │  │
+                                      │  │ Storage     │  │
+                                      │  │ (JSON files)│  │
+                                      │  └────────────┘  │
+                                      │                  │
+                                      │  ┌────────────┐  │
+                                      │  │ Session     │  │
+                                      │  │ Manager     │  │
+                                      │  │ (in-memory) │  │
+                                      │  └────────────┘  │
+                                      └──────────────────┘
+```
+
+| Component | Tech Stack | Description |
+|---|---|---|
+| **Backend** | Rust, Axum 0.8, Tokio | API server, WebSocket collab, file storage |
+| **Frontend** | React 18, TypeScript, Vite, Excalidraw | Web viewer with PWA support |
+| **Plugin** | TypeScript, Obsidian API | Publish, sync, and collaborate from Obsidian |
+
+---
+
+## Quick Start
+
+The fastest way to get ExcaliShare running locally:
 
 ```bash
-# Clone and enter the project
+# Clone the repository
+git clone https://github.com/YOUR_USERNAME/excalishare.git
 cd excalishare
 
-# Run the start script (auto-builds if needed)
-./start.sh
+# Run the start script (auto-builds everything)
+API_KEY="my-secret-key" ./start.sh
 ```
 
-The script will:
-1. Build the backend if not present
-2. Build the frontend if not present
-3. Create the data directory
-4. Start the server
+The server starts at `http://localhost:8184`. Configure the Obsidian plugin to point to this URL.
 
-Configure via environment variables:
+### Using Nix
+
 ```bash
-API_KEY="my-secret" BASE_URL="http://localhost:3030" ./start.sh
+# Enter the development shell (includes Rust, Node.js, and all tools)
+nix develop
+
+# Then run the start script
+API_KEY="my-secret-key" ./start.sh
 ```
 
 ---
 
-## Setup Guide
+## Installation
 
 ### Prerequisites
 
-- **For local development:**
-  - Rust toolchain (`rustup`, `cargo`)
-  - Node.js 20+ and npm
-  - Or use Nix: `nix develop`
+- **Rust** toolchain (1.75+) — [rustup.rs](https://rustup.rs)
+- **Node.js** 20+ and npm
+- Or just **Nix** — `nix develop` provides everything
 
-- **For production (NixOS):**
-  - NixOS machine with flake support
-  - Domain configured (e.g., `notes.leyk.me`)
-  - SSL certificates (handled by certbot)
-
----
-
-### Step 1: Build the Frontend
-
-The frontend is the viewer that displays shared drawings in read-only mode.
+### Build from Source
 
 ```bash
+# 1. Build the frontend
 cd frontend
-
-# Install dependencies
 npm install
-
-# Build for production
 npm run build
 
-# Output is in frontend/dist/
-```
-
-The built files will be in `frontend/dist/`. These are static files that will be served by the backend.
-
----
-
-### Step 2: Build the Backend
-
-The backend handles API requests (upload, download, delete) and serves the frontend.
-
-```bash
-cd backend
-
-# Build the release binary
+# 2. Build the backend
+cd ../backend
 cargo build --release
 
-# Output: target/release/excalishare
-```
-
----
-
-### Step 3: Configure and Run (Local Development)
-
-#### Environment Variables
-
-The server can be configured via environment variables or CLI arguments:
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `API_KEY` | Yes | - | Secret key for upload/delete operations |
-| `BASE_URL` | Yes | `http://localhost:3030` | Public URL (used for share links) |
-| `DATA_DIR` | No | `./data/drawings` | Where to store drawing JSON files |
-| `FRONTEND_DIR` | No | `./frontend/dist` | Path to built frontend |
-| `MAX_UPLOAD_MB` | No | `50` | Maximum upload size in MB |
-| `LISTEN_ADDR` | No | `127.0.0.1:3030` | Address to bind to |
-
-#### Quick Test Run
-
-```bash
-cd backend
-
-# Create data directory
-mkdir -p data/drawings
-
-# Run with environment variables
-API_KEY="my-secret-key" \
-BASE_URL="http://localhost:3030" \
-DATA_DIR="./data/drawings" \
-FRONTEND_DIR="../frontend/dist" \
+# 3. Run the server
+API_KEY="your-secret-key" \
+BASE_URL="http://localhost:8184" \
 ./target/release/excalishare
 ```
 
-The server will start at `http://localhost:3030`. Visit `http://localhost:3030/` to see the landing page, or `http://localhost:3030/d/<id>` to view a drawing.
+### Configuration
 
-#### Testing the API
+All settings can be configured via environment variables or CLI arguments:
 
-Once the server is running, you can test with curl:
-
-```bash
-# Upload a drawing (requires API key)
-curl -X POST http://localhost:3030/api/upload \
-  -H "Authorization: Bearer my-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "excalidraw",
-    "version": 2,
-    "elements": [
-      {"type": "rectangle", "x": 100, "y": 100, "width": 200, "height": 150, "strokeColor": "#000000", "backgroundColor": "#ff0000"},
-      {"type": "text", "x": 150, "y": 180, "text": "Hello World!", "fontSize": 24, "strokeColor": "#000000"}
-    ],
-    "appState": {"viewBackgroundColor": "#ffffff", "theme": "light"}
-  }'
-
-# Response: {"id":"abc123","url":"http://localhost:3030/d/abc123"}
-
-# Download a drawing (public, no auth needed)
-curl http://localhost:3030/api/drawings/abc123
-
-# View in browser
-# http://localhost:3030/d/abc123
-
-# List all drawings (requires API key)
-curl http://localhost:3030/api/drawings \
-  -H "Authorization: Bearer my-secret-key"
-
-# Delete a drawing (requires API key)
-curl -X DELETE http://localhost:3030/api/drawings/abc123 \
-  -H "Authorization: Bearer my-secret-key"
-```
-
-```bash
-# Upload a drawing (requires API key)
-curl -X POST http://localhost:3030/api/upload \
-  -H "Authorization: Bearer my-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"type":"excalidraw","version":2,"elements":[]}'
-
-# Response: {"id":"abc123","url":"http://localhost:3030/d/abc123"}
-
-# Download a drawing (public, no auth needed)
-curl http://localhost:3030/api/drawings/abc123
-
-# List all drawings (requires API key)
-curl http://localhost:3030/api/drawings \
-  -H "Authorization: Bearer my-secret-key"
-```
+| Variable | Default | Description |
+|---|---|---|
+| `API_KEY` | *(required)* | Secret key for admin operations |
+| `BASE_URL` | `http://localhost:8184` | Public URL for share links |
+| `LISTEN_ADDR` | `127.0.0.1:8184` | Address to bind to |
+| `DATA_DIR` | `./data/drawings` | Drawing storage directory |
+| `FRONTEND_DIR` | `./frontend/dist` | Path to built frontend |
+| `MAX_UPLOAD_MB` | `50` | Maximum upload size in MB |
 
 ---
 
-### Step 4: Configure Obsidian
+## Obsidian Plugin
 
-#### 4.1 Install the Script
+### Installation
 
-1. Open Obsidian
-2. Navigate to your vault's Excalidraw scripts folder:
-   - Default: `Vault/Excalidraw/Scripts/Downloaded/`
-3. Copy `obsidian-script/Share Drawing.md` from this repo into that folder
-4. If Excalidraw doesn't recognize it, restart Obsidian
+<!-- TODO: Update when published to community plugins -->
+**Manual installation** (until published to community plugins):
 
-#### 4.2 Configure the Script
+1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/YOUR_USERNAME/excalishare/releases)
+2. Create a folder: `YourVault/.obsidian/plugins/excalishare/`
+3. Copy both files into that folder
+4. Enable the plugin in Obsidian Settings → Community Plugins
 
-Open the copied `Share Drawing.md` in Obsidian and edit the configuration at the top:
+### Setup
 
-```javascript
-const CONFIG = {
-  // Your self-hosted server URL (without trailing slash)
-  apiUrl: "https://notes.leyk.me",
-  
-  // API key - WARNING: For better security, consider reading from a vault file
-  apiKey: "my-secret-key",
-};
-```
+1. Open **Settings → ExcaliShare**
+2. Enter your server URL (e.g., `https://drawings.example.com`)
+3. Enter your API key
+4. Done! The ExcaliShare toolbar appears on every Excalidraw drawing
 
-**Security Note:** The API key is stored in plaintext in the script. For better security, you can:
+### Plugin Features
 
-```javascript
-// Option 1: Read from a separate file in your vault
-const apiKeyFile = app.vault.getAbstractFileByPath(".excalishare-key");
-const apiKey = apiKeyFile ? (await app.vault.read(apiKeyFile)).trim() : null;
+<!-- TODO: Replace with actual screenshot -->
+<p align="center">
+  <img src="docs/assets/plugin-toolbar.png" alt="ExcaliShare toolbar in Obsidian" width="500" />
+</p>
 
-// Option 2: Use Obsidian's Secrets plugin
-```
+| Feature | Description |
+|---|---|
+| **Publish** | Upload drawing to server, get a shareable link |
+| **Sync** | Update an already-published drawing |
+| **Auto-Sync** | Automatically sync on save (configurable) |
+| **Live Collab** | Start a real-time collaboration session |
+| **Persistent Collab** | Enable always-on collaboration mode |
+| **Pull from Server** | Sync collaboration changes back to your vault |
+| **Copy Link** | Copy the share URL to clipboard |
+| **PDF Embedding** | Convert PDF pages to images for sharing |
 
-#### 4.3 Using the Script
+### Toolbar Modes
 
-1. Open any Excalidraw drawing in Obsidian
-2. Open the Command Palette (`Ctrl/Cmd + Shift + P`)
-3. Search for "Share Drawing" and select it
-4. The script will:
-   - Extract the drawing data
-   - Upload it to your server
-   - Copy the share link to your clipboard
-5. Share the link with anyone!
+The plugin toolbar integrates in two ways:
 
-You can also add a button to the Excalidraw toolbar by editing the script's configuration section.
+- **Auto Mode** *(default)* — Injected directly into Excalidraw's native toolbar
+- **Floating Mode** — Positioned as an overlay at a configurable corner
 
 ---
 
-## NixOS Deployment (Recommended)
+## Deployment
 
-This is the recommended way to deploy in production on NixOS. The module handles:
-- Creating a dedicated user
-- Setting up the data directory
-- Copying the frontend
-- Configuring the systemd service
-- Nginx reverse proxy with VPN access control
-- SSL certificates via ACME
+### Docker (Recommended)
 
-### Step 1: Create API Key
-
+<!-- TODO: Add Docker support and uncomment -->
+<!--
 ```bash
-# Create the API key file
-sudo mkdir -p /etc/secrets
-sudo openssl rand -base64 32 | sudo tee /etc/secrets/excalishare-api-key
-sudo chmod 600 /etc/secrets/excalishare-api-key
+docker compose up -d
 ```
 
-### Step 2: Build Backend and Frontend
+See [DEPLOYMENT.md](DEPLOYMENT.md) for full Docker configuration.
+-->
 
-```bash
-# Build backend
-cd /path/to/excalishare/backend
-cargo build --release
-
-# Build frontend
-cd ../frontend
-npm install
-npm run build
-```
-
-### Step 3: Add to NixOS Configuration
-
-Add to your `configuration.nix`:
+### NixOS (Declarative)
 
 ```nix
-imports = [ /path/to/excalishare/nixos/module.nix ];
+imports = [ ./path/to/excalishare/nixos/module.nix ];
 
 services.excalishare = {
   enable = true;
-  domain = "notes.leyk.me";
+  domain = "drawings.example.com";
   apiKeyFile = "/etc/secrets/excalishare-api-key";
-  
-  # Path to built binary (REQUIRED)
-  package = /path/to/excalishare/backend/target/release/excalishare;
-  
-  # Path to built frontend (REQUIRED)
-  frontendSource = /path/to/excalishare/frontend/dist;
-  
-  # Access control (default: vpnOnly)
-  # Options: vpnOnly | vpnAndSelf | public
-  vpnAccess = "vpnOnly";
+  package = ./backend/target/release/excalishare;
+  frontendSource = ./frontend/dist;
 };
 ```
 
-### Step 4: Rebuild
+### Manual (Systemd)
 
 ```bash
-sudo nixos-rebuild switch
-```
+# Copy binary and frontend
+sudo cp backend/target/release/excalishare /usr/local/bin/
+sudo cp -r frontend/dist /var/lib/excalishare/frontend
 
-### VPN Access Options
-
-| Option | Description |
-|--------|-------------|
-| `vpnOnly` | Only VPN clients (100.64.0.0/10) + localhost |
-| `vpnAndSelf` | Like vpnOnly + your external IP |
-| `public` | Anyone can access (not recommended!) |
-
----
-
-### Manual Deployment (Alternative)
-
-If you prefer manual control:
-
-services.excalishare = {
-  enable = true;
-  domain = "notes.leyk.me";
-  apiKeyFile = "/etc/secrets/excalishare-api-key";
-  dataDir = "/var/lib/excalishare";
-  frontendDir = "/var/lib/excalishare/frontend";
-};
-```
-
-Then rebuild:
-```bash
-sudo nixos-rebuild switch
-```
-
-The module will:
-- Build the Rust backend
-- Build the React frontend
-- Create a systemd service
-- Set up Nginx with SSL (via certbot)
-- Configure the firewall
-
-#### Option B: Manual Build
-
-```bash
-# Build everything
-cd /path/to/excalishare
-
-# Build frontend
-cd frontend && npm install && npm run build
-
-# Build backend
-cd ../backend && cargo build --release
-
-# Copy to server
-sudo cp target/release/excalishare /usr/local/bin/
-sudo cp -r ../frontend/dist /var/lib/excalishare/frontend
-
-# Create data directory
-sudo mkdir -p /var/lib/excalishare/drawings
-```
-
-##### Install Systemd Service
-
-```bash
-# Copy the service file
+# Install and start the service
 sudo cp excalishare.service /etc/systemd/system/
-
-# Reload systemd
-sudo systemctl daemon-reload
-
-# Enable and start
-sudo systemctl enable excalishare
-sudo systemctl start excalishare
+sudo systemctl enable --now excalishare
 ```
 
-Edit the service file to set your environment variables (`API_KEY`, `BASE_URL`, etc.) before starting.
-
-### Step 3: Verify Deployment
-
-```bash
-# Check service status
-systemctl status excalishare
-
-# Check health endpoint
-curl https://notes.leyk.me/api/health
-
-# Check frontend
-curl https://notes.leyk.me/
-```
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions including reverse proxy setup, SSL, and security hardening.
 
 ---
 
 ## API Reference
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/api/upload` | Bearer token | Upload new drawing |
-| GET | `/api/drawings/:id` | Public | Get drawing by ID |
-| DELETE | `/api/drawings/:id` | Bearer token | Delete drawing |
-| GET | `/api/drawings` | Bearer token | List all drawings |
-| GET | `/api/health` | Public | Health check |
+### Public Endpoints
 
-### Upload Request
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/health` | Health check |
+| `GET` | `/api/view/{id}` | Get drawing by ID |
+| `GET` | `/api/public/drawings` | List all drawings (id, date, path) |
+| `GET` | `/api/collab/status/{id}` | Check collab session status |
+| `POST` | `/api/persistent-collab/activate/{id}` | Join persistent collab session |
+| `WS` | `/ws/collab/{session_id}` | WebSocket for real-time collaboration |
+
+### Protected Endpoints (Bearer Token)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/upload` | Upload/update a drawing |
+| `DELETE` | `/api/drawings/{id}` | Delete a drawing |
+| `GET` | `/api/drawings` | List all drawings (admin) |
+| `POST` | `/api/collab/start` | Start collab session |
+| `POST` | `/api/collab/stop` | End collab session |
+| `POST` | `/api/persistent-collab/enable` | Enable persistent collab |
+| `POST` | `/api/persistent-collab/disable` | Disable persistent collab |
+
+### Example: Upload a Drawing
 
 ```bash
-curl -X POST https://notes.leyk.me/api/upload \
+curl -X POST https://drawings.example.com/api/upload \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d @drawing.json
-```
+  -d '{
+    "type": "excalidraw",
+    "elements": [...],
+    "appState": {"viewBackgroundColor": "#ffffff"},
+    "files": {}
+  }'
 
-### Response
-
-```json
-{
-  "id": "abc12345",
-  "url": "https://notes.leyk.me/d/abc12345"
-}
-```
-
----
-
-## Troubleshooting
-
-### Server Won't Start
-
-```bash
-# Check logs
-journalctl -u excalishare -f
-
-# Common issues:
-# - Port already in use: Check if another service is using the port
-# - Missing data directory: mkdir -p /var/lib/excalishare
-# - Wrong permissions: chown -R excalishare:excalishare /var/lib/excalishare
-```
-
-### Upload Fails
-
-```bash
-# Verify API key is correct
-curl -X POST https://notes.leyk.me/api/upload \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"type":"excalidraw","elements":[]}'
-
-# Check server logs for errors
-journalctl -u excalishare | tail -50
-```
-
-### Drawing Not Loading
-
-- Ensure the drawing ID exists: `curl https://notes.leyk.me/api/drawings/<id>`
-- Check browser console for JavaScript errors
-- Verify the frontend is being served correctly
-
-### Images Not Showing
-
-Excalidraw drawings with embedded images store them as base64 in the JSON. If images are missing:
-- Check that the upload size limit isn't cutting off large files
-- Verify the JSON includes the `files` field
-
-### SSL Certificate Issues
-
-```bash
-# For NixOS certbot issues
-sudo systemctl restart certbot
-sudo systemctl reload nginx
+# Response: {"id": "a1b2c3d4", "url": "https://drawings.example.com/d/a1b2c3d4"}
 ```
 
 ---
 
-## Security Considerations
+## Security
 
-- **API Key**: Keep the API key secret. It controls upload/delete operations.
-- **SSL/TLS**: Always use HTTPS in production (the NixOS module uses certbot).
-- **Rate Limiting**: Consider adding rate limiting for the upload endpoint.
-- **File Size**: Default max upload is 50MB (for base64-encoded images in drawings).
-- **User Isolation**: Currently, all drawings share the same API key. For multi-user scenarios, consider adding per-user authentication.
+- **API Key Authentication** — All admin operations require a Bearer token
+- **Constant-Time Comparison** — API keys compared using `subtle::ConstantTimeEq`
+- **Argon2id Password Hashing** — For drawing and collab session passwords
+- **Rate Limiting** — Per-IP rate limiting via `tower_governor`
+- **CORS Restriction** — Only configured origins allowed
+- **Path Traversal Protection** — Drawing IDs sanitized (alphanumeric + `-_` only)
+- **WebSocket Limits** — 5 MB message size, 20 participants per session
+
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ---
 
-## Development
+## Project Structure
 
-### Using Nix Flakes
-
-```bash
-# Enter development shell (includes Rust, Node.js, etc.)
-nix develop
-
-# Or use the existing flake
-cd /path/to/repo
-nix develop
-
-# Then build
-cd backend && cargo build
-cd ../frontend && npm install && npm run build
+```
+excalishare/
+├── backend/                 # Rust/Axum API server
+│   ├── src/
+│   │   ├── main.rs          # Entry point, CLI config, routes
+│   │   ├── routes.rs        # HTTP handlers
+│   │   ├── storage.rs       # File storage abstraction
+│   │   ├── collab.rs        # Collaboration session manager
+│   │   ├── ws.rs            # WebSocket handler
+│   │   ├── auth.rs          # API key middleware
+│   │   ├── password.rs      # Argon2id utilities
+│   │   └── error.rs         # Error types
+│   └── Cargo.toml
+├── frontend/                # React/Vite web viewer
+│   ├── src/
+│   │   ├── Viewer.tsx       # Main drawing viewer
+│   │   ├── DrawingsBrowser.tsx  # Browse/search drawings
+│   │   ├── AdminPage.tsx    # Admin panel
+│   │   ├── hooks/useCollab.ts   # Collaboration hook
+│   │   └── utils/collabClient.ts # WebSocket client
+│   └── package.json
+├── obsidian-plugin/         # Obsidian plugin
+│   ├── main.ts              # Plugin entry point
+│   ├── collabManager.ts     # Native collab from Obsidian
+│   ├── toolbar.ts           # Toolbar UI
+│   ├── settings.ts          # Plugin settings
+│   └── manifest.json
+├── nixos/module.nix         # NixOS deployment module
+├── DEPLOYMENT.md            # Deployment guide
+└── start.sh                 # Quick start script
 ```
 
-### Adding Custom Fonts
+---
 
-The Excalidraw viewer uses self-hosted fonts. The NixOS module automatically copies the required font files. For manual deployment:
+## Roadmap
+
+- [ ] Docker Compose setup for easy deployment
+- [ ] Automated tests (backend + frontend)
+- [ ] GitHub Actions CI/CD pipeline
+- [ ] One-click deploy (Railway, Fly.io)
+- [ ] S3/cloud storage backend
+- [ ] Drawing export (PNG, SVG, PDF)
+- [ ] Embeddable viewer (`<iframe>` support)
+- [ ] Drawing versioning / history
+
+---
+
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request.
 
 ```bash
-# Copy fonts from node_modules
-cp -r node_modules/@excalidraw/excalidraw/dist/prod/fonts /var/lib/excalishare/frontend/assets/
-
-# Set asset path in frontend (already configured in main.tsx)
-window.EXCALIDRAW_ASSET_PATH = '/assets/'
+# Development setup
+nix develop          # Enter dev shell
+cd backend && cargo run   # Start backend (port 8184)
+cd frontend && npm run dev  # Start frontend dev server (port 5173)
+cd obsidian-plugin && npm run dev  # Watch mode for plugin
 ```
+
+---
+
+## Support
+
+If you find ExcaliShare useful, consider supporting its development:
+
+<!-- TODO: Uncomment and update links when accounts are set up -->
+<!-- 
+<p align="center">
+  <a href="https://github.com/sponsors/YOUR_USERNAME"><img src="https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?style=for-the-badge&logo=github-sponsors" alt="GitHub Sponsors"></a>
+  <a href="https://buymeacoffee.com/YOUR_USERNAME"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"></a>
+</p>
+-->
 
 ---
 
 ## License
 
-MIT
+[MIT](LICENSE) — Use it however you want. Attribution appreciated but not required.
+
+---
+
+<p align="center">
+  Made with ❤️ for the Obsidian & Excalidraw community
+</p>
