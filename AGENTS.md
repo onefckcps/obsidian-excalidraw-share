@@ -806,6 +806,38 @@ The project is feature-complete with the live collaboration system fully impleme
 - [x] Quick start script (`start.sh`)
 - [x] DEPLOYMENT.md guide
 
+### Disconnect & Offline Handling (April 2026)
+
+Comprehensive improvements to disconnect/offline handling across all three components.
+
+**Frontend (`CollabClient`, `useCollab`, `Viewer`, `CollabPopover`, `DrawingsBrowser`):**
+- `CollabClient` now emits `_reconnecting` event with `{ attempt, maxAttempts }` on each reconnect attempt
+- `CollabClient` supports `persistentMode` flag for infinite reconnect (used by persistent collab sessions)
+- `CollabClient` buffers outgoing `scene_update`/`scene_delta` messages while disconnected and flushes on reconnect
+- `CollabClient` exposes `manualReconnect()` to reset attempt counter and retry immediately
+- `useCollab` hook exposes `reconnectState` (`'idle' | 'reconnecting' | 'failed'`), `reconnectAttempt`, `maxReconnectAttempts`, and `manualReconnect`
+- Toolbar Island in `Viewer.tsx` shows connection-state-aware badge: `🟢 Collaborative` → `🟡 Reconnecting 2/5` → `🔴 Disconnected [↻]`
+- Toolbar Island shows `⚫ Cached · Server unreachable` or `⚫ Offline` when viewing cached drawing
+- Phone collab button dot color changes: green → yellow (reconnecting) → red (disconnected)
+- `CollabPopover` header shows reconnect state text and "↻ Reconnect" button when disconnected
+- `Viewer.tsx` classifies fetch errors: `network` (server unreachable) vs `notfound` (404) vs `server` (5xx)
+- `Viewer.tsx` falls back to LRU cache when server is unreachable (shows cached drawing + offline badge)
+- `Viewer.tsx` error page shows "📡 Server Unreachable" with "↻ Retry" button for network errors
+- `DrawingsBrowser.tsx` shows "Server unreachable" message with "↻ Retry" button
+- New `useOnlineStatus` hook (`frontend/src/hooks/useOnlineStatus.ts`) for browser online/offline detection
+
+**Plugin (`CollabClient`, `CollabManager`, `toolbar.ts`, `main.ts`):**
+- Plugin `CollabClient` mirrors all frontend changes: `_reconnecting` event, `manualReconnect()`, `persistentMode`, message buffer
+- `CollabManager` exposes `onReconnecting` callback and `manualReconnect()` method
+- `CollabManager` shows Obsidian Notices: "Connection lost. Reconnecting...", "Reconnected!", "Disconnected. Changes preserved."
+- Plugin toolbar popover shows reconnect state inline: `🟡 Reconnecting... (2/5)` → `🔴 Disconnected [↻ Retry]`
+- Plugin toolbar grays out Publish/Sync buttons when server is unreachable (with tooltip)
+- `main.ts` adds periodic server health check (`/api/health`, every 60s) via `startHealthCheck()`
+- `main.ts` tracks `_serverReachable` state and updates all toolbars + status bar on change
+- `main.ts` queues failed publish/sync operations in `_pendingOperations` and retries when server comes back
+- Status bar shows `ExcaliShare: ❌ Server unreachable` when server is down
+- `onConnectionChanged` callback now updates toolbar reconnect state when connection is restored
+
 ### Recent Bug Fixes
 
 **User Badge Click-to-Follow Bug Fix (April 2026)**
@@ -888,6 +920,32 @@ Fixes applied:
 - [x] Removed floating buttons overlay entirely — buttons now injected as native Excalidraw Island
 - [x] `CollabPopover` renders as bottom sheet on phone, dropdown on tablet/desktop
 - [x] `CollabStatus` join banner repositioned below toolbar on phone
+
+**Plugin Toolbar "Server Unreachable" UX Fix (April 2026)**
+Fixed two UX issues in the Obsidian plugin toolbar when the server is unreachable:
+
+1. **Button label too long** — `'Sync to Server (Server unreachable)'` and `'Publish Drawing (Server unreachable)'` were too verbose. The `(Server unreachable)` suffix was removed; the info is now only in the `title` tooltip.
+2. **Button style changed incorrectly** — `cursor: 'not-allowed'` was applied, changing the button appearance. Removed; only `opacity: 0.5` is now applied to grey out the button while keeping it clickable (operations are queued for retry).
+3. **Missing "↻ Retry Connection" button** — No way to manually trigger a server health check. Added a `↻ Retry Connection` button below Publish/Sync when `serverReachable === false`.
+4. **Slow toolbar update after reconnect failure** — When the collab WebSocket exhausted all reconnect attempts (5/5), the toolbar didn't show the greyed/retry state until the next periodic health check (up to 60s). Fixed by calling `checkServerHealth()` immediately in `onReconnectFailed`.
+5. **Auto-join persistent collab after reconnect** — When the server came back online, persistent collab sessions were not automatically rejoined. Fixed in `onServerReachabilityChanged` to call `autoJoinPersistentCollab()` for the currently open drawing.
+
+Fixes applied:
+- [x] Removed `(Server unreachable)` suffix from Publish/Sync button labels in `toolbar.ts`
+- [x] Removed `cursor: 'not-allowed'` from server-unreachable button style
+- [x] Added `createRetryServerButton()` method and `onRetryServer` callback in `toolbar.ts`
+- [x] Wired `onRetryServer` in `main.ts` to call `checkServerHealth()` immediately
+- [x] Added `checkServerHealth()` call in `onReconnectFailed` for instant toolbar update
+- [x] Added auto-join persistent collab in `onServerReachabilityChanged` when server comes back
+
+**Frontend Collab Reconnect Failure UI Bug Fix (April 2026)**
+Fixed a bug where after all WebSocket reconnect attempts were exhausted (5/5), the collab UI was torn down and replaced with the "Collaborative Drawing · 1 user · Join" pre-join banner instead of showing a "Disconnected" state with a retry button.
+
+Root cause:
+- `_reconnect_failed` handler in `useCollab.ts` called `setIsJoined(false)` and nulled `clientRef.current`. This caused `CollabPopover` (gated on `isJoined`) to unmount and `CollabStatus` to show the join banner. The `manualReconnect()` function also stopped working because `clientRef.current` was null.
+
+Fix applied:
+- [x] Removed `setIsJoined(false)` and `clientRef.current = null` from `_reconnect_failed` handler in `useCollab.ts` — `isJoined` stays `true`, `CollabPopover` stays visible, `reconnectState` is set to `'failed'` which shows the existing "Disconnected" + `↻ Reconnect` button UI in `CollabPopover`
 
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)

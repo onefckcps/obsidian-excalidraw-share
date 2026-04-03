@@ -52,6 +52,14 @@ interface UseCollabReturn {
   isJoined: boolean;
   /** Whether the WebSocket is connected */
   isConnected: boolean;
+  /** Reconnect state: idle when connected, reconnecting during backoff, failed after max retries */
+  reconnectState: 'idle' | 'reconnecting' | 'failed';
+  /** Current reconnect attempt number (1-based, 0 when not reconnecting) */
+  reconnectAttempt: number;
+  /** Max reconnect attempts (Infinity for persistent collab) */
+  maxReconnectAttempts: number;
+  /** Manually trigger a reconnect attempt */
+  manualReconnect: () => void;
   /** List of collaborators in the session */
   collaborators: CollaboratorInfo[];
   /** Number of participants (from status check, before joining) */
@@ -101,6 +109,9 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isJoined, setIsJoined] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [reconnectState, setReconnectState] = useState<'idle' | 'reconnecting' | 'failed'>('idle');
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [maxReconnectAttempts, setMaxReconnectAttempts] = useState(5);
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([]);
   const [participantCount, setParticipantCount] = useState(0);
   const [displayName, setDisplayNameState] = useState(getStoredName);
@@ -683,16 +694,27 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       // Handle connection state
       client.on('_connected', () => {
         setIsConnected(true);
+        setReconnectState('idle');
+        setReconnectAttempt(0);
       });
 
       client.on('_disconnected', () => {
         setIsConnected(false);
+        setReconnectState('reconnecting');
+      });
+
+      client.on('_reconnecting', (msg: ServerMessage) => {
+        const data = msg as unknown as { attempt: number; maxAttempts: number };
+        setReconnectState('reconnecting');
+        setReconnectAttempt(data.attempt || 0);
+        setMaxReconnectAttempts(data.maxAttempts === Infinity ? 999 : (data.maxAttempts || 5));
       });
 
       client.on('_reconnect_failed', () => {
-        setIsJoined(false);
+        // Keep isJoined=true so CollabPopover stays visible with "Disconnected" state + retry button.
+        // Do NOT null clientRef so manualReconnect() can still trigger a new attempt.
         setIsConnected(false);
-        clientRef.current = null;
+        setReconnectState('failed');
       });
 
       // Handle errors
@@ -769,6 +791,15 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     },
     []
   );
+
+  // Manual reconnect
+  const manualReconnect = useCallback(() => {
+    if (clientRef.current) {
+      setReconnectState('reconnecting');
+      setReconnectAttempt(0);
+      clientRef.current.manualReconnect();
+    }
+  }, []);
 
   // Update display name
   const setDisplayName = useCallback(
@@ -914,6 +945,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     sessionId,
     isJoined,
     isConnected,
+    reconnectState,
+    reconnectAttempt,
+    maxReconnectAttempts,
+    manualReconnect,
     collaborators,
     participantCount,
     displayName,

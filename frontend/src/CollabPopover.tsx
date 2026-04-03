@@ -23,6 +23,14 @@ function getClientColor(id: string): string {
 interface CollabPopoverProps {
   theme: Theme;
   isConnected: boolean;
+  /** Reconnect state: idle when connected, reconnecting during backoff, failed after max retries */
+  reconnectState?: 'idle' | 'reconnecting' | 'failed';
+  /** Current reconnect attempt number */
+  reconnectAttempt?: number;
+  /** Max reconnect attempts */
+  maxReconnectAttempts?: number;
+  /** Manually trigger a reconnect */
+  onManualReconnect?: () => void;
   collaborators: CollaboratorInfo[];
   displayName: string;
   followingUserId: string | null;
@@ -40,6 +48,10 @@ interface CollabPopoverProps {
 function CollabPopover({
   theme,
   isConnected,
+  reconnectState = 'idle',
+  reconnectAttempt = 0,
+  maxReconnectAttempts = 5,
+  onManualReconnect,
   collaborators,
   displayName,
   followingUserId,
@@ -164,23 +176,51 @@ function CollabPopover({
           width: '8px',
           height: '8px',
           borderRadius: '50%',
-          backgroundColor: isConnected ? '#4CAF50' : '#ff9800',
+          backgroundColor: reconnectState === 'reconnecting' ? '#f59e0b'
+            : reconnectState === 'failed' ? '#ef4444'
+            : isConnected ? '#4CAF50' : '#ff9800',
           flexShrink: 0,
+          animation: reconnectState === 'reconnecting' ? 'excalishare-pulse 1s ease-in-out infinite' : undefined,
         }} />
         <span style={{
           fontSize: '13px',
           fontWeight: 600,
-          color: isDark ? '#e0e0e0' : '#333',
+          color: reconnectState === 'reconnecting' ? (isDark ? '#fbbf24' : '#b45309')
+            : reconnectState === 'failed' ? (isDark ? '#f87171' : '#b91c1c')
+            : (isDark ? '#e0e0e0' : '#333'),
         }}>
-          Live Session
+          {reconnectState === 'reconnecting'
+            ? `Reconnecting... ${reconnectAttempt}/${maxReconnectAttempts >= 999 ? '∞' : maxReconnectAttempts}`
+            : reconnectState === 'failed'
+            ? 'Disconnected'
+            : 'Live Session'}
         </span>
-        <span style={{
-          fontSize: '12px',
-          color: isDark ? '#888' : '#999',
-          marginLeft: 'auto',
-        }}>
-          {collaborators.length} {collaborators.length === 1 ? 'user' : 'users'}
-        </span>
+        {reconnectState === 'failed' && onManualReconnect ? (
+          <button
+            onClick={onManualReconnect}
+            style={{
+              marginLeft: 'auto',
+              padding: '2px 8px',
+              borderRadius: '4px',
+              border: `1px solid ${isDark ? '#555' : '#ddd'}`,
+              background: 'none',
+              cursor: 'pointer',
+              fontSize: '12px',
+              color: isDark ? '#e0e0e0' : '#333',
+              fontFamily: 'system-ui, -apple-system, sans-serif',
+            }}
+          >
+            ↻ Reconnect
+          </button>
+        ) : (
+          <span style={{
+            fontSize: '12px',
+            color: isDark ? '#888' : '#999',
+            marginLeft: 'auto',
+          }}>
+            {collaborators.length} {collaborators.length === 1 ? 'user' : 'users'}
+          </span>
+        )}
       </div>
 
       {/* Participants */}

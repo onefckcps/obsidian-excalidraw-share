@@ -9,7 +9,10 @@ import type { ClientMessage, ServerMessage, ExcalidrawElement } from './collabTy
 type MessageHandler = (msg: ServerMessage) => void;
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
+const RECONNECT_DELAYS_PERSISTENT = [1000, 2000, 4000, 8000, 16000, 30000]; // last delay repeats indefinitely
 const FILES_UPDATE_DEBOUNCE_MS = 200;
+/** Max number of outgoing scene updates to buffer while disconnected */
+const MAX_BUFFERED_UPDATES = 10;
 
 // ── Adaptive debounce intervals ──
 // During active drawing we batch more aggressively to reduce WS traffic.
@@ -38,6 +41,8 @@ export class CollabClient {
   private pendingSceneUpdate: ClientMessage | null = null;
   private lastSentVersions: Map<string, number> = new Map();
   private localSeq: number = 0;
+  /** Buffer of outgoing scene updates accumulated while disconnected */
+  private bufferedUpdates: ClientMessage[] = [];
 
   // ── Pointer throttle state ──
   private lastPointerSendTime = 0;
@@ -50,18 +55,47 @@ export class CollabClient {
   private filesUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingFilesUpdate: Record<string, unknown> | null = null;
 
-  constructor(baseUrl: string, sessionId: string, displayName: string, password?: string | null, apiKey?: string | null) {
+  /** When true, reconnect indefinitely (for persistent collab sessions) */
+  private persistentMode: boolean = false;
+
+  constructor(baseUrl: string, sessionId: string, displayName: string, password?: string | null, apiKey?: string | null, persistentMode?: boolean) {
     this.baseUrl = baseUrl;
     this.sessionId = sessionId;
     this.displayName = displayName;
     this.password = password ?? null;
     this.apiKey = apiKey ?? null;
+    this.persistentMode = persistentMode ?? false;
   }
 
   connect(): void {
     this.intentionalClose = false;
     this.reconnectAttempt = 0;
     this._connect();
+  }
+
+  /** Manually trigger a reconnect attempt, resetting the attempt counter */
+  manualReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempt = 0;
+    this.intentionalClose = false;
+    this._connect();
+  }
+
+  get reconnectState(): 'connected' | 'reconnecting' | 'disconnected' {
+    if (this.ws?.readyState === WebSocket.OPEN) return 'connected';
+    if (this.reconnectTimer !== null || this.reconnectAttempt > 0) return 'reconnecting';
+    return 'disconnected';
+  }
+
+  get currentReconnectAttempt(): number {
+    return this.reconnectAttempt;
+  }
+
+  get maxReconnectAttempts(): number {
+    return this.persistentMode ? Infinity : RECONNECT_DELAYS.length;
   }
 
   private _connect(): void {
@@ -86,9 +120,19 @@ export class CollabClient {
     }
 
     this.ws.onopen = () => {
+      const wasReconnecting = this.reconnectAttempt > 0;
       this.reconnectAttempt = 0;
       this.resetDeltaTracking();
       this._emit('_connected', {} as ServerMessage);
+      // Flush buffered updates on reconnect
+      if (wasReconnecting && this.bufferedUpdates.length > 0) {
+        for (const msg of this.bufferedUpdates) {
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(msg));
+          }
+        }
+        this.bufferedUpdates = [];
+      }
     };
 
     this.ws.onmessage = (event) => {
@@ -114,13 +158,23 @@ export class CollabClient {
   }
 
   private _scheduleReconnect(): void {
-    if (this.reconnectAttempt >= RECONNECT_DELAYS.length) {
+    const delays = this.persistentMode ? RECONNECT_DELAYS_PERSISTENT : RECONNECT_DELAYS;
+    const maxAttempts = this.persistentMode ? Infinity : delays.length;
+
+    if (!this.persistentMode && this.reconnectAttempt >= delays.length) {
       this._emit('_reconnect_failed', {} as ServerMessage);
       return;
     }
 
-    const delay = RECONNECT_DELAYS[this.reconnectAttempt];
+    // In persistent mode, cap the delay at the last value
+    const delayIndex = Math.min(this.reconnectAttempt, delays.length - 1);
+    const delay = delays[delayIndex];
+
+    // Emit reconnecting event so callers can show progress
+    this._emit('_reconnecting', { attempt: this.reconnectAttempt + 1, maxAttempts } as unknown as ServerMessage);
+
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.reconnectAttempt++;
       this._connect();
     }, delay);
@@ -154,6 +208,7 @@ export class CollabClient {
     this.pendingPointerUpdate = null;
     this.sentFileIds.clear();
     this.pendingFilesUpdate = null;
+    this.bufferedUpdates = [];
     this.handlers.clear();
   }
 
@@ -358,6 +413,15 @@ export class CollabClient {
   private _send(msg: ClientMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
+    } else if (!this.intentionalClose && (msg.type === 'scene_update' || msg.type === 'scene_delta')) {
+      // Buffer scene updates while disconnected (up to MAX_BUFFERED_UPDATES)
+      // Only keep the latest update to avoid stale data
+      this.bufferedUpdates = this.bufferedUpdates.filter(
+        (m) => m.type !== 'scene_update' && m.type !== 'scene_delta'
+      );
+      if (this.bufferedUpdates.length < MAX_BUFFERED_UPDATES) {
+        this.bufferedUpdates.push(msg);
+      }
     }
   }
 

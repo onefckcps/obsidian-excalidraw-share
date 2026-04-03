@@ -33,6 +33,14 @@ export interface ToolbarState {
   collabDisplayName?: string;
   /** Whether persistent collab is enabled for this drawing */
   persistentCollabEnabled?: boolean;
+  /** Reconnect state for the collab WebSocket connection */
+  collabReconnectState?: 'connected' | 'reconnecting' | 'disconnected' | null;
+  /** Current reconnect attempt number */
+  collabReconnectAttempt?: number;
+  /** Max reconnect attempts (Infinity for persistent collab) */
+  collabMaxReconnectAttempts?: number;
+  /** Whether the server is reachable (for disabling buttons when offline) */
+  serverReachable?: boolean;
 }
 
 export interface ToolbarCallbacks {
@@ -53,6 +61,10 @@ export interface ToolbarCallbacks {
   onEnablePersistentCollab: () => Promise<void>;
   /** Disable persistent collab for the current drawing */
   onDisablePersistentCollab: () => Promise<void>;
+  /** Manually trigger a reconnect attempt */
+  onManualReconnect?: () => void;
+  /** Manually trigger a server health check / reconnect */
+  onRetryServer?: () => void;
 }
 
 // ── Selectors for finding Excalidraw's native toolbar ──
@@ -617,18 +629,34 @@ export class ExcaliShareToolbar {
       ));
     } else if (!this.state.publishedId) {
       // Not published — show publish button
-      panel.appendChild(this.createActionButton(
+      const publishBtn = this.createActionButton(
         ICONS.upload,
         'Publish Drawing',
         () => this.wrapAsync(this.callbacks.onPublish),
-      ));
+      );
+      if (this.state.serverReachable === false) {
+        publishBtn.style.opacity = '0.5';
+        publishBtn.title = 'Server is unreachable. Will queue for retry.';
+      }
+      panel.appendChild(publishBtn);
+      if (this.state.serverReachable === false) {
+        panel.appendChild(this.createRetryServerButton());
+      }
     } else {
       // Published — show all actions
-      panel.appendChild(this.createActionButton(
+      const syncBtn = this.createActionButton(
         ICONS.sync,
         'Sync to Server',
         () => this.wrapAsync(this.callbacks.onSync),
-      ));
+      );
+      if (this.state.serverReachable === false) {
+        syncBtn.style.opacity = '0.5';
+        syncBtn.title = 'Server is unreachable. Will queue for retry.';
+      }
+      panel.appendChild(syncBtn);
+      if (this.state.serverReachable === false) {
+        panel.appendChild(this.createRetryServerButton());
+      }
 
       panel.appendChild(this.createActionButton(
         ICONS.link,
@@ -653,24 +681,58 @@ export class ExcaliShareToolbar {
       // Collab actions
       const hasActiveSessionForThisDrawing = this.state.collabSessionId && this.state.collabDrawingId === this.state.publishedId;
       if (hasActiveSessionForThisDrawing) {
-        // Show participant count header
+        // Show participant count header (or reconnect state)
         const count = this.state.collabParticipantCount;
         const nativeJoined = this.state.collabNativeJoined;
-        if (count !== undefined && count > 0) {
-          const countLabel = document.createElement('div');
-          countLabel.style.padding = '4px 8px';
-          countLabel.style.fontSize = '11px';
-          countLabel.style.color = 'var(--text-muted)';
-          countLabel.style.textAlign = 'center';
-          countLabel.style.display = 'flex';
-          countLabel.style.alignItems = 'center';
-          countLabel.style.justifyContent = 'center';
-          countLabel.style.gap = '4px';
-          const dotSpan = document.createElement('span');
-          dotSpan.style.display = 'inline-block';
-          dotSpan.style.width = '6px';
-          dotSpan.style.height = '6px';
-          dotSpan.style.borderRadius = '50%';
+        const reconnectState = this.state.collabReconnectState;
+        const reconnectAttempt = this.state.collabReconnectAttempt ?? 0;
+        const maxReconnectAttempts = this.state.collabMaxReconnectAttempts ?? 5;
+
+        const countLabel = document.createElement('div');
+        countLabel.style.padding = '4px 8px';
+        countLabel.style.fontSize = '11px';
+        countLabel.style.color = 'var(--text-muted)';
+        countLabel.style.textAlign = 'center';
+        countLabel.style.display = 'flex';
+        countLabel.style.alignItems = 'center';
+        countLabel.style.justifyContent = 'center';
+        countLabel.style.gap = '4px';
+
+        const dotSpan = document.createElement('span');
+        dotSpan.style.display = 'inline-block';
+        dotSpan.style.width = '6px';
+        dotSpan.style.height = '6px';
+        dotSpan.style.borderRadius = '50%';
+
+        if (reconnectState === 'reconnecting') {
+          // Reconnecting state: yellow pulsing dot + attempt counter
+          dotSpan.style.backgroundColor = '#f59e0b';
+          dotSpan.style.animation = 'excalishare-pulse 1s ease-in-out infinite';
+          countLabel.appendChild(dotSpan);
+          const maxStr = maxReconnectAttempts >= 999 ? '∞' : String(maxReconnectAttempts);
+          countLabel.appendChild(document.createTextNode(`Reconnecting... (${reconnectAttempt}/${maxStr})`));
+          panel.appendChild(countLabel);
+        } else if (reconnectState === 'disconnected') {
+          // Disconnected state: red dot + retry button
+          dotSpan.style.backgroundColor = '#ef4444';
+          countLabel.appendChild(dotSpan);
+          countLabel.appendChild(document.createTextNode('Disconnected'));
+          panel.appendChild(countLabel);
+
+          // Retry button
+          const retryBtn = document.createElement('button');
+          retryBtn.textContent = '↻ Retry';
+          retryBtn.style.cssText = `
+            display: block; width: calc(100% - 16px); margin: 4px 8px;
+            padding: 4px 8px; border-radius: 4px; cursor: pointer;
+            font-size: 11px; background: none;
+            border: 1px solid var(--interactive-accent);
+            color: var(--interactive-accent);
+          `;
+          retryBtn.onclick = () => this.callbacks.onManualReconnect?.();
+          panel.appendChild(retryBtn);
+        } else if (count !== undefined && count > 0) {
+          // Normal connected state: green/red dot + participant count
           dotSpan.style.backgroundColor = nativeJoined ? '#4CAF50' : '#FF6B6B';
           dotSpan.style.animation = 'excalishare-pulse 2s ease-in-out infinite';
           countLabel.appendChild(dotSpan);
@@ -681,7 +743,7 @@ export class ExcaliShareToolbar {
         }
 
         // ── Collaborator list with follow buttons ──
-        if (nativeJoined && this.state.collabCollaborators && this.state.collabCollaborators.length > 0) {
+        if (nativeJoined && reconnectState !== 'reconnecting' && reconnectState !== 'disconnected' && this.state.collabCollaborators && this.state.collabCollaborators.length > 0) {
           this.buildCollaboratorList(panel);
         }
 
@@ -824,6 +886,25 @@ export class ExcaliShareToolbar {
     });
 
     return btn;
+  }
+
+  private createRetryServerButton(): HTMLElement {
+    const retryBtn = document.createElement('button');
+    retryBtn.textContent = '↻ Retry Connection';
+    retryBtn.title = 'Retry connecting to the server now';
+    retryBtn.style.cssText = `
+      display: block; width: calc(100% - 16px); margin: 4px 8px;
+      padding: 4px 8px; border-radius: 4px; cursor: pointer;
+      font-size: 11px; background: none;
+      border: 1px solid var(--interactive-accent);
+      color: var(--interactive-accent);
+      font-family: inherit;
+    `;
+    retryBtn.onclick = (e) => {
+      e.stopPropagation();
+      this.callbacks.onRetryServer?.();
+    };
+    return retryBtn;
   }
 
   private expand(): void {

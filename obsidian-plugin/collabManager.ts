@@ -37,6 +37,8 @@ export interface CollabManagerCallbacks {
   /** Called when all reconnect attempts have been exhausted.
    *  For persistent sessions, the caller should re-activate the session. */
   onReconnectFailed?: () => void;
+  /** Called on each reconnect attempt with attempt number and max attempts */
+  onReconnecting?: (attempt: number, maxAttempts: number) => void;
 }
 
 /** Detection strategy currently in use */
@@ -209,18 +211,35 @@ export class CollabManager {
     // ── Register message handlers ──
 
     client.on('_connected', () => {
+      const wasReconnecting = !this._isConnected && this._isJoined;
       this._isConnected = true;
       this._isJoined = true;
       this.callbacks.onConnectionChanged?.(true);
+      // Show reconnect success notice (only if we were previously disconnected)
+      if (wasReconnecting) {
+        new Notice('Reconnected to collab session!');
+      }
     });
 
     client.on('_disconnected', () => {
       this._isConnected = false;
       this.callbacks.onConnectionChanged?.(false);
+      // Show disconnect notice on first disconnect
+      if (this._isJoined) {
+        new Notice('Connection to collab session lost. Reconnecting...');
+      }
+    });
+
+    client.on('_reconnecting', (msg: ServerMessage) => {
+      const data = msg as unknown as { attempt: number; maxAttempts: number };
+      const attempt = data.attempt || 0;
+      const maxAttempts = data.maxAttempts;
+      this.callbacks.onReconnecting?.(attempt, maxAttempts);
     });
 
     client.on('_reconnect_failed', () => {
       console.log('ExcaliShare Collab: All reconnect attempts exhausted');
+      new Notice('Collab session disconnected. Your local changes are preserved.');
       this.leave();
       // Notify the caller so it can re-activate persistent sessions
       this.callbacks.onReconnectFailed?.();
@@ -279,6 +298,16 @@ export class CollabManager {
 
     this.client = client;
     client.connect();
+  }
+
+  /**
+   * Manually trigger a reconnect attempt (resets attempt counter).
+   * Only works if the client is in a disconnected/failed state.
+   */
+  manualReconnect(): void {
+    if (this.client) {
+      this.client.manualReconnect();
+    }
   }
 
   /**

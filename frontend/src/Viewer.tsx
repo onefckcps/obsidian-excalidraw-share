@@ -8,6 +8,7 @@ import { drawingCache } from './utils/cache'
 import { useCollab } from './hooks/useCollab'
 import { useBreakpoint } from './hooks/useBreakpoint'
 import { useMediaQuery } from './hooks/useMediaQuery'
+import { useOnlineStatus } from './hooks/useOnlineStatus'
 import CollabStatus from './CollabStatus'
 import CollabPopover from './CollabPopover'
 import AboutModal from './AboutModal'
@@ -24,10 +25,14 @@ const spinKeyframes = `
 function Viewer() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const isOnline = useOnlineStatus()
   const [sceneData, setSceneData] = useState<ExcalidrawData | null>(null)
   const [currentDataId, setCurrentDataId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [errorType, setErrorType] = useState<'network' | 'notfound' | 'server' | null>(null)
   const [loading, setLoading] = useState(true)
+  /** True when showing a cached drawing because the server is unreachable */
+  const [isCachedView, setIsCachedView] = useState(false)
   const [showOverlay, setShowOverlay] = useState(false)
   const [showAbout, setShowAbout] = useState(false)
   const [theme, setTheme] = useState<Theme>('light')
@@ -134,6 +139,7 @@ function Viewer() {
     }
 
     setLoading(true)
+    setIsCachedView(false)
 
     // Check for password in URL fragment (#key=...)
     const hashParams = new URLSearchParams(window.location.hash.slice(1))
@@ -167,12 +173,36 @@ function Viewer() {
           setCurrentDataId(id)
           setTheme(result.data.appState?.theme || 'light')
           setPasswordRequired(false)
+          setIsCachedView(false)
           setLoading(false)
         }
       })
       .catch((err) => {
         // Ignoriere Abort-Errors, die wir selbst ausgelöst haben
         if (err.name === 'AbortError') return
+
+        // Classify the error type
+        const isNetworkError = err instanceof TypeError && err.message.includes('fetch')
+        const isNotFound = err.message === 'Drawing not found'
+
+        if (isNetworkError) {
+          // Network error — try to serve from cache
+          const cachedData = drawingCache.get(id)
+          if (cachedData) {
+            setSceneData(cachedData)
+            setCurrentDataId(id)
+            setTheme(cachedData.appState?.theme || 'light')
+            setIsCachedView(true)
+            setLoading(false)
+            return
+          }
+          setErrorType('network')
+        } else if (isNotFound) {
+          setErrorType('notfound')
+        } else {
+          setErrorType('server')
+        }
+
         setError(err.message)
         setLoading(false)
       })
@@ -555,6 +585,11 @@ function Viewer() {
     let observer: MutationObserver | null = null
     const collabIsJoined = collab.isJoined
     const collabIsPersistent = collab.isPersistentCollab
+    const collabReconnectState = collab.reconnectState
+    const collabReconnectAttempt = collab.reconnectAttempt
+    const collabMaxReconnectAttempts = collab.maxReconnectAttempts
+    const currentIsCachedView = isCachedView
+    const currentIsOnline = isOnline
 
     // Common button styles for phone (bottom toolbar)
     const getPhoneButtonStyle = (isActive: boolean, activeColor: string) => `
@@ -814,11 +849,72 @@ function Viewer() {
 
         island.append(presentBtn, editBtn, browseBtn)
 
-        // Persistent collab badge
-        if (collabIsPersistent) {
+        // Offline / cached view badge — shown when server is unreachable
+        if (currentIsCachedView || !currentIsOnline) {
+          const dividerOffline = document.createElement('div')
+          dividerOffline.className = 'App-toolbar__divider'
+          island.appendChild(dividerOffline)
+
+          const offlineBadge = document.createElement('div')
+          const offlineText = !currentIsOnline ? 'Offline' : 'Cached · Server unreachable'
+          const offlineTitle = !currentIsOnline
+            ? 'You are offline. Showing cached drawing.'
+            : 'Server is unreachable. Showing cached version.'
+          offlineBadge.title = offlineTitle
+
+          if (breakpoint === 'desktop') {
+            offlineBadge.style.cssText = `
+              display: flex; align-items: center; gap: 4px;
+              padding: 2px 8px; border-radius: 10px;
+              background: rgba(107, 114, 128, 0.1);
+              border: 1px solid rgba(107, 114, 128, 0.3);
+              font-size: 11px; color: #6b7280;
+              font-family: system-ui, -apple-system, sans-serif;
+              white-space: nowrap; pointer-events: none;
+            `
+            offlineBadge.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:#9ca3af;display:inline-block"></span> ${offlineText}`
+          } else {
+            // Tablet: compact gray dot
+            offlineBadge.style.cssText = `
+              width: 8px; height: 8px; border-radius: 50%;
+              background: #9ca3af; flex-shrink: 0;
+            `
+          }
+          island.appendChild(offlineBadge)
+        }
+
+        // Persistent collab badge — shows connection state when joined
+        if (collabIsPersistent || (collabIsJoined && collabReconnectState !== 'idle')) {
           const divider = document.createElement('div')
           divider.className = 'App-toolbar__divider'
           island.appendChild(divider)
+
+          // Determine badge color and text based on connection state
+          let dotColor = '#22c55e'
+          let dotAnimation = ''
+          let badgeText = 'Collaborative'
+          let badgeBg = 'rgba(34, 197, 94, 0.1)'
+          let badgeBorder = 'rgba(34, 197, 94, 0.2)'
+          let badgeColor = '#16a34a'
+          let badgeTitle = 'Collaborative drawing'
+
+          if (collabIsJoined && collabReconnectState === 'reconnecting') {
+            dotColor = '#f59e0b'
+            dotAnimation = 'excalishare-pulse 1s ease-in-out infinite'
+            const maxStr = collabMaxReconnectAttempts >= 999 ? '∞' : String(collabMaxReconnectAttempts)
+            badgeText = `Reconnecting ${collabReconnectAttempt}/${maxStr}`
+            badgeBg = 'rgba(245, 158, 11, 0.1)'
+            badgeBorder = 'rgba(245, 158, 11, 0.3)'
+            badgeColor = '#b45309'
+            badgeTitle = `Reconnecting to collab session (attempt ${collabReconnectAttempt})`
+          } else if (collabIsJoined && collabReconnectState === 'failed') {
+            dotColor = '#ef4444'
+            badgeText = 'Disconnected'
+            badgeBg = 'rgba(239, 68, 68, 0.1)'
+            badgeBorder = 'rgba(239, 68, 68, 0.3)'
+            badgeColor = '#b91c1c'
+            badgeTitle = 'Disconnected from collab session'
+          }
 
           if (breakpoint === 'desktop') {
             // Desktop: full text badge
@@ -826,23 +922,64 @@ function Viewer() {
             badge.style.cssText = `
               display: flex; align-items: center; gap: 4px;
               padding: 2px 8px; border-radius: 10px;
-              background: rgba(34, 197, 94, 0.1);
-              border: 1px solid rgba(34, 197, 94, 0.2);
-              font-size: 11px; color: #16a34a;
+              background: ${badgeBg};
+              border: 1px solid ${badgeBorder};
+              font-size: 11px; color: ${badgeColor};
               font-family: system-ui, -apple-system, sans-serif;
-              white-space: nowrap; pointer-events: none;
+              white-space: nowrap;
             `
-            badge.innerHTML = '<span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block"></span> Collaborative'
+            badge.title = badgeTitle
+            const dotEl = document.createElement('span')
+            dotEl.style.cssText = `width:6px;height:6px;border-radius:50%;background:${dotColor};display:inline-block;flex-shrink:0;`
+            if (dotAnimation) dotEl.style.animation = dotAnimation
+            badge.appendChild(dotEl)
+            badge.appendChild(document.createTextNode(' ' + badgeText))
+
+            // Add retry button when disconnected
+            if (collabIsJoined && collabReconnectState === 'failed') {
+              const retryBtn = document.createElement('button')
+              retryBtn.textContent = '↻'
+              retryBtn.title = 'Retry connection'
+              retryBtn.style.cssText = `
+                margin-left: 4px; padding: 0 4px; border: none; background: none;
+                cursor: pointer; font-size: 13px; color: ${badgeColor};
+                line-height: 1;
+              `
+              retryBtn.onclick = (e) => {
+                e.stopPropagation()
+                collab.manualReconnect()
+              }
+              badge.appendChild(retryBtn)
+            }
+
             island.appendChild(badge)
           } else {
-            // Tablet: compact green dot with tooltip
+            // Tablet: compact colored dot with tooltip
             const dot = document.createElement('div')
-            dot.title = 'Collaborative drawing'
+            dot.title = badgeTitle
             dot.style.cssText = `
               width: 8px; height: 8px; border-radius: 50%;
-              background: #22c55e; flex-shrink: 0;
+              background: ${dotColor}; flex-shrink: 0;
             `
+            if (dotAnimation) dot.style.animation = dotAnimation
             island.appendChild(dot)
+
+            // Add retry button when disconnected (tablet)
+            if (collabIsJoined && collabReconnectState === 'failed') {
+              const retryBtn = document.createElement('button')
+              retryBtn.textContent = '↻'
+              retryBtn.title = 'Retry connection'
+              retryBtn.style.cssText = `
+                padding: 0 2px; border: none; background: none;
+                cursor: pointer; font-size: 12px; color: #b91c1c;
+                line-height: 1;
+              `
+              retryBtn.onclick = (e) => {
+                e.stopPropagation()
+                collab.manualReconnect()
+              }
+              island.appendChild(retryBtn)
+            }
           }
         }
 
@@ -852,9 +989,18 @@ function Viewer() {
           divider2.className = 'App-toolbar__divider'
           island.appendChild(divider2)
 
+          // Dot color reflects connection state
+          const dotColor = collabReconnectState === 'reconnecting' ? '#f59e0b'
+            : collabReconnectState === 'failed' ? '#ef4444'
+            : '#4CAF50'
+          const dotAnimation = collabReconnectState === 'reconnecting' ? 'excalishare-pulse 1s ease-in-out infinite' : ''
+
           const collabBtn = document.createElement('button')
           collabBtn.textContent = '🤝'
-          collabBtn.title = 'Collaboration'
+          collabBtn.title = collabReconnectState === 'reconnecting'
+            ? `Reconnecting... (${collabReconnectAttempt}/${collabMaxReconnectAttempts >= 999 ? '∞' : collabMaxReconnectAttempts})`
+            : collabReconnectState === 'failed' ? 'Disconnected — tap to retry'
+            : 'Collaboration'
           collabBtn.style.cssText = getDesktopButtonStyle(true, '#4CAF50')
           collabBtn.classList.add('excalishare-btn')
           collabBtn.style.position = 'relative'
@@ -862,10 +1008,17 @@ function Viewer() {
           dot.style.cssText = `
             position: absolute; top: -2px; right: -2px;
             width: 8px; height: 8px; border-radius: 50%;
-            background: #4CAF50; border: 1px solid ${theme === 'dark' ? '#1e1e1e' : '#fff'};
+            background: ${dotColor}; border: 1px solid ${theme === 'dark' ? '#1e1e1e' : '#fff'};
           `
+          if (dotAnimation) dot.style.animation = dotAnimation
           collabBtn.appendChild(dot)
-          collabBtn.onclick = () => setShowCollabPopover((prev: boolean) => !prev)
+          collabBtn.onclick = () => {
+            if (collabReconnectState === 'failed') {
+              collab.manualReconnect()
+            } else {
+              setShowCollabPopover((prev: boolean) => !prev)
+            }
+          }
           island.appendChild(collabBtn)
         }
 
@@ -913,7 +1066,7 @@ function Viewer() {
       if (observer) observer.disconnect()
       document.querySelectorAll(`.${containerClass}`).forEach(el => el.remove())
     }
-  }, [breakpoint, isPhone, isExcalidrawMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData, collab.isJoined, collab.isPersistentCollab, drawingsList, loadingDrawings, navigate, navigateToPrevDrawing, navigateToNextDrawing])
+  }, [breakpoint, isPhone, isExcalidrawMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData, collab.isJoined, collab.isPersistentCollab, collab.reconnectState, collab.reconnectAttempt, collab.maxReconnectAttempts, collab.manualReconnect, isCachedView, isOnline, drawingsList, loadingDrawings, navigate, navigateToPrevDrawing, navigateToNextDrawing])
 
   // Inject ExcaliShare links into Excalidraw help dropdown
   useEffect(() => {
@@ -1062,13 +1215,62 @@ function Viewer() {
   }
 
   if (error) {
+    const isNetworkErr = errorType === 'network'
+    const isNotFoundErr = errorType === 'notfound'
+    const errorTitle = isNetworkErr ? '📡 Server Unreachable'
+      : isNotFoundErr ? '🔍 Drawing Not Found'
+      : '⚠️ Error'
+    const errorMessage = isNetworkErr
+      ? 'Could not connect to the server. Please check your connection and try again.'
+      : isNotFoundErr
+      ? 'This drawing does not exist or has been deleted.'
+      : error
+
     return (
       <div style={styles.center}>
         <div style={styles.errorBox}>
-          <h2 style={styles.errorTitle}>⚠️ Error</h2>
-          <p style={styles.errorText}>{error}</p>
-          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '16px' }}>
-            <button 
+          <h2 style={styles.errorTitle}>{errorTitle}</h2>
+          <p style={styles.errorText}>{errorMessage}</p>
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '16px', flexWrap: 'wrap' }}>
+            {isNetworkErr && (
+              <button
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: '4px',
+                  border: '1px solid',
+                  background: 'none',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  color: theme === 'dark' ? '#e0e0e0' : '#333',
+                  borderColor: theme === 'dark' ? '#555' : '#ccc',
+                }}
+                onClick={() => {
+                  if (id) {
+                    setError(null)
+                    setErrorType(null)
+                    setLoading(true)
+                    fetchDrawing(id, currentPasswordRef.current)
+                      .then((result) => {
+                        if (result.data) {
+                          drawingCache.set(id, result.data)
+                          setSceneData(result.data)
+                          setCurrentDataId(id)
+                          setTheme(result.data.appState?.theme || 'light')
+                          setLoading(false)
+                        }
+                      })
+                      .catch((err) => {
+                        setError(err.message)
+                        setErrorType('network')
+                        setLoading(false)
+                      })
+                  }
+                }}
+              >
+                ↻ Retry
+              </button>
+            )}
+            <button
               style={{
                 padding: '10px 16px',
                 borderRadius: '4px',
@@ -1083,7 +1285,7 @@ function Viewer() {
             >
               ← Go Back
             </button>
-            <Link 
+            <Link
               to="/"
               style={{
                 padding: '10px 16px',
@@ -1100,8 +1302,8 @@ function Viewer() {
             </Link>
           </div>
           {!isPhone && (
-          <button 
-            style={{...styles.link, background: 'none', border: 'none', cursor: 'pointer', display: 'block', margin: '16px auto 0'}} 
+          <button
+            style={{...styles.link, background: 'none', border: 'none', cursor: 'pointer', display: 'block', margin: '16px auto 0'}}
             onClick={() => setShowOverlay(true)}
           >
             📂 Browse drawings
@@ -1200,6 +1402,10 @@ function Viewer() {
         <CollabPopover
           theme={theme}
           isConnected={collab.isConnected}
+          reconnectState={collab.reconnectState}
+          reconnectAttempt={collab.reconnectAttempt}
+          maxReconnectAttempts={collab.maxReconnectAttempts}
+          onManualReconnect={collab.manualReconnect}
           collaborators={collab.collaborators}
           displayName={collab.displayName}
           followingUserId={collab.followingUserId}

@@ -412,7 +412,8 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
         setLoading(false)
       })
       .catch((err) => {
-        setError(err.message)
+        const isNetworkError = err instanceof TypeError && err.message.includes('fetch')
+        setError(isNetworkError ? 'Server unreachable. Check your connection.' : err.message)
         setLoading(false)
       })
   }, [initialDrawings])
@@ -880,8 +881,45 @@ function DrawingsBrowser({ mode = 'standalone', theme, onClose, currentDrawingId
           ) : error ? (
             <div style={styles.center}>
               <div style={styles.errorBox}>
-                <h2 style={styles.errorTitle}>Error</h2>
+                <h2 style={styles.errorTitle}>
+                  {error.includes('unreachable') ? '📡 Server Unreachable' : '⚠️ Error'}
+                </h2>
                 <p style={styles.errorText}>{error}</p>
+                <button
+                  style={{
+                    marginTop: '12px',
+                    padding: '8px 16px',
+                    borderRadius: '4px',
+                    border: '1px solid',
+                    background: 'none',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    color: currentTheme === 'dark' ? '#e0e0e0' : '#333',
+                    borderColor: currentTheme === 'dark' ? '#555' : '#ccc',
+                  }}
+                  onClick={() => {
+                    setError(null)
+                    setLoading(true)
+                    fetch('/api/public/drawings')
+                      .then((res) => {
+                        if (!res.ok) throw new Error('Failed to load drawings')
+                        return res.json()
+                      })
+                      .then((data) => {
+                        const fetchedDrawings = data.drawings || []
+                        setDrawings(fetchedDrawings)
+                        buildTree(fetchedDrawings)
+                        setLoading(false)
+                      })
+                      .catch((err) => {
+                        const isNetworkError = err instanceof TypeError && err.message.includes('fetch')
+                        setError(isNetworkError ? 'Server unreachable. Check your connection.' : err.message)
+                        setLoading(false)
+                      })
+                  }}
+                >
+                  ↻ Retry
+                </button>
               </div>
             </div>
           ) : drawings.length === 0 ? (

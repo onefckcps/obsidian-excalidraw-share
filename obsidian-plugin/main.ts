@@ -234,6 +234,14 @@ export default class ExcaliSharePlugin extends Plugin {
   /** Debounce timer for layout-change events */
   private _layoutChangeTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // ── Server health check ──
+  /** Whether the server is currently reachable */
+  private _serverReachable: boolean = true;
+  /** Interval handle for periodic server health checks */
+  private _healthCheckInterval: ReturnType<typeof setInterval> | null = null;
+  /** Pending operations queue: publish/sync operations that failed due to server being unreachable */
+  private _pendingOperations: Array<{ type: 'publish' | 'sync'; file: TFile; existingId?: string }> = [];
+
   // ── Collab join guard ──
   /** Prevents concurrent join attempts (race between backgroundReconcile, handleLeafChange, etc.) */
   private _joiningCollabInProgress = false;
@@ -256,6 +264,9 @@ export default class ExcaliSharePlugin extends Plugin {
 
     // Inject global CSS for animations
     injectGlobalStyles();
+
+    // Start periodic server health check (every 60 seconds)
+    this.startHealthCheck();
 
     // ── Ribbon Icons ──
     this.addRibbonIcon('upload', 'Publish Drawing', async () => {
@@ -623,6 +634,110 @@ export default class ExcaliSharePlugin extends Plugin {
     }
     this._reconcileCache.clear();
     this._reconcileInFlight.clear();
+
+    // Stop health check interval
+    if (this._healthCheckInterval) {
+      clearInterval(this._healthCheckInterval);
+      this._healthCheckInterval = null;
+    }
+  }
+
+  // ── Server Health Check ──
+
+  /**
+   * Start periodic server health check.
+   * Checks every 60 seconds and updates toolbar/status bar when reachability changes.
+   */
+  private startHealthCheck(): void {
+    // Initial check after 2 seconds (give plugin time to fully load)
+    setTimeout(() => this.checkServerHealth(), 2000);
+
+    // Periodic check every 60 seconds
+    this._healthCheckInterval = setInterval(() => {
+      this.checkServerHealth();
+    }, 60_000);
+  }
+
+  /**
+   * Check if the server is reachable by hitting /api/health.
+   * Updates toolbar state and status bar when reachability changes.
+   */
+  private async checkServerHealth(): Promise<boolean> {
+    if (!this.settings.baseUrl || !this.settings.apiKey) {
+      return false; // Not configured yet
+    }
+
+    try {
+      const res = await requestUrl({
+        url: `${this.settings.baseUrl}/api/health`,
+        method: 'GET',
+        throw: false,
+      });
+      const reachable = res.status >= 200 && res.status < 500;
+
+      if (reachable !== this._serverReachable) {
+        this._serverReachable = reachable;
+        this.onServerReachabilityChanged(reachable);
+      }
+      return reachable;
+    } catch {
+      if (this._serverReachable) {
+        this._serverReachable = false;
+        this.onServerReachabilityChanged(false);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Called when server reachability changes.
+   * Updates toolbar state, status bar, and processes pending operations if server came back.
+   */
+  private onServerReachabilityChanged(reachable: boolean): void {
+    // Update all toolbar instances
+    for (const toolbar of this.toolbarInstances.values()) {
+      toolbar.updateState({ serverReachable: reachable });
+    }
+
+    // Update status bar
+    if (this.collabStatusBarItem) {
+      if (!reachable) {
+        this.collabStatusBarItem.setText('ExcaliShare: ❌ Server unreachable');
+        this.collabStatusBarItem.show();
+      } else if (!this.activeCollabSessionId) {
+        // Only hide/reset if not in a collab session
+        this.collabStatusBarItem.hide();
+      }
+    }
+
+    if (reachable) {
+      // Process pending operations now that server is back
+      if (this._pendingOperations.length > 0) {
+        const pending = [...this._pendingOperations];
+        this._pendingOperations = [];
+        new Notice(`Server reconnected. Syncing ${pending.length} pending change${pending.length !== 1 ? 's' : ''}...`);
+        for (const op of pending) {
+          if (op.type === 'publish' || op.type === 'sync') {
+            this.publishDrawing(op.file, op.existingId, true).catch((e) => {
+              console.error('ExcaliShare: Failed to process pending operation', e);
+            });
+          }
+        }
+      }
+
+      // Auto-join persistent collab session for the currently open drawing (if applicable)
+      if (this.settings.collabJoinFromObsidian && !this.collabManager?.isJoined) {
+        const file = this.app.workspace.getActiveFile();
+        if (file && this.isExcalidrawFile(file)) {
+          const drawingId = this.getPublishedId(file);
+          if (drawingId && this.isPersistentCollabEnabled(file)) {
+            this.autoJoinPersistentCollab(drawingId).catch((e) => {
+              console.error('ExcaliShare: Failed to auto-join persistent collab after reconnect', e);
+            });
+          }
+        }
+      }
+    }
   }
 
   // ── Toolbar Management ──
@@ -963,6 +1078,14 @@ export default class ExcaliSharePlugin extends Plugin {
           }
         }
       },
+      onManualReconnect: () => {
+        if (this.collabManager?.isJoined) {
+          this.collabManager.manualReconnect();
+        }
+      },
+      onRetryServer: () => {
+        this.checkServerHealth();
+      },
     };
 
     return new ExcaliShareToolbar(
@@ -1002,6 +1125,10 @@ export default class ExcaliSharePlugin extends Plugin {
       collabFollowingUserId: this.collabManager?.currentFollowingUserId,
       collabDisplayName: this.settings.collabDisplayName || 'Host',
       persistentCollabEnabled: this.isPersistentCollabEnabled(file),
+      serverReachable: this._serverReachable,
+      collabReconnectState: this.collabManager?.isJoined
+        ? (this.collabManager?.isConnected ? 'connected' : 'reconnecting')
+        : null,
     });
 
     toolbar.setPosition(this.settings.toolbarPosition);
@@ -1470,7 +1597,21 @@ export default class ExcaliSharePlugin extends Plugin {
       }
     } catch (error) {
       console.error('ExcaliShare: Publish error', error);
-      if (!silent) {
+      // Check if this is a network error (server unreachable)
+      const isNetworkError = error instanceof Error && (
+        error.message.includes('net::') ||
+        error.message.includes('Failed to fetch') ||
+        error.message.includes('Network request failed') ||
+        error.message.includes('ECONNREFUSED') ||
+        error.message.includes('ENOTFOUND')
+      );
+      if (isNetworkError && !silent) {
+        // Queue for retry when server comes back
+        this._pendingOperations.push({ type: existingId ? 'sync' : 'publish', file, existingId });
+        this._serverReachable = false;
+        this.onServerReachabilityChanged(false);
+        new Notice('Server unreachable. Will retry when connection is restored.');
+      } else if (!silent) {
         new Notice(`Failed to publish: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     }
@@ -1860,8 +2001,27 @@ export default class ExcaliSharePlugin extends Plugin {
             // Refresh toolbar to show updated participant count
             this.refreshActiveToolbar();
           },
-          onConnectionChanged: () => {
-            // No-op — connection state tracked internally by CollabManager
+          onConnectionChanged: (connected) => {
+            // Update toolbar reconnect state when connection is restored
+            if (connected) {
+              for (const toolbar of this.toolbarInstances.values()) {
+                toolbar.updateState({
+                  collabReconnectState: 'connected',
+                  collabReconnectAttempt: 0,
+                });
+              }
+              // Restore status bar to normal collab state
+              if (this.collabStatusBarItem) {
+                this.collabStatusBarItem.setText('🔴 Live Collab');
+              }
+            } else {
+              // Disconnected — will be updated by onReconnecting
+              for (const toolbar of this.toolbarInstances.values()) {
+                toolbar.updateState({
+                  collabReconnectState: 'reconnecting',
+                });
+              }
+            }
           },
           onSessionEnded: (saved) => {
             // Session was ended by someone else (or server timeout)
@@ -1885,6 +2045,21 @@ export default class ExcaliSharePlugin extends Plugin {
             // Refresh toolbar to update follow state in the collaborator list
             this.refreshActiveToolbar();
           },
+          onReconnecting: (attempt, maxAttempts) => {
+            // Update all toolbar instances to show reconnect state
+            for (const toolbar of this.toolbarInstances.values()) {
+              toolbar.updateState({
+                collabReconnectState: 'reconnecting',
+                collabReconnectAttempt: attempt,
+                collabMaxReconnectAttempts: maxAttempts === Infinity ? 999 : maxAttempts,
+              });
+            }
+            // Update status bar
+            if (this.collabStatusBarItem) {
+              const maxStr = maxAttempts === Infinity ? '∞' : String(maxAttempts);
+              this.collabStatusBarItem.setText(`🟡 Reconnecting ${attempt}/${maxStr}`);
+            }
+          },
           onReconnectFailed: () => {
             // All reconnect attempts exhausted (e.g. after overnight sleep).
             // For persistent collab sessions, clean up and schedule a re-activation attempt.
@@ -1893,6 +2068,9 @@ export default class ExcaliSharePlugin extends Plugin {
             const failedDrawingId = this.activeCollabDrawingId;
             this.cleanupCollabState();
             this.refreshActiveToolbar();
+            // Immediately check server health so the toolbar shows the grey/retry state
+            // without waiting up to 60s for the next periodic health check.
+            this.checkServerHealth();
 
             if (failedDrawingId) {
               // Check if this was a persistent collab drawing and try to re-activate after a short delay.
