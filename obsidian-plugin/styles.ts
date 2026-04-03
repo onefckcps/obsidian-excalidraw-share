@@ -77,12 +77,9 @@ export const styles = {
     pointerEvents: 'none',
   } as Partial<CSSStyleDeclaration>,
 
-  /** Popover panel for auto mode — positioned below the trigger button */
+  /** Popover panel for auto mode — portaled to document.body, positioned via getBoundingClientRect */
   popoverPanel: {
-    position: 'absolute',
-    top: '100%',
-    right: '0',
-    marginTop: '6px',
+    position: 'fixed',
     minWidth: '200px',
     maxWidth: '240px',
     maxHeight: '70vh',
@@ -91,7 +88,7 @@ export const styles = {
     border: '1px solid var(--background-modifier-border)',
     backgroundColor: 'var(--background-primary)',
     boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
-    zIndex: '1000',
+    zIndex: '10000',
     transition: 'opacity 0.2s ease, transform 0.2s ease',
   } as Partial<CSSStyleDeclaration>,
 

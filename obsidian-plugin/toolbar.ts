@@ -98,6 +98,9 @@ export class ExcaliShareToolbar {
   private nativeToolbarObserver: MutationObserver | null = null;
   private popoverBackdropEl: HTMLElement | null = null;
   private islandBtnEl: HTMLElement | null = null;
+  /** Desktop popover portaled to document.body (separate from rootEl to avoid toolbar height expansion) */
+  private desktopPopoverEl: HTMLElement | null = null;
+  private desktopPopoverRepositionHandler: (() => void) | null = null;
 
   /** Whether to use bottom-sheet style on mobile (true) or desktop dropdown style (false) */
   private mobilePopoverBottomSheet: boolean;
@@ -142,6 +145,9 @@ export class ExcaliShareToolbar {
    * Remove the toolbar from the DOM.
    */
   remove(): void {
+    // Clean up portaled desktop popover and its listeners first
+    this.removePopover();
+
     if (this.rootEl && this.rootEl.parentElement) {
       this.rootEl.parentElement.removeChild(this.rootEl);
     }
@@ -342,22 +348,73 @@ export class ExcaliShareToolbar {
   }
 
   /**
-   * Desktop popover: positioned below the island button.
+   * Desktop popover: portaled to document.body to avoid expanding the Excalidraw toolbar row.
+   * Positioned using getBoundingClientRect() of the Island button.
    */
   private renderDesktopPopover(): void {
     if (!this.rootEl) return;
 
     const panel = document.createElement('div');
-    panel.className = 'excalishare-toolbar-expanded excalishare-popover';
+    panel.className = 'excalishare-toolbar-expanded excalishare-popover excalishare-desktop-popover';
     applyStyles(panel, styles.popoverPanel);
     panel.style.animation = 'excalishare-fade-in 0.2s ease';
 
     this.expandedPanelEl = panel;
+    this.desktopPopoverEl = panel;
     this.buildExpandedContent(panel);
 
-    // Position relative to rootEl (the Island)
-    this.rootEl.appendChild(panel);
+    // Portal to document.body — completely decouples from toolbar layout
+    document.body.appendChild(panel);
+
+    // Position below the Island button using fixed coordinates
+    this.repositionDesktopPopover();
+
+    // Reposition on scroll or resize so the popover tracks the button
+    this.desktopPopoverRepositionHandler = () => this.repositionDesktopPopover();
+    window.addEventListener('scroll', this.desktopPopoverRepositionHandler, true);
+    window.addEventListener('resize', this.desktopPopoverRepositionHandler, true);
+
     this.addClickOutsideListener();
+  }
+
+  /**
+   * Compute and apply fixed position for the desktop popover relative to the Island button.
+   */
+  private repositionDesktopPopover(): void {
+    const panel = this.desktopPopoverEl;
+    if (!panel) return;
+
+    // Use the island button if available, otherwise fall back to rootEl
+    const anchor = this.islandBtnEl ?? this.rootEl;
+    if (!anchor) return;
+
+    const rect = anchor.getBoundingClientRect();
+    const panelWidth = 240; // maxWidth from styles
+    const gap = 6; // marginTop equivalent
+
+    // Position below the anchor
+    let top = rect.bottom + gap;
+    // Align right edge of popover with right edge of anchor
+    let right = window.innerWidth - rect.right;
+
+    // Clamp so popover doesn't go off-screen on the left
+    const minLeft = 8;
+    const computedLeft = rect.right - panelWidth;
+    if (computedLeft < minLeft) {
+      right = window.innerWidth - (minLeft + panelWidth);
+    }
+
+    // Clamp so popover doesn't go off-screen at the bottom
+    const maxHeight = window.innerHeight * 0.7;
+    const availableBelow = window.innerHeight - top - 8;
+    if (availableBelow < 100 && rect.top > maxHeight) {
+      // Flip above the anchor
+      top = rect.top - gap - Math.min(maxHeight, availableBelow + rect.top - gap - 8);
+    }
+
+    panel.style.top = `${top}px`;
+    panel.style.right = `${right}px`;
+    panel.style.left = '';
   }
 
   /**
@@ -402,10 +459,25 @@ export class ExcaliShareToolbar {
   }
 
   /**
-   * Remove the popover panel (both desktop and mobile).
+   * Remove the popover panel (desktop portaled, mobile bottom-sheet, and floating mode).
    */
   private removePopover(): void {
-    // Remove desktop popover (child of rootEl)
+    // Remove desktop popover portaled to document.body
+    if (this.desktopPopoverEl) {
+      this.desktopPopoverEl.remove();
+      this.desktopPopoverEl = null;
+    }
+    // Also clean up any orphaned desktop popovers
+    document.querySelectorAll('.excalishare-desktop-popover').forEach(el => el.remove());
+
+    // Remove scroll/resize reposition listeners
+    if (this.desktopPopoverRepositionHandler) {
+      window.removeEventListener('scroll', this.desktopPopoverRepositionHandler, true);
+      window.removeEventListener('resize', this.desktopPopoverRepositionHandler, true);
+      this.desktopPopoverRepositionHandler = null;
+    }
+
+    // Remove desktop popover if it was appended as child of rootEl (legacy / floating mode)
     if (this.rootEl) {
       const popover = this.rootEl.querySelector('.excalishare-popover');
       if (popover) popover.remove();
@@ -1050,9 +1122,9 @@ export class ExcaliShareToolbar {
     this.removeClickOutsideListener();
     this.clickOutsideHandler = (e: MouseEvent) => {
       const target = e.target as Node;
-      // Don't close if clicking inside the rootEl (Island + popover)
+      // Don't close if clicking inside the rootEl (Island button)
       if (this.rootEl && this.rootEl.contains(target)) return;
-      // Don't close if clicking inside a mobile popover
+      // Don't close if clicking inside the popover panel (desktop portaled or mobile bottom-sheet)
       if (this.expandedPanelEl && this.expandedPanelEl.contains(target)) return;
 
       if (this.injectionMode === 'auto-injected') {
