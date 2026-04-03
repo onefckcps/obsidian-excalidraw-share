@@ -53,6 +53,11 @@ pub trait DrawingStorage: Send + Sync + 'static {
 
     /// List all drawing IDs that have persistent collab enabled.
     async fn list_persistent_collab_drawings(&self) -> Result<Vec<String>, AppError>;
+
+    /// Find a drawing by its source path (vault-relative file path).
+    /// Scans sidecar metadata files for a matching source_path.
+    /// Returns the DrawingMeta if found, or None if no drawing matches.
+    async fn find_by_source_path(&self, source_path: &str) -> Result<Option<DrawingMeta>, AppError>;
 }
 
 /// Filesystem-backed storage. Each drawing is a JSON file named `<id>.json`
@@ -483,5 +488,47 @@ impl DrawingStorage for FileSystemStorage {
         }
 
         Ok(ids)
+    }
+
+    async fn find_by_source_path(&self, source_path: &str) -> Result<Option<DrawingMeta>, AppError> {
+        let mut entries = fs::read_dir(&self.base_path).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+            // Only process .meta.json sidecar files
+            if !filename.ends_with(".meta.json") {
+                continue;
+            }
+
+            let id = filename.strip_suffix(".meta.json").unwrap_or("").to_string();
+            if id.is_empty() {
+                continue;
+            }
+
+            if let Some(sidecar) = self.read_sidecar(&id).await {
+                if sidecar.source_path.as_deref() == Some(source_path) {
+                    // Found a match — verify the drawing file still exists
+                    let drawing_path = self.drawing_path(&id);
+                    if !drawing_path.exists() {
+                        continue;
+                    }
+
+                    let file_metadata = fs::metadata(&drawing_path).await?;
+
+                    return Ok(Some(DrawingMeta {
+                        id,
+                        created_at: sidecar.created_at,
+                        size_bytes: file_metadata.len(),
+                        source_path: sidecar.source_path,
+                        password_protected: sidecar.password_protected,
+                        persistent_collab: sidecar.persistent_collab,
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
     }
 }

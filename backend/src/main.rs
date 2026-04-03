@@ -180,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/upload", post(routes::upload_drawing))
         .route("/api/drawings/{id}", delete(routes::delete_drawing))
         .route("/api/drawings", get(routes::list_drawings))
+        .route("/api/lookup", get(routes::lookup_by_source_path))
         .route("/api/collab/start", post(routes::start_collab))
         .route("/api/collab/stop", post(routes::stop_collab))
         .route("/api/collab/sessions", get(routes::list_collab_sessions))

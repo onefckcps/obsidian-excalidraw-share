@@ -134,6 +134,7 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 | GET | `/api/view/{id}?key=...` | Public | Get drawing by ID (requires `key` param if password-protected; Bearer token bypasses password) |
 | DELETE | `/api/drawings/{id}` | Bearer | Delete drawing |
 | GET | `/api/drawings` | Bearer | List all drawings (includes `size_bytes`, `password_protected`) |
+| GET | `/api/lookup?source_path=...` | Bearer | Find drawing by vault-relative source path (for frontmatter recovery) |
 | GET | `/api/public/drawings` | Public | List drawings (id, created_at, source_path, password_protected) |
 | GET | `/api/health` | Public | Health check |
 | POST | `/api/collab/start` | Bearer | Start collab session (supports `password` field) |
@@ -331,9 +332,13 @@ interface ExcaliShareSettings {
 
 **Published ID Tracking**
 - Stored in Obsidian frontmatter as `excalishare-id`
+- Server URL stored as `excalishare-server` (guards against cross-server 404 clearing)
 - Read via `app.metadataCache.getFileCache(file).frontmatter['excalishare-id']`
 - Written via `app.fileManager.processFrontMatter()`
 - Persistent collab tracked via `excalishare-persistent-collab: true` and `excalishare-last-sync-version: N` in frontmatter
+- **In-memory cache** (`_publishedIdCache: Map<filePath, drawingId>`) survives frontmatter overwrites by third-party sync plugins
+- **Server-side recovery**: When frontmatter is lost (e.g., LiveSync overwrites), plugin queries `GET /api/lookup?source_path=...` to recover published state from server
+- **Cross-server 404 protection**: `reconcileServerState()` only clears frontmatter on 404 if `excalishare-server` matches current `baseUrl`
 
 ### Key Design Decisions
 
@@ -754,6 +759,13 @@ The project is feature-complete with the live collaboration system fully impleme
 - [x] Plugin: Drawing deletion detection (clears frontmatter when server returns 404)
 - [x] Plugin: Persistent collab drift detection (server enabled/disabled externally → update local)
 - [x] Frontend: DrawingsBrowser auto-refresh every 30s for persistent collab badge accuracy
+- [x] Backend: `GET /api/lookup?source_path=...` endpoint for server-side source path lookup
+- [x] Backend: `find_by_source_path()` in `DrawingStorage` trait — scans sidecar metadata for matching source_path
+- [x] Plugin: `recoverPublishedState()` — queries server by source_path when frontmatter is lost (e.g., LiveSync overwrites)
+- [x] Plugin: In-memory `_publishedIdCache` (`Map<filePath, drawingId>`) survives frontmatter overwrites
+- [x] Plugin: `excalishare-server` frontmatter field — stores baseUrl at publish time for cross-server 404 protection
+- [x] Plugin: Cross-server 404 protection — `reconcileServerState()` only clears frontmatter if `excalishare-server` matches current `baseUrl`
+- [x] Plugin: `handleMetadataChange()` detects frontmatter loss via memory cache and triggers server recovery
 
 **Security**
 - [x] Constant-time API key comparison (`subtle` crate)

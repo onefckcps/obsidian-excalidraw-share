@@ -260,6 +260,14 @@ export default class ExcaliSharePlugin extends Plugin {
   /** Background reconciliation interval (60 seconds) */
   private static BACKGROUND_RECONCILE_INTERVAL = 60_000;
 
+  // ── Published ID Memory Cache ──
+  /** In-memory cache of filePath → drawingId, survives frontmatter overwrites by third-party sync plugins.
+   *  Updated on publish, unpublish, recovery, and initial load. Used to detect when frontmatter
+   *  is lost (e.g., LiveSync overwrites) and trigger server-side recovery. */
+  private _publishedIdCache: Map<string, string> = new Map();
+  /** Dedup guard: file paths currently being recovered via server lookup */
+  private _recoveryInFlight: Set<string> = new Set();
+
   async onload() {
     await this.loadSettings();
     console.log('ExcaliShare: Plugin loaded');
@@ -849,6 +857,12 @@ export default class ExcaliSharePlugin extends Plugin {
         const publishedId = this.getPublishedId(file);
         if (publishedId) {
           this.reconcileServerState(file, publishedId);
+        } else {
+          // Check memory cache for recovery (frontmatter may have been overwritten)
+          const cachedId = this._publishedIdCache.get(file.path);
+          if (cachedId) {
+            this.recoverPublishedState(file);
+          }
         }
         // Ensure scripts are active (may not have been started yet if API wasn't ready)
         if (!this.scriptManager.hasActiveScripts(leafId)) {
@@ -877,6 +891,14 @@ export default class ExcaliSharePlugin extends Plugin {
       const publishedId = this.getPublishedId(file);
       if (publishedId) {
         this.reconcileServerState(file, publishedId);
+      } else {
+        // No published ID in frontmatter — check if we had one in memory cache
+        // (frontmatter may have been overwritten by a third-party sync plugin like LiveSync)
+        const cachedId = this._publishedIdCache.get(file.path);
+        if (cachedId) {
+          console.log(`ExcaliShare: No frontmatter ID for ${file.path} but memory cache has ${cachedId}. Recovering...`);
+          this.recoverPublishedState(file);
+        }
       }
 
       // Activate embedded Excalidraw scripts (zoom-adaptive stroke, right-click eraser)
@@ -1243,6 +1265,20 @@ export default class ExcaliSharePlugin extends Plugin {
   private handleMetadataChange(file: TFile): void {
     const activeFile = this.app.workspace.getActiveFile();
     if (activeFile && activeFile.path === file.path) {
+      // Check if frontmatter just lost excalishare-id but we had it in memory cache.
+      // This happens when a third-party sync plugin (e.g., LiveSync) overwrites the file
+      // with an older version that doesn't have the ExcaliShare frontmatter fields.
+      const currentId = this.getPublishedId(file);
+      const cachedId = this._publishedIdCache.get(file.path);
+
+      if (!currentId && cachedId) {
+        // Frontmatter was lost! Trigger server-side recovery instead of showing Draft.
+        console.log(`ExcaliShare: Frontmatter lost for ${file.path} (had ID ${cachedId}). Triggering server recovery...`);
+        this.recoverPublishedState(file);
+        // Don't refresh toolbar yet — recovery will do it after restoring frontmatter
+        return;
+      }
+
       this.refreshActiveToolbar();
     }
   }
@@ -1339,7 +1375,10 @@ export default class ExcaliSharePlugin extends Plugin {
   private getPublishedId(file: TFile): string | null {
     const cache = this.app.metadataCache.getFileCache(file);
     if (cache && cache.frontmatter && cache.frontmatter['excalishare-id']) {
-      return cache.frontmatter['excalishare-id'] as string;
+      const id = cache.frontmatter['excalishare-id'] as string;
+      // Keep in-memory cache in sync with frontmatter
+      this._publishedIdCache.set(file.path, id);
+      return id;
     }
     return null;
   }
@@ -1628,6 +1667,9 @@ export default class ExcaliSharePlugin extends Plugin {
       // @ts-ignore
       await this.app.fileManager.processFrontMatter(file, (frontmatter: any) => {
         frontmatter['excalishare-id'] = result.id;
+        // Store the server URL used for this publish — used to guard against
+        // cross-server 404 clearing when reconciling with a different server instance
+        frontmatter['excalishare-server'] = this.settings.baseUrl;
         if (result.password_protected) {
           frontmatter['excalishare-password'] = true;
           // Store the actual password value so "Copy Share Link" can include it inline.
@@ -1641,6 +1683,9 @@ export default class ExcaliSharePlugin extends Plugin {
           delete frontmatter['excalishare-password-key'];
         }
       });
+
+      // Update in-memory published ID cache
+      this._publishedIdCache.set(file.path, result.id);
 
       // Build share URL — include password in fragment if set
       let shareUrl = result.url;
@@ -1704,6 +1749,7 @@ export default class ExcaliSharePlugin extends Plugin {
       // @ts-ignore
       await this.app.fileManager.processFrontMatter(file, (frontmatter: any) => {
         delete frontmatter['excalishare-id'];
+        delete frontmatter['excalishare-server'];
         delete frontmatter['excalishare-persistent-collab'];
         delete frontmatter['excalishare-last-sync-version'];
         delete frontmatter['excalishare-password'];
@@ -1711,6 +1757,7 @@ export default class ExcaliSharePlugin extends Plugin {
       });
 
       // Clear in-memory tracking for this file/drawing
+      this._publishedIdCache.delete(file.path);
       this._persistentSyncedFiles.delete(file.path);
       this._reconcileCache.delete(idToDelete);
 
@@ -2295,6 +2342,79 @@ export default class ExcaliSharePlugin extends Plugin {
   // ── Server State Reconciliation ──
 
   /**
+   * Recover published state for a file whose frontmatter was lost (e.g., overwritten by LiveSync).
+   * Queries the server by source_path to find the drawing and restores all frontmatter fields.
+   * Returns the recovered drawing ID, or null if the file is genuinely unpublished.
+   */
+  private async recoverPublishedState(file: TFile): Promise<string | null> {
+    if (!this.settings.apiKey || !this.settings.baseUrl) return null;
+
+    // Dedup guard: skip if already recovering this file
+    if (this._recoveryInFlight.has(file.path)) return null;
+    this._recoveryInFlight.add(file.path);
+
+    try {
+      const response = await requestUrl({
+        url: `${this.settings.baseUrl}/api/lookup?source_path=${encodeURIComponent(file.path)}`,
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.settings.apiKey}`,
+        },
+        throw: false,
+      });
+
+      if (response.status === 404) {
+        // No drawing found for this source_path — file is genuinely unpublished
+        // Also clear the in-memory cache since the server doesn't know about it
+        this._publishedIdCache.delete(file.path);
+        return null;
+      }
+
+      if (response.status >= 400) {
+        console.warn(`ExcaliShare: Lookup failed with status ${response.status}`);
+        return null;
+      }
+
+      const data = response.json;
+      if (!data.id) return null;
+
+      console.log(`ExcaliShare: Recovered published state for ${file.path} → ${data.id} (server lookup by source_path)`);
+
+      // Restore all frontmatter fields from server response
+      // @ts-ignore
+      await this.app.fileManager.processFrontMatter(file, (fm: any) => {
+        fm['excalishare-id'] = data.id;
+        fm['excalishare-server'] = this.settings.baseUrl;
+        if (data.persistent_collab) {
+          fm['excalishare-persistent-collab'] = true;
+          if (data.persistent_collab_version) {
+            fm['excalishare-last-sync-version'] = data.persistent_collab_version;
+          }
+        }
+        if (data.password_protected) {
+          fm['excalishare-password'] = true;
+        }
+      });
+
+      // Update in-memory cache
+      this._publishedIdCache.set(file.path, data.id);
+
+      new Notice('Published state recovered from server.');
+      this.refreshActiveToolbar();
+
+      // Trigger full reconciliation (collab session recovery, persistent sync, etc.)
+      await this.reconcileServerState(file, data.id);
+
+      return data.id;
+    } catch (error) {
+      console.warn('ExcaliShare: Failed to recover published state', error);
+      return null;
+    } finally {
+      this._recoveryInFlight.delete(file.path);
+    }
+  }
+
+  /**
    * Reconcile local frontmatter with server state for a published drawing.
    * Ensures persistent collab state is in sync across devices and after restarts.
    * Also recovers active collab session tracking if lost (e.g., after Obsidian restart).
@@ -2331,13 +2451,31 @@ export default class ExcaliSharePlugin extends Plugin {
       });
 
       if (response.status === 404) {
-        // Drawing was deleted from server — clear frontmatter
+        // Drawing not found on server — but only clear frontmatter if we're talking
+        // to the SAME server that the drawing was originally published to.
+        // This prevents cross-server 404 from destructively clearing frontmatter
+        // (e.g., Device A uses localhost, Device B uses notes.leyk.me).
+        const fmCache = this.app.metadataCache.getFileCache(file);
+        const publishedServer = fmCache?.frontmatter?.['excalishare-server'];
+
+        if (publishedServer && publishedServer !== this.settings.baseUrl) {
+          // Different server — do NOT clear frontmatter
+          console.warn(
+            `ExcaliShare: Drawing ${drawingId} not found on ${this.settings.baseUrl}, ` +
+            `but was published to ${publishedServer}. Keeping frontmatter intact.`
+          );
+          return;
+        }
+
+        // Same server (or no server recorded) — drawing was genuinely deleted
         // @ts-ignore
         await this.app.fileManager.processFrontMatter(file, (fm: any) => {
           delete fm['excalishare-id'];
+          delete fm['excalishare-server'];
           delete fm['excalishare-persistent-collab'];
           delete fm['excalishare-last-sync-version'];
         });
+        this._publishedIdCache.delete(file.path);
         this._persistentSyncedFiles.delete(file.path);
         this._reconcileCache.delete(drawingId);
         new Notice('Drawing was deleted from server. Unpublished locally.');
@@ -2439,7 +2577,14 @@ export default class ExcaliSharePlugin extends Plugin {
     const file = this.app.workspace.getActiveFile();
     if (!file || !this.isExcalidrawFile(file)) return;
     const publishedId = this.getPublishedId(file);
-    if (!publishedId) return;
+    if (!publishedId) {
+      // No published ID in frontmatter — check memory cache for recovery
+      const cachedId = this._publishedIdCache.get(file.path);
+      if (cachedId) {
+        await this.recoverPublishedState(file);
+      }
+      return;
+    }
 
     // Force cache invalidation for background reconcile
     this._reconcileCache.delete(publishedId);

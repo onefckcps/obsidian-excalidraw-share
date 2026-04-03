@@ -369,6 +369,70 @@ pub async fn health() -> &'static str {
 }
 
 // ──────────────────────────────────────────────
+// Lookup by source path (for frontmatter recovery)
+// ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct LookupParams {
+    pub source_path: String,
+}
+
+#[derive(Serialize)]
+pub struct LookupResponse {
+    pub id: String,
+    pub source_path: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub password_protected: bool,
+    pub persistent_collab: bool,
+    pub persistent_collab_version: u64,
+}
+
+/// Look up a drawing by its source path (vault-relative file path).
+/// Used by the Obsidian plugin to recover published state when frontmatter
+/// is lost (e.g., overwritten by a third-party sync plugin).
+/// Requires API key authentication.
+pub async fn lookup_by_source_path(
+    State(state): State<AppState>,
+    Query(params): Query<LookupParams>,
+) -> Result<Json<LookupResponse>, AppError> {
+    let meta = state.storage.find_by_source_path(&params.source_path).await?;
+
+    match meta {
+        Some(drawing_meta) => {
+            // Read persistent_collab_version from the drawing JSON if persistent collab is enabled
+            let persistent_collab_version = if drawing_meta.persistent_collab {
+                match state.storage.load(&drawing_meta.id).await {
+                    Ok(data) => data.get("_persistent_collab_version")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0),
+                    Err(_) => 0,
+                }
+            } else {
+                0
+            };
+
+            tracing::info!(
+                source_path = %params.source_path,
+                id = %drawing_meta.id,
+                "Drawing found by source path lookup"
+            );
+
+            Ok(Json(LookupResponse {
+                id: drawing_meta.id,
+                source_path: drawing_meta.source_path,
+                created_at: drawing_meta.created_at,
+                password_protected: drawing_meta.password_protected,
+                persistent_collab: drawing_meta.persistent_collab,
+                persistent_collab_version,
+            }))
+        }
+        None => {
+            Err(AppError::NotFound)
+        }
+    }
+}
+
+// ──────────────────────────────────────────────
 // Collab Handlers
 // ──────────────────────────────────────────────
 
