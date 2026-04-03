@@ -56,8 +56,10 @@ function Viewer() {
 
   const breakpoint = useBreakpoint()
   const isPhone = breakpoint === 'phone'
-  // Excalidraw's internal mobile breakpoint — at ≤730px it shows the bottom toolbar
-  const isExcalidrawMobile = useMediaQuery('(max-width: 730px)')
+  // Excalidraw's mobile breakpoint — patched to 987px (was 730px).
+  // At ≤987px Excalidraw renders MobileMenu with the bottom toolbar (.App-toolbar-content).
+  // At >987px it renders the desktop toolbar (.App-toolbar-container).
+  const isExcalidrawMobile = useMediaQuery('(max-width: 987px)')
 
   // Collaboration hook
   const collab = useCollab({ drawingId: id, excalidrawAPI })
@@ -524,8 +526,8 @@ function Viewer() {
   }, [showEditWarning])
 
   // Inject ExcaliShare buttons into Excalidraw's native toolbar (all screen sizes)
-  // Phone: inject into bottom toolbar (.App-toolbar-content)
-  // Tablet/Desktop: inject a new Island into the upper toolbar (.App-toolbar-container)
+  // ≤987px (isExcalidrawMobile): inject into bottom toolbar (.App-toolbar-content)
+  // >987px (tablet/desktop): inject a new Island into the upper toolbar (.App-toolbar-container)
   useEffect(() => {
     const currentMode = mode as string
     const containerClass = 'excalishare-toolbar'
@@ -584,7 +586,7 @@ function Viewer() {
 
       if (isExcalidrawMobile) {
         // ═══════════════════════════════════════════
-        // EXCALIDRAW MOBILE (≤730px): inject into bottom toolbar
+        // EXCALIDRAW MOBILE (≤987px): inject into bottom toolbar
         // ═══════════════════════════════════════════
         const toolbar = document.querySelector('.App-toolbar-content')
         if (!toolbar) return
@@ -707,8 +709,8 @@ function Viewer() {
         toolbar.appendChild(container)
       } else {
         // ═══════════════════════════════════════════
-        // UPPER TOOLBAR (>730px): inject new Island
-        // Covers: phone 731–1140px, tablet, desktop
+        // UPPER TOOLBAR (>987px): inject new Island
+        // Covers: tablet (988–1400px), desktop (>1400px)
         // ═══════════════════════════════════════════
         const toolbarContainer = document.querySelector('.App-toolbar-container')
         if (!toolbarContainer) return

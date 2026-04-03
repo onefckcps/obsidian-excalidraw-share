@@ -459,8 +459,8 @@ export default Component
   - `phone` ≤ 1140px — toolbar injection mode; `renderTopRightUI` returns null; collab button in toolbar
   - `tablet` 1141–1400px — compact toolbar Island; green dot for "Collaborative"
   - `desktop` > 1400px — full toolbar Island; "Collaborative" text badge
-- **Excalidraw's own mobile breakpoint** is 730px (hardcoded in library) — at ≤730px Excalidraw shows the bottom toolbar (`.App-toolbar-content`); at >730px it shows the top toolbar (`.App-toolbar-container`)
-- `isExcalidrawMobile` (730px check) determines which DOM element to inject buttons into
+- **Excalidraw's mobile breakpoint** is patched to 987px (was 730px hardcoded in library) via `frontend/patch-excalidraw.sh` — at ≤987px Excalidraw shows the bottom toolbar (`.App-toolbar-content`); at >987px it shows the top toolbar (`.App-toolbar-container`)
+- `isExcalidrawMobile` (987px check) determines which DOM element to inject buttons into
 - `isPhone` (1140px check) determines UI behavior (collab button placement, renderTopRightUI)
 
 **Caching**

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "postinstall": "bash patch-excalidraw.sh"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.0",

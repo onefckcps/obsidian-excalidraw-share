@@ -23,7 +23,7 @@
   to { transform: translateY(0); }
 }
 
-@media (max-width: 730px) {
+@media (max-width: 987px) {
   /* Animate the collab popover bottom sheet */
   .excalidraw ~ div [style*="position: fixed"][style*="bottom: 0"] {
     animation: slideUp 0.2s ease-out;
