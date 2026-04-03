@@ -330,6 +330,12 @@ function Viewer() {
       const collaborator = collab.collaborators.find(c => c.id === clickedUserId);
       if (!collaborator) return;
 
+      // Stop propagation to prevent Excalidraw's native goToCollaborator action
+      // from also firing and double-toggling the follow state.
+      // Without this, our capture-phase handler sets userToFollow, then Excalidraw's
+      // native handler sees it's already set and toggles it OFF — cancelling the follow.
+      e.stopPropagation();
+
       // Don't follow yourself
       if (collaborator.name === collab.displayName) return;
 

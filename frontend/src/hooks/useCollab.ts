@@ -116,6 +116,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const collabDrawingIdRef = useRef<string | null>(null);
   /** Persistent collaborator state map for Excalidraw (includes pointer, color, etc.) */
   const collaboratorMapRef = useRef<Map<string, Collaborator>>(new Map());
+  /** Ref for display name, used in buildCollaboratorMap to set isCurrentUser */
+  const displayNameRef = useRef<string>(getStoredName());
   /** Track the followed user ID in a ref for use in callbacks */
   const followingUserIdRef = useRef<string | null>(null);
   /** Queue of remote scene updates deferred while user is actively drawing */
@@ -151,6 +153,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   useEffect(() => {
     followingUserIdRef.current = followingUserId;
   }, [followingUserId]);
+
+  useEffect(() => {
+    displayNameRef.current = displayName;
+  }, [displayName]);
 
   // Auto-disconnect when navigating away from the collab drawing
   useEffect(() => {
@@ -259,6 +265,9 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         color,
         id: c.id,
         userState: existing?.userState || ('active' as UserIdleState),
+        // Mark the current user so Excalidraw's native goToCollaborator action
+        // knows not to start following yourself when clicking your own avatar
+        isCurrentUser: c.name === displayNameRef.current,
       });
     }
 

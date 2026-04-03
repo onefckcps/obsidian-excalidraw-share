@@ -808,6 +808,16 @@ The project is feature-complete with the live collaboration system fully impleme
 
 ### Recent Bug Fixes
 
+**User Badge Click-to-Follow Bug Fix (April 2026)**
+Fixed a bug where clicking on another user's avatar badge in the Excalidraw UserList did nothing, while clicking your own badge incorrectly started following the other participant. Root causes:
+- Missing `e.stopPropagation()` in the capture-phase click handler — both our custom handler and Excalidraw's native `goToCollaborator` action fired on the same click, causing a double-toggle (our handler started following, then Excalidraw's handler immediately cancelled it)
+- Missing `isCurrentUser` flag on collaborator objects — Excalidraw's native action didn't know which avatar was "you", so clicking your own avatar was treated as clicking a remote user
+
+Fixes applied:
+- [x] Added `e.stopPropagation()` in the avatar click handler in `Viewer.tsx` to prevent Excalidraw's native handler from double-toggling follow state
+- [x] Set `isCurrentUser: true` on the current user's entry in the Excalidraw collaborator Map in `useCollab.ts` (matched by display name via `displayNameRef`)
+- [x] Added `displayNameRef` in `useCollab.ts` to track the current display name for use in the `buildCollaboratorMap` callback
+
 **Host Cursor/Laser/Follow Bug Fix (April 2026)**
 Fixed a fatal bug where the Obsidian plugin host's cursor, laser pointer, and follow mode were invisible to browser users during native live collaboration. Root causes:
 - Pointer tracking skipped in polling fallback — `startPointerTracking()` was only called inside `startEventDrivenDetection()`, never when using polling fallback
