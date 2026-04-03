@@ -102,6 +102,8 @@ export interface ExcalidrawAPI {
   getSceneElementsIncludingDeleted?: () => ExcalidrawElement[];
   getFiles: () => Record<string, unknown>;
   getAppState: () => Record<string, unknown>;
+  /** Set the active drawing tool. Available on Excalidraw 0.17+ */
+  setActiveTool?: (tool: { type: string; [key: string]: unknown }) => void;
   /** Add binary files (images) to the Excalidraw file cache. Available on Excalidraw 0.17+ */
   addFiles?: (files: { id: string; mimeType: string; dataURL: string; created: number; lastRetrieved?: number }[]) => void;
 

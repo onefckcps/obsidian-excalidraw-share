@@ -6,6 +6,8 @@ import type { ToolbarStatus, ToolbarCallbacks } from './toolbar';
 import { injectGlobalStyles, removeGlobalStyles } from './styles';
 import { CollabManager } from './collabManager';
 import type { ExcalidrawAPI } from './collabTypes';
+import { ExcalidrawScriptManager } from './excalidrawScripts';
+import type { ScriptSettings } from './excalidrawScripts';
 
 // ── Password Modal ──
 
@@ -192,6 +194,7 @@ interface ExcalidrawPlugin {
       getSceneElements: () => unknown[];
       getSceneElementsIncludingDeleted?: () => unknown[];
       getAppState: () => Record<string, unknown>;
+      setActiveTool?: (tool: { type: string; [key: string]: unknown }) => void;
     };
     isExcalidrawFile: (file: TFile) => boolean;
   };
@@ -208,6 +211,8 @@ export default class ExcaliSharePlugin extends Plugin {
 
   // Native collab (in-Obsidian participation)
   private collabManager: CollabManager | null = null;
+  // Embedded Excalidraw scripts (zoom-adaptive stroke, right-click eraser)
+  private scriptManager: ExcalidrawScriptManager = new ExcalidrawScriptManager();
   /** Snapshot of the Excalidraw scene captured before joining a collab session.
    *  Used to restore the drawing when the host discards collab changes. */
   private preCollabSnapshot: { elements: unknown[]; appState: Record<string, unknown>; files: Record<string, unknown> } | null = null;
@@ -570,6 +575,9 @@ export default class ExcaliSharePlugin extends Plugin {
       this.collabHealthInterval = null;
     }
 
+    // Stop all embedded Excalidraw scripts
+    this.scriptManager.deactivateAll();
+
     // Remove all toolbar instances
     for (const toolbar of this.toolbarInstances.values()) {
       toolbar.remove();
@@ -665,6 +673,10 @@ export default class ExcaliSharePlugin extends Plugin {
         if (publishedId) {
           this.reconcileServerState(file, publishedId);
         }
+        // Ensure scripts are active (may not have been started yet if API wasn't ready)
+        if (!this.scriptManager.hasActiveScripts(leafId)) {
+          this.activateScriptsForLeaf(leafId, view.containerEl);
+        }
         return;
       }
 
@@ -689,9 +701,13 @@ export default class ExcaliSharePlugin extends Plugin {
       if (publishedId) {
         this.reconcileServerState(file, publishedId);
       }
+
+      // Activate embedded Excalidraw scripts (zoom-adaptive stroke, right-click eraser)
+      this.activateScriptsForLeaf(leafId, view.containerEl);
     } else {
       // Not an Excalidraw view — clean up everything for this leaf
       this.cleanupLeafObservers(leafId);
+      this.scriptManager.deactivateForLeaf(leafId);
       const toolbar = this.toolbarInstances.get(leafId);
       if (toolbar) {
         toolbar.remove();
@@ -1038,6 +1054,67 @@ export default class ExcaliSharePlugin extends Plugin {
     const activeFile = this.app.workspace.getActiveFile();
     if (activeFile && activeFile.path === file.path) {
       this.refreshActiveToolbar();
+    }
+  }
+
+  // ── Embedded Excalidraw Scripts ──
+
+  /**
+   * Activate embedded scripts (zoom-adaptive stroke, right-click eraser) for a leaf.
+   * Acquires the Excalidraw API and container, then delegates to the script manager.
+   * Uses a delayed retry if the API isn't ready yet (Excalidraw may still be mounting).
+   */
+  private activateScriptsForLeaf(leafId: string, containerEl: HTMLElement, retryCount = 0): void {
+    // Skip if neither script is enabled
+    if (!this.settings.enableZoomAdaptiveStroke && !this.settings.enableRightClickEraser) return;
+
+    // Skip if scripts are already active for this leaf
+    if (this.scriptManager.hasActiveScripts(leafId)) return;
+
+    const excalidrawPlugin = this.getExcalidrawPlugin();
+    if (!excalidrawPlugin?.ea) {
+      // Retry with backoff if Excalidraw plugin not yet loaded
+      if (retryCount < 4) {
+        const delay = [500, 1000, 2000, 4000][retryCount];
+        setTimeout(() => this.activateScriptsForLeaf(leafId, containerEl, retryCount + 1), delay);
+      }
+      return;
+    }
+
+    try {
+      excalidrawPlugin.ea.setView('active');
+      const api = excalidrawPlugin.ea.getExcalidrawAPI();
+      if (!api) {
+        // API not ready — retry
+        if (retryCount < 4) {
+          const delay = [500, 1000, 2000, 4000][retryCount];
+          setTimeout(() => this.activateScriptsForLeaf(leafId, containerEl, retryCount + 1), delay);
+        }
+        return;
+      }
+
+      // Find the best container element for event listeners
+      const container =
+        containerEl.querySelector<HTMLElement>('.excalidraw-wrapper') ||
+        containerEl.querySelector<HTMLElement>('.excalidraw') ||
+        containerEl.querySelector<HTMLElement>('[class*="excalidraw"]') ||
+        containerEl;
+
+      const scriptSettings: ScriptSettings = {
+        enableZoomAdaptive: this.settings.enableZoomAdaptiveStroke,
+        baseStrokeWidth: this.settings.zoomAdaptiveBaseStrokeWidth,
+        pollIntervalMs: this.settings.zoomAdaptivePollIntervalMs,
+        enableRightClickEraser: this.settings.enableRightClickEraser,
+      };
+
+      this.scriptManager.activateForLeaf(leafId, api as ExcalidrawAPI, container, scriptSettings);
+    } catch (e) {
+      console.error('ExcaliShare: Failed to activate embedded scripts', e);
+      // Retry on error
+      if (retryCount < 4) {
+        const delay = [500, 1000, 2000, 4000][retryCount];
+        setTimeout(() => this.activateScriptsForLeaf(leafId, containerEl, retryCount + 1), delay);
+      }
     }
   }
 

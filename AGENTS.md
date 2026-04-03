@@ -278,6 +278,7 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 - `collabClient.ts` — WebSocket client for native collab (adapted from frontend)
 - `collabManager.ts` — Session lifecycle, polling-based change detection, deferred updates, cursor display
 - `collabTypes.ts` — Shared types for WebSocket protocol (ClientMessage, ServerMessage, ExcalidrawAPI)
+- `excalidrawScripts.ts` — Embedded Excalidraw scripts (ZoomAdaptiveStroke, RightClickEraser, ExcalidrawScriptManager)
 
 **Native Collab Architecture**
 The plugin can participate in collab sessions directly within Obsidian (no browser needed):
@@ -312,6 +313,10 @@ interface ExcaliShareSettings {
   autoSyncDelaySecs: number;           // debounce delay (1-30s)
   toolbarCollapsedByDefault: boolean;  // start collapsed
   persistentCollabAutoSync: boolean;   // auto-pull server changes on open (default: true)
+  enableZoomAdaptiveStroke: boolean;   // zoom-adaptive stroke width (default: true)
+  zoomAdaptiveBaseStrokeWidth: number; // base stroke width at 100% zoom (default: 0.6)
+  zoomAdaptivePollIntervalMs: number;  // zoom poll interval in ms (default: 200)
+  enableRightClickEraser: boolean;     // right-click eraser in freedraw (default: true)
 }
 ```
 
@@ -634,6 +639,7 @@ obsidian-excalidraw-share/
 │   ├── collabClient.ts     # WebSocket client (adaptive debounce, delta tracking)
 │   ├── collabManager.ts    # Event-driven collab: onChange, pointer tracking, follow mode
 │   ├── collabTypes.ts      # Shared types for WS protocol + ExcalidrawAPI subscriptions
+│   ├── excalidrawScripts.ts # Embedded Excalidraw scripts (ZoomAdaptiveStroke, RightClickEraser)
 │   ├── manifest.json       # Plugin manifest (id: excalishare)
 │   ├── package.json
 │   └── tsconfig.json
@@ -769,6 +775,14 @@ The project is feature-complete with the live collaboration system fully impleme
 - [x] CSS-in-JS with Obsidian theme variables
 - [x] Context menu integration
 - [x] Ribbon icons (publish, browse)
+
+**Embedded Excalidraw Scripts**
+- [x] Zoom-Adaptive Stroke Width — auto-adjusts stroke width inversely with zoom, disables smoothing/streamline
+- [x] Right-Click Eraser in Freedraw — hold right mouse button or S Pen side button to temporarily switch to eraser
+- [x] Per-leaf script instances (supports split views with independent scripts)
+- [x] ExcalidrawScriptManager with activate/deactivate lifecycle per leaf
+- [x] Settings toggles for each script + configurable base stroke width and poll interval
+- [x] Exponential backoff retry for API acquisition (500ms → 1s → 2s → 4s)
 
 **Admin Panel**
 - [x] API key authentication

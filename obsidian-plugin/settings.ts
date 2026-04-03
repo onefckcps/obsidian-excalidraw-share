@@ -18,6 +18,15 @@ export interface ExcaliShareSettings {
   toolbarCollapsedByDefault: boolean;
   /** Auto-pull server changes when opening a persistent collab drawing */
   persistentCollabAutoSync: boolean;
+  // ── Excalidraw Scripts ──
+  /** Enable zoom-adaptive stroke width script */
+  enableZoomAdaptiveStroke: boolean;
+  /** Base stroke width at 100% zoom */
+  zoomAdaptiveBaseStrokeWidth: number;
+  /** Polling interval in ms for zoom detection */
+  zoomAdaptivePollIntervalMs: number;
+  /** Enable right-click eraser toggle in freedraw mode */
+  enableRightClickEraser: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExcaliShareSettings = {
@@ -34,6 +43,10 @@ export const DEFAULT_SETTINGS: ExcaliShareSettings = {
   autoSyncDelaySecs: 5,
   toolbarCollapsedByDefault: true,
   persistentCollabAutoSync: true,
+  enableZoomAdaptiveStroke: true,
+  zoomAdaptiveBaseStrokeWidth: 0.6,
+  zoomAdaptivePollIntervalMs: 200,
+  enableRightClickEraser: true,
 };
 
 /** Interface for the plugin reference needed by the settings tab */
@@ -219,6 +232,61 @@ export class ExcaliShareSettingTab extends PluginSettingTab {
         toggle.setValue(this.pluginRef.settings.persistentCollabAutoSync)
           .onChange(value => {
             this.pluginRef.settings.persistentCollabAutoSync = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    // ── Excalidraw Scripts ──
+    containerEl.createEl('h3', { text: 'Excalidraw Scripts' });
+    containerEl.createEl('p', {
+      text: 'Built-in scripts that enhance the Excalidraw drawing experience. They activate automatically on every drawing.',
+      cls: 'setting-item-description',
+    });
+
+    new Setting(containerEl)
+      .setName('Zoom-Adaptive Stroke Width')
+      .setDesc('Automatically adjusts stroke width based on zoom level and disables smoothing/streamline for more precise pen input.')
+      .addToggle(toggle => {
+        toggle.setValue(this.pluginRef.settings.enableZoomAdaptiveStroke)
+          .onChange(value => {
+            this.pluginRef.settings.enableZoomAdaptiveStroke = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Base Stroke Width')
+      .setDesc('Stroke width at 100% zoom. The actual width is scaled inversely with zoom (0.1 - 5.0).')
+      .addSlider(slider => {
+        slider.setValue(this.pluginRef.settings.zoomAdaptiveBaseStrokeWidth)
+          .setLimits(0.1, 5.0, 0.1)
+          .setDynamicTooltip()
+          .onChange(value => {
+            this.pluginRef.settings.zoomAdaptiveBaseStrokeWidth = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Zoom Poll Interval')
+      .setDesc('How often to check the zoom level in milliseconds (50 - 1000). Lower = more responsive but slightly more CPU.')
+      .addSlider(slider => {
+        slider.setValue(this.pluginRef.settings.zoomAdaptivePollIntervalMs)
+          .setLimits(50, 1000, 50)
+          .setDynamicTooltip()
+          .onChange(value => {
+            this.pluginRef.settings.zoomAdaptivePollIntervalMs = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Right-Click Eraser in Freedraw')
+      .setDesc('Hold right mouse button or S Pen side button in freedraw mode to temporarily switch to eraser. Release to return to freedraw.')
+      .addToggle(toggle => {
+        toggle.setValue(this.pluginRef.settings.enableRightClickEraser)
+          .onChange(value => {
+            this.pluginRef.settings.enableRightClickEraser = value;
             this.pluginRef.saveSettings();
           });
       });
