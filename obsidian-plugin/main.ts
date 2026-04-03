@@ -1104,6 +1104,7 @@ export default class ExcaliSharePlugin extends Plugin {
         enableZoomAdaptive: this.settings.enableZoomAdaptiveStroke,
         baseStrokeWidth: this.settings.zoomAdaptiveBaseStrokeWidth,
         pollIntervalMs: this.settings.zoomAdaptivePollIntervalMs,
+        disableSmoothing: this.settings.disableSmoothing,
         enableRightClickEraser: this.settings.enableRightClickEraser,
       };
 
@@ -1229,6 +1230,14 @@ export default class ExcaliSharePlugin extends Plugin {
     await this.saveData(this.settings);
     // Refresh all toolbars when settings change
     this.refreshActiveToolbar();
+    // Propagate script settings to all running instances (handles enable/disable/update)
+    this.scriptManager.updateSettings({
+      enableZoomAdaptive: this.settings.enableZoomAdaptiveStroke,
+      baseStrokeWidth: this.settings.zoomAdaptiveBaseStrokeWidth,
+      pollIntervalMs: this.settings.zoomAdaptivePollIntervalMs,
+      disableSmoothing: this.settings.disableSmoothing,
+      enableRightClickEraser: this.settings.enableRightClickEraser,
+    });
   }
 
   // ── API Methods ──

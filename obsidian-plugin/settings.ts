@@ -23,15 +23,17 @@ export interface ExcaliShareSettings {
   enableZoomAdaptiveStroke: boolean;
   /** Base stroke width at 100% zoom */
   zoomAdaptiveBaseStrokeWidth: number;
-  /** Polling interval in ms for zoom detection */
+  /** Polling interval in ms for zoom detection (fallback only — event-driven is preferred) */
   zoomAdaptivePollIntervalMs: number;
+  /** Disable smoothing and streamline for more precise pen input */
+  disableSmoothing: boolean;
   /** Enable right-click eraser toggle in freedraw mode */
   enableRightClickEraser: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExcaliShareSettings = {
   apiKey: '',
-  baseUrl: 'http://localhost:8184',
+  baseUrl: 'https://notes.leyk.me',
   pdfScale: 1.5,
   collabTimeoutSecs: 7200,
   collabAutoOpenBrowser: true,
@@ -44,8 +46,9 @@ export const DEFAULT_SETTINGS: ExcaliShareSettings = {
   toolbarCollapsedByDefault: true,
   persistentCollabAutoSync: true,
   enableZoomAdaptiveStroke: true,
-  zoomAdaptiveBaseStrokeWidth: 0.6,
+  zoomAdaptiveBaseStrokeWidth: 0.7,
   zoomAdaptivePollIntervalMs: 200,
+  disableSmoothing: true,
   enableRightClickEraser: true,
 };
 
@@ -245,7 +248,7 @@ export class ExcaliShareSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Zoom-Adaptive Stroke Width')
-      .setDesc('Automatically adjusts stroke width based on zoom level and disables smoothing/streamline for more precise pen input.')
+      .setDesc('Automatically adjusts stroke width based on zoom level. Uses event-driven detection when available, with polling fallback for older Excalidraw versions.')
       .addToggle(toggle => {
         toggle.setValue(this.pluginRef.settings.enableZoomAdaptiveStroke)
           .onChange(value => {
@@ -268,14 +271,25 @@ export class ExcaliShareSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('Zoom Poll Interval')
-      .setDesc('How often to check the zoom level in milliseconds (50 - 1000). Lower = more responsive but slightly more CPU.')
+      .setName('Zoom Poll Interval (Fallback)')
+      .setDesc('Polling interval in ms for older Excalidraw versions without event-driven zoom detection (50 - 1000). Ignored when event-driven mode is active.')
       .addSlider(slider => {
         slider.setValue(this.pluginRef.settings.zoomAdaptivePollIntervalMs)
           .setLimits(50, 1000, 50)
           .setDynamicTooltip()
           .onChange(value => {
             this.pluginRef.settings.zoomAdaptivePollIntervalMs = value;
+            this.pluginRef.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Disable Smoothing & Streamline')
+      .setDesc('Disables stroke smoothing and streamline for more precise pen/stylus input. Independent from zoom-adaptive stroke width.')
+      .addToggle(toggle => {
+        toggle.setValue(this.pluginRef.settings.disableSmoothing)
+          .onChange(value => {
+            this.pluginRef.settings.disableSmoothing = value;
             this.pluginRef.saveSettings();
           });
       });

@@ -11,84 +11,157 @@ export interface ScriptSettings {
   enableZoomAdaptive: boolean;
   baseStrokeWidth: number;
   pollIntervalMs: number;
+  disableSmoothing: boolean;
   enableRightClickEraser: boolean;
 }
 
 // ──────────────────────────────────────────────
-// Script 1: Zoom-Adaptive Stroke Width + No Smoothing
+// Script 1: Zoom-Adaptive Stroke Width
 // ──────────────────────────────────────────────
 
 /**
- * Polls the Excalidraw zoom level and adjusts stroke width inversely.
- * Also disables streamline and smoothing for more precise pen input.
+ * Adjusts stroke width inversely with zoom level.
+ *
+ * **Primary strategy**: Event-driven via `api.onChange()` — zero-waste, fires
+ * only when Excalidraw's scene actually changes (which includes zoom changes).
+ *
+ * **Fallback**: `setInterval` polling for older Excalidraw versions that lack
+ * the `onChange` imperative API.
+ *
+ * Optionally disables streamline and smoothing for more precise pen input
+ * (controlled by the separate `disableSmoothing` setting).
  */
 export class ZoomAdaptiveStroke {
   private api: ExcalidrawAPI;
-  private intervalId: ReturnType<typeof setInterval> | null = null;
   private lastZoom: number | null = null;
   private smoothingApplied = false;
   private baseStrokeWidth: number;
   private pollIntervalMs: number;
+  private disableSmoothing: boolean;
 
-  constructor(api: ExcalidrawAPI, baseStrokeWidth: number, pollIntervalMs: number) {
+  // Event-driven strategy
+  private onChangeUnsubscribe: (() => void) | null = null;
+
+  // Polling fallback strategy
+  private intervalId: ReturnType<typeof setInterval> | null = null;
+
+  private strategy: 'none' | 'event-driven' | 'polling' = 'none';
+
+  constructor(api: ExcalidrawAPI, baseStrokeWidth: number, pollIntervalMs: number, disableSmoothing: boolean) {
     this.api = api;
     this.baseStrokeWidth = baseStrokeWidth;
     this.pollIntervalMs = pollIntervalMs;
+    this.disableSmoothing = disableSmoothing;
   }
 
   start(): void {
-    // Clean up any existing interval (idempotent)
+    // Clean up any existing subscription/interval (idempotent)
     this.stop();
     this.lastZoom = null;
     this.smoothingApplied = false;
 
+    // Try event-driven detection first (preferred — zero-waste)
+    if (typeof this.api.onChange === 'function') {
+      this.startEventDriven();
+    } else {
+      // Fallback to polling for older Excalidraw versions
+      this.startPolling();
+    }
+  }
+
+  private startEventDriven(): void {
+    this.strategy = 'event-driven';
+
+    this.onChangeUnsubscribe = this.api.onChange!(
+      (_elements: unknown, appState: Record<string, unknown>, _files: unknown) => {
+        this.handleAppStateChange(appState);
+      }
+    );
+
+    // Also apply immediately for the current state (onChange won't fire until next change)
+    try {
+      const appState = this.api.getAppState();
+      if (appState) this.handleAppStateChange(appState);
+    } catch {
+      // Will be handled on next onChange callback
+    }
+  }
+
+  private startPolling(): void {
+    this.strategy = 'polling';
+
     this.intervalId = setInterval(() => {
       try {
         const appState = this.api.getAppState();
-        if (!appState || !appState.zoom) return;
-
-        // Disable streamline and smoothing (once)
-        if (!this.smoothingApplied) {
-          this.api.updateScene({
-            appState: {
-              currentItemStreamline: 0,
-              currentItemSmoothing: 0,
-            },
-          });
-          this.smoothingApplied = true;
-        }
-
-        // Zoom-adaptive stroke width
-        const zoom = appState.zoom as { value: number };
-        const currentZoom = zoom.value;
-        if (currentZoom !== this.lastZoom) {
-          this.lastZoom = currentZoom;
-          const adaptedWidth = this.baseStrokeWidth / currentZoom;
-          this.api.updateScene({
-            appState: { currentItemStrokeWidth: adaptedWidth },
-          });
-        }
+        if (appState) this.handleAppStateChange(appState);
       } catch {
         // Ignore errors — next poll will retry
       }
     }, this.pollIntervalMs);
   }
 
+  /**
+   * Core logic: check zoom and apply stroke width + optional smoothing.
+   * Called from both event-driven and polling strategies.
+   * Batches smoothing + stroke width into a single updateScene call when possible.
+   */
+  private handleAppStateChange(appState: Record<string, unknown>): void {
+    if (!appState.zoom) return;
+
+    const zoom = appState.zoom as { value: number };
+    const currentZoom = zoom.value;
+    const zoomChanged = currentZoom !== this.lastZoom;
+    const needsSmoothing = this.disableSmoothing && !this.smoothingApplied;
+
+    // Nothing to do
+    if (!zoomChanged && !needsSmoothing) return;
+
+    // Build a single batched appState update
+    const update: Record<string, unknown> = {};
+
+    if (zoomChanged) {
+      this.lastZoom = currentZoom;
+      update.currentItemStrokeWidth = this.baseStrokeWidth / currentZoom;
+    }
+
+    if (needsSmoothing) {
+      update.currentItemStreamline = 0;
+      update.currentItemSmoothing = 0;
+      this.smoothingApplied = true;
+    }
+
+    try {
+      this.api.updateScene({ appState: update });
+    } catch {
+      // Ignore — will retry on next change/tick
+    }
+  }
+
   stop(): void {
+    if (this.onChangeUnsubscribe) {
+      this.onChangeUnsubscribe();
+      this.onChangeUnsubscribe = null;
+    }
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
+    this.strategy = 'none';
   }
 
-  /** Update settings without full restart */
-  updateSettings(baseStrokeWidth: number, pollIntervalMs: number): void {
-    const needsRestart = pollIntervalMs !== this.pollIntervalMs;
+  /** Update settings without full restart (unless poll interval changed in polling mode) */
+  updateSettings(baseStrokeWidth: number, pollIntervalMs: number, disableSmoothing: boolean): void {
+    const needsRestart = this.strategy === 'polling' && pollIntervalMs !== this.pollIntervalMs;
     this.baseStrokeWidth = baseStrokeWidth;
     this.pollIntervalMs = pollIntervalMs;
-    // Force recalculation on next tick
+    this.disableSmoothing = disableSmoothing;
+    // Force recalculation on next change/tick
     this.lastZoom = null;
-    if (needsRestart && this.intervalId) {
+    // Reset smoothing flag if the setting changed
+    if (!disableSmoothing) {
+      this.smoothingApplied = false; // Will be re-applied if re-enabled
+    }
+    if (needsRestart) {
       this.start();
     }
   }
@@ -102,6 +175,10 @@ export class ZoomAdaptiveStroke {
  * Enables temporary eraser mode while using the freedraw (pen) tool.
  * Hold right mouse button (or S Pen side button) → eraser.
  * Release → back to freedraw.
+ *
+ * **Optimization**: Caches the active tool type via `api.onChange()` subscription
+ * to avoid calling `getAppState()` on every pointer event. Falls back to direct
+ * `getAppState()` calls if `onChange` is unavailable.
  */
 export class RightClickEraser {
   private api: ExcalidrawAPI;
@@ -109,6 +186,10 @@ export class RightClickEraser {
   private isEraserMode = false;
   private originalTool: string | null = null;
   private syntheticFlag = false;
+
+  // Cached active tool type (updated via onChange or direct getAppState)
+  private cachedToolType: string | null = null;
+  private onChangeUnsubscribe: (() => void) | null = null;
 
   // Bound handler references for cleanup
   private onPointerDown: (e: PointerEvent) => void;
@@ -132,6 +213,26 @@ export class RightClickEraser {
 
   start(): void {
     if (this.attached) return;
+
+    // Subscribe to tool changes via onChange (if available) for cached tool type
+    if (typeof this.api.onChange === 'function') {
+      this.onChangeUnsubscribe = this.api.onChange(
+        (_elements: unknown, appState: Record<string, unknown>, _files: unknown) => {
+          const activeTool = appState.activeTool as { type?: string } | undefined;
+          this.cachedToolType = activeTool?.type || null;
+        }
+      );
+    }
+
+    // Initialize cached tool type
+    try {
+      const appState = this.api.getAppState();
+      const activeTool = appState.activeTool as { type?: string } | undefined;
+      this.cachedToolType = activeTool?.type || null;
+    } catch {
+      // Will be populated on first onChange or isFreeDraw() call
+    }
+
     this.container.addEventListener('pointerdown', this.onPointerDown, true);
     this.container.addEventListener('pointermove', this.onPointerMove, true);
     this.container.addEventListener('pointerup', this.onPointerUp, true);
@@ -142,6 +243,13 @@ export class RightClickEraser {
 
   stop(): void {
     if (!this.attached) return;
+
+    // Unsubscribe from onChange
+    if (this.onChangeUnsubscribe) {
+      this.onChangeUnsubscribe();
+      this.onChangeUnsubscribe = null;
+    }
+
     this.container.removeEventListener('pointerdown', this.onPointerDown, true);
     this.container.removeEventListener('pointermove', this.onPointerMove, true);
     this.container.removeEventListener('pointerup', this.onPointerUp, true);
@@ -161,7 +269,17 @@ export class RightClickEraser {
     return e.button === 2 || (e.buttons & 2) === 2;
   }
 
+  /**
+   * Check if the current tool is freedraw.
+   * Uses cached tool type from onChange subscription when available,
+   * falls back to direct getAppState() call otherwise.
+   */
   private isFreeDraw(): boolean {
+    // Use cached value if onChange subscription is active
+    if (this.onChangeUnsubscribe) {
+      return this.cachedToolType === 'freedraw';
+    }
+    // Fallback: direct API call (for older Excalidraw versions)
     try {
       const appState = this.api.getAppState();
       const activeTool = appState.activeTool as { type?: string } | undefined;
@@ -177,9 +295,7 @@ export class RightClickEraser {
     if (!this.api.setActiveTool) return;
 
     try {
-      const appState = this.api.getAppState();
-      const activeTool = appState.activeTool as { type?: string } | undefined;
-      this.originalTool = activeTool?.type || 'freedraw';
+      this.originalTool = this.cachedToolType || 'freedraw';
       this.isEraserMode = true;
       this.api.setActiveTool({ type: 'eraser' });
     } catch {
@@ -272,6 +388,9 @@ export class RightClickEraser {
 interface LeafScripts {
   zoomAdaptive: ZoomAdaptiveStroke | null;
   rightClickEraser: RightClickEraser | null;
+  /** Stored references for re-enabling scripts without requiring leaf re-activation */
+  api: ExcalidrawAPI;
+  container: HTMLElement;
 }
 
 export class ExcalidrawScriptManager {
@@ -293,10 +412,12 @@ export class ExcalidrawScriptManager {
     const scripts: LeafScripts = {
       zoomAdaptive: null,
       rightClickEraser: null,
+      api,
+      container,
     };
 
     if (settings.enableZoomAdaptive) {
-      scripts.zoomAdaptive = new ZoomAdaptiveStroke(api, settings.baseStrokeWidth, settings.pollIntervalMs);
+      scripts.zoomAdaptive = new ZoomAdaptiveStroke(api, settings.baseStrokeWidth, settings.pollIntervalMs, settings.disableSmoothing);
       scripts.zoomAdaptive.start();
     }
 
@@ -325,27 +446,40 @@ export class ExcalidrawScriptManager {
     }
   }
 
-  /** Update settings for all running instances */
+  /**
+   * Update settings for all running instances.
+   * Can now re-enable previously disabled scripts using stored api/container refs.
+   */
   updateSettings(settings: ScriptSettings): void {
-    for (const [leafId, scripts] of this.instances) {
-      // Zoom adaptive: update or start/stop based on toggle
-      if (settings.enableZoomAdaptive && scripts.zoomAdaptive) {
-        scripts.zoomAdaptive.updateSettings(settings.baseStrokeWidth, settings.pollIntervalMs);
-      } else if (!settings.enableZoomAdaptive && scripts.zoomAdaptive) {
+    for (const [, scripts] of this.instances) {
+      // ── Zoom Adaptive ──
+      if (settings.enableZoomAdaptive) {
+        if (scripts.zoomAdaptive) {
+          // Already running — update settings in-place
+          scripts.zoomAdaptive.updateSettings(settings.baseStrokeWidth, settings.pollIntervalMs, settings.disableSmoothing);
+        } else {
+          // Re-enable: create new instance using stored refs
+          scripts.zoomAdaptive = new ZoomAdaptiveStroke(scripts.api, settings.baseStrokeWidth, settings.pollIntervalMs, settings.disableSmoothing);
+          scripts.zoomAdaptive.start();
+        }
+      } else if (scripts.zoomAdaptive) {
+        // Disable
         scripts.zoomAdaptive.stop();
         scripts.zoomAdaptive = null;
       }
-      // Note: enabling a previously disabled script requires re-activation via activateForLeaf
 
-      // Right-click eraser: stop if disabled
-      if (!settings.enableRightClickEraser && scripts.rightClickEraser) {
+      // ── Right-Click Eraser ──
+      if (settings.enableRightClickEraser) {
+        if (!scripts.rightClickEraser) {
+          // Re-enable: create new instance using stored refs
+          scripts.rightClickEraser = new RightClickEraser(scripts.api, scripts.container);
+          scripts.rightClickEraser.start();
+        }
+        // Already running — no settings to update
+      } else if (scripts.rightClickEraser) {
+        // Disable
         scripts.rightClickEraser.stop();
         scripts.rightClickEraser = null;
-      }
-
-      // Clean up empty entries
-      if (!scripts.zoomAdaptive && !scripts.rightClickEraser) {
-        this.instances.delete(leafId);
       }
     }
   }

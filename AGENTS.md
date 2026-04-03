@@ -315,7 +315,8 @@ interface ExcaliShareSettings {
   persistentCollabAutoSync: boolean;   // auto-pull server changes on open (default: true)
   enableZoomAdaptiveStroke: boolean;   // zoom-adaptive stroke width (default: true)
   zoomAdaptiveBaseStrokeWidth: number; // base stroke width at 100% zoom (default: 0.6)
-  zoomAdaptivePollIntervalMs: number;  // zoom poll interval in ms (default: 200)
+  zoomAdaptivePollIntervalMs: number;  // zoom poll interval in ms, fallback only (default: 200)
+  disableSmoothing: boolean;           // disable smoothing/streamline (default: true)
   enableRightClickEraser: boolean;     // right-click eraser in freedraw (default: true)
 }
 ```
@@ -777,10 +778,12 @@ The project is feature-complete with the live collaboration system fully impleme
 - [x] Ribbon icons (publish, browse)
 
 **Embedded Excalidraw Scripts**
-- [x] Zoom-Adaptive Stroke Width — auto-adjusts stroke width inversely with zoom, disables smoothing/streamline
-- [x] Right-Click Eraser in Freedraw — hold right mouse button or S Pen side button to temporarily switch to eraser
+- [x] Zoom-Adaptive Stroke Width — auto-adjusts stroke width inversely with zoom; event-driven via `onChange` with polling fallback
+- [x] Disable Smoothing/Streamline — separate toggle from zoom-adaptive, disables smoothing for precise pen input
+- [x] Right-Click Eraser in Freedraw — hold right mouse button or S Pen side button to temporarily switch to eraser; caches tool type via `onChange`
 - [x] Per-leaf script instances (supports split views with independent scripts)
-- [x] ExcalidrawScriptManager with activate/deactivate lifecycle per leaf
+- [x] ExcalidrawScriptManager with activate/deactivate lifecycle per leaf, stores api/container refs for hot-reload
+- [x] Settings hot-reload — toggling scripts on/off in settings takes effect immediately without leaf switch
 - [x] Settings toggles for each script + configurable base stroke width and poll interval
 - [x] Exponential backoff retry for API acquisition (500ms → 1s → 2s → 4s)
 
