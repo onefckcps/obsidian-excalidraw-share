@@ -366,8 +366,8 @@ function CollabPopover({
         </div>
       )}
 
-      {/* Screen share button */}
-      {(onStartSharing || onStopSharing) && (
+      {/* Screen share button — hidden if getDisplayMedia is not available AND no one is sharing */}
+      {(onStartSharing || onStopSharing) && (!!navigator.mediaDevices?.getDisplayMedia || !!activeSharer) && (
         <button
           style={{
             width: '100%',

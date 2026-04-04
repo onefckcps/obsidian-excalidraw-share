@@ -850,29 +850,35 @@ function Viewer() {
           collabBtn.onclick = () => setShowCollabPopover((prev: boolean) => !prev)
           container.append(collabBtn)
 
-          // Screen share button — only when joined to a session
-          const screenShareBtn = document.createElement('button')
+          // Screen share button — only when joined to a session and API is available
+          const canShare = !!navigator.mediaDevices?.getDisplayMedia
           const isScreenSharing = screenShareRef.current.isSharing
           const hasActiveSharer = !!screenShareRef.current.activeSharer
-          screenShareBtn.textContent = '📺'
-          screenShareBtn.title = isScreenSharing
-            ? 'Stop sharing'
-            : hasActiveSharer ? 'View screen share'
-            : 'Share screen'
-          screenShareBtn.style.cssText = getPhoneButtonStyle(
-            isScreenSharing || hasActiveSharer,
-            isScreenSharing ? '#f44336' : '#4CAF50'
-          )
-          screenShareBtn.onclick = () => {
-            if (screenShareRef.current.isSharing) {
-              screenShareRef.current.stopSharing()
-            } else if (screenShareRef.current.activeSharer) {
-              setShowScreenShareOverlay((prev: boolean) => !prev)
-            } else {
-              screenShareRef.current.startSharing()
+          // Show button if: we can share, OR someone else is already sharing (so we can view)
+          if (canShare || hasActiveSharer) {
+            const screenShareBtn = document.createElement('button')
+            screenShareBtn.textContent = '📺'
+            screenShareBtn.title = isScreenSharing
+              ? 'Stop sharing'
+              : hasActiveSharer ? 'View screen share'
+              : 'Share screen'
+            screenShareBtn.style.cssText = getPhoneButtonStyle(
+              isScreenSharing || hasActiveSharer,
+              isScreenSharing ? '#f44336' : '#4CAF50'
+            )
+            screenShareBtn.onclick = () => {
+              console.log('[ScreenShare] Phone toolbar button clicked, isSharing:', screenShareRef.current.isSharing, 'activeSharer:', screenShareRef.current.activeSharer)
+              if (screenShareRef.current.isSharing) {
+                screenShareRef.current.stopSharing()
+              } else if (screenShareRef.current.activeSharer) {
+                setShowScreenShareOverlay((prev: boolean) => !prev)
+              } else {
+                console.log('[ScreenShare] Calling startSharing(), canScreenShare:', !!navigator.mediaDevices?.getDisplayMedia)
+                screenShareRef.current.startSharing()
+              }
             }
+            container.append(screenShareBtn)
           }
-          container.append(screenShareBtn)
         }
 
         toolbar.appendChild(container)
@@ -962,31 +968,37 @@ function Viewer() {
 
         island.append(presentBtn, editBtn, browseBtn)
 
-        // Screen share button — only when joined to a collab session
+        // Screen share button — only when joined to a collab session and API is available
         if (collabIsJoined) {
+          const canShare = !!navigator.mediaDevices?.getDisplayMedia
           const isScreenSharing = screenShareRef.current.isSharing
           const hasActiveSharer = !!screenShareRef.current.activeSharer
-          const screenShareBtn = document.createElement('button')
-          screenShareBtn.textContent = '📺'
-          screenShareBtn.title = isScreenSharing
-            ? 'Stop sharing'
-            : hasActiveSharer ? 'View screen share'
-            : 'Share screen'
-          screenShareBtn.style.cssText = getDesktopButtonStyle(
-            isScreenSharing || hasActiveSharer,
-            isScreenSharing ? '#f44336' : '#4CAF50'
-          )
-          screenShareBtn.classList.add('excalishare-btn')
-          screenShareBtn.onclick = () => {
-            if (screenShareRef.current.isSharing) {
-              screenShareRef.current.stopSharing()
-            } else if (screenShareRef.current.activeSharer) {
-              setShowScreenShareOverlay((prev: boolean) => !prev)
-            } else {
-              screenShareRef.current.startSharing()
+          // Show button if: we can share, OR someone else is already sharing (so we can view)
+          if (canShare || hasActiveSharer) {
+            const screenShareBtn = document.createElement('button')
+            screenShareBtn.textContent = '📺'
+            screenShareBtn.title = isScreenSharing
+              ? 'Stop sharing'
+              : hasActiveSharer ? 'View screen share'
+              : 'Share screen'
+            screenShareBtn.style.cssText = getDesktopButtonStyle(
+              isScreenSharing || hasActiveSharer,
+              isScreenSharing ? '#f44336' : '#4CAF50'
+            )
+            screenShareBtn.classList.add('excalishare-btn')
+            screenShareBtn.onclick = () => {
+              console.log('[ScreenShare] Desktop toolbar button clicked, isSharing:', screenShareRef.current.isSharing, 'activeSharer:', screenShareRef.current.activeSharer)
+              if (screenShareRef.current.isSharing) {
+                screenShareRef.current.stopSharing()
+              } else if (screenShareRef.current.activeSharer) {
+                setShowScreenShareOverlay((prev: boolean) => !prev)
+              } else {
+                console.log('[ScreenShare] Calling startSharing(), canScreenShare:', !!navigator.mediaDevices?.getDisplayMedia)
+                screenShareRef.current.startSharing()
+              }
             }
+            island.appendChild(screenShareBtn)
           }
-          island.appendChild(screenShareBtn)
         }
 
         // Offline / cached view badge — shown when server is unreachable

@@ -13,10 +13,15 @@ export interface UseScreenShareReturn {
   activeSharer: ActiveSharer | null;
   remoteStream: MediaStream | null;
   isViewerConnected: boolean;
+  /** Whether getDisplayMedia is available on this device/browser */
+  canScreenShare: boolean;
   startSharing: () => Promise<void>;
   stopSharing: () => void;
   handleServerMessage: (msg: ServerMessage) => void;
 }
+
+/** True if getDisplayMedia is available on this device/browser */
+export const canScreenShare = !!navigator.mediaDevices?.getDisplayMedia;
 
 export function useScreenShare(
   client: CollabClient | null,
@@ -58,7 +63,11 @@ export function useScreenShare(
       },
       onSharingStarted: () => setIsSharing(true),
       onSharingStopped: () => setIsSharing(false),
-      onError: (err) => console.error('[ScreenShare]', err),
+      onError: (err) => {
+        console.error('[ScreenShare]', err);
+        // Show a user-visible alert so the user knows what happened (especially on mobile)
+        alert(err);
+      },
     });
 
     return () => {
@@ -71,6 +80,7 @@ export function useScreenShare(
   // myUserId changes are handled via myUserIdRef for the handleServerMessage callback.
 
   const startSharing = useCallback(async () => {
+    console.log('[ScreenShare] useScreenShare.startSharing called, manager exists:', !!managerRef.current);
     await managerRef.current?.startSharing();
   }, []);
 
@@ -124,6 +134,7 @@ export function useScreenShare(
     activeSharer,
     remoteStream,
     isViewerConnected,
+    canScreenShare,
     startSharing,
     stopSharing,
     handleServerMessage,

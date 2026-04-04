@@ -1115,6 +1115,27 @@ Root cause:
 Fix applied:
 - [x] Removed `RemainAfterExit = true` from `excalishare-setup.service` in `nixos/module.nix` — without it, systemd re-runs the setup service whenever the unit definition changes (which happens every time `frontendSource` points to a new Nix store path after a rebuild)
 
+**Mobile Screen Sharing Bug Fix (April 2026)**
+Fixed a bug where tapping the 📺 screen share button on Android Chrome (Android 13+, HTTPS) did nothing — no picker appeared, no error was shown.
+
+Root causes:
+- `ScreenShareManager.startSharing()` had no check for `navigator.mediaDevices?.getDisplayMedia` availability before calling it
+- The `catch` block silently swallowed `NotAllowedError` (assuming it always meant "user cancelled picker"), but on Android Chrome `NotAllowedError` can also mean transient activation expired or permission denied — with no user feedback
+- The `onError` callback only called `console.error()` — no visual feedback to the user
+- No console.log breadcrumbs to diagnose which step in the call chain failed
+
+Fixes applied:
+- [x] Added `navigator.mediaDevices?.getDisplayMedia` availability check at the top of `startSharing()` in `screenShareManager.ts` — calls `onError` with a clear message if API is unavailable
+- [x] Improved `NotAllowedError` handling in `startSharing()` — on mobile (detected via `navigator.userAgent`), shows a helpful message instead of silently swallowing the error; on desktop stays silent (user cancelled picker)
+- [x] Added `NotFoundError` and `AbortError` handling in `startSharing()`
+- [x] Changed `onError` callback in `useScreenShare.ts` from `console.error` only to `console.error + alert()` — user now sees a visible error message
+- [x] Added `canScreenShare` boolean export from `useScreenShare.ts` (`!!navigator.mediaDevices?.getDisplayMedia`)
+- [x] Added `canScreenShare` to `UseScreenShareReturn` interface and return value
+- [x] Phone toolbar button in `Viewer.tsx` now only renders if `canShare || hasActiveSharer` — hidden on unsupported devices
+- [x] Desktop/tablet toolbar button in `Viewer.tsx` now only renders if `canShare || hasActiveSharer`
+- [x] `CollabPopover.tsx` screen share button now only renders if `!!navigator.mediaDevices?.getDisplayMedia || !!activeSharer`
+- [x] Added `console.log` breadcrumbs in toolbar `onclick` handlers and `useScreenShare.startSharing()` for future debugging
+
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)
 - Persistent collab sessions are **auto-recreated from disk** on first visitor after server restart

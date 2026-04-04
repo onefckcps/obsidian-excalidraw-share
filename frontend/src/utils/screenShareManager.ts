@@ -66,6 +66,14 @@ export class ScreenShareManager {
 
   // Called when the user wants to start sharing their screen
   async startSharing(): Promise<void> {
+    // Check API availability first — not supported on iOS Safari, older Android, or non-secure contexts
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      console.warn('[ScreenShare] getDisplayMedia not available on this device/browser');
+      this.callbacks.onError('Screen sharing is not supported on this device or browser.');
+      return;
+    }
+
+    console.log('[ScreenShare] Requesting getDisplayMedia...');
     try {
       this.localStream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 15, max: 30 } },
@@ -82,10 +90,24 @@ export class ScreenShareManager {
       this.client.sendScreenShareStart();
       this.callbacks.onSharingStarted();
     } catch (err) {
-      if ((err as Error).name !== 'NotAllowedError') {
-        this.callbacks.onError(`Failed to start screen share: ${(err as Error).message}`);
+      const error = err as Error;
+      console.warn('[ScreenShare] getDisplayMedia failed:', error.name, error.message);
+      if (error.name === 'NotAllowedError') {
+        // On desktop: user cancelled the picker → silent (expected UX)
+        // On mobile: NotAllowedError can also mean transient activation expired or permission denied
+        // → show a helpful message so the user knows what happened
+        const isMobile = /mobile|android|iphone|ipad/i.test(navigator.userAgent);
+        if (isMobile) {
+          this.callbacks.onError('Screen sharing was blocked. Please tap the button again quickly after it appears.');
+        }
+        // Desktop: stay silent — user just cancelled the picker
+      } else if (error.name === 'NotFoundError') {
+        this.callbacks.onError('No screen or window found to share.');
+      } else if (error.name === 'AbortError') {
+        // User aborted — silent
+      } else {
+        this.callbacks.onError(`Failed to start screen share: ${error.message}`);
       }
-      // NotAllowedError = user cancelled the picker, not an error
     }
   }
 
