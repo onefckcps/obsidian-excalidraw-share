@@ -118,13 +118,10 @@ export class ScreenShareManager {
     const offer = await pc.createOffer({ offerToReceiveVideo: true });
     await pc.setLocalDescription(offer);
 
-    // Wait for ICE gathering to complete so the SDP contains all ICE candidates.
-    // We use the onicecandidate null event as the signal (more reliable than
-    // icegatheringstatechange in some browsers).
-    const sdp = await this._waitForCompleteLocalDescription(pc);
-    const candidateCount = (sdp.match(/a=candidate:/g) || []).length;
-    console.log('[ScreenShare] Sending offer to', sharerUserId, '| candidates:', candidateCount);
-    this.client.sendRtcSignal(sharerUserId, { type: 'offer', sdp });
+    // Send the offer immediately — ICE candidates will be trickled separately
+    // via onicecandidate as they are gathered.
+    console.log('[ScreenShare] Sending offer to', sharerUserId);
+    this.client.sendRtcSignal(sharerUserId, { type: 'offer', sdp: offer.sdp! });
   }
 
   // Called when a remote user stops sharing
@@ -137,8 +134,7 @@ export class ScreenShareManager {
 
   // Called when we receive an RTC signal (offer or answer)
   async onRtcSignal(fromUserId: string, signal: { type: 'offer' | 'answer'; sdp: string }): Promise<void> {
-    const incomingCandidates = (signal.sdp.match(/a=candidate:/g) || []).length;
-    console.log('[ScreenShare] Received RTC signal:', signal.type, 'from', fromUserId, '| incoming candidates:', incomingCandidates);
+    console.log('[ScreenShare] Received RTC signal:', signal.type, 'from', fromUserId);
     if (signal.type === 'offer') {
       // We are the sharer, a viewer sent us an offer
       const pc = await this._createPeerConnection(fromUserId);
@@ -157,11 +153,10 @@ export class ScreenShareManager {
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
-      // Wait for ICE gathering to complete so the SDP contains all ICE candidates.
-      const sdp = await this._waitForCompleteLocalDescription(pc);
-      const candidateCount = (sdp.match(/a=candidate:/g) || []).length;
-      console.log('[ScreenShare] Sending answer to', fromUserId, '| candidates:', candidateCount);
-      this.client.sendRtcSignal(fromUserId, { type: 'answer', sdp });
+      // Send the answer immediately — ICE candidates will be trickled separately
+      // via onicecandidate as they are gathered.
+      console.log('[ScreenShare] Sending answer to', fromUserId);
+      this.client.sendRtcSignal(fromUserId, { type: 'answer', sdp: pc.localDescription!.sdp });
     } else if (signal.type === 'answer') {
       // We are the viewer, the sharer sent us an answer
       const pc = this.peerConnections.get(fromUserId);
@@ -188,48 +183,6 @@ export class ScreenShareManager {
     }
   }
 
-  /**
-   * Wait for ICE gathering to complete and return the final SDP with all candidates.
-   * Uses the onicecandidate null event as the primary signal (most reliable across browsers).
-   * Falls back to a 5s timeout if gathering never completes.
-   */
-  private _waitForCompleteLocalDescription(pc: RTCPeerConnection): Promise<string> {
-    // If gathering is already complete, return current SDP
-    if (pc.iceGatheringState === 'complete') {
-      const sdp = pc.localDescription?.sdp || '';
-      console.log('[ScreenShare] ICE gathering already complete, SDP length:', sdp.length);
-      return Promise.resolve(sdp);
-    }
-
-    return new Promise<string>((resolve) => {
-      const timeout = setTimeout(() => {
-        console.warn('[ScreenShare] ICE gathering timed out after 5s');
-        resolve(pc.localDescription?.sdp || '');
-      }, 5000);
-
-      // Use onicecandidate null event — fires when all candidates have been gathered.
-      // This is more reliable than icegatheringstatechange in some browsers.
-      const originalHandler = pc.onicecandidate;
-      pc.onicecandidate = (event) => {
-        // Forward to original handler (trickle ICE relay)
-        if (originalHandler) {
-          originalHandler.call(pc, event);
-        }
-
-        console.log('[ScreenShare] onicecandidate:', event.candidate ? `candidate: ${event.candidate.candidate.substring(0, 80)}` : 'null (gathering complete)');
-
-        if (event.candidate === null) {
-          // Gathering complete — localDescription now has all candidates
-          clearTimeout(timeout);
-          const sdp = pc.localDescription?.sdp || '';
-          const candidateCount = (sdp.match(/a=candidate:/g) || []).length;
-          console.log('[ScreenShare] ICE gathering complete via onicecandidate, candidates in SDP:', candidateCount);
-          resolve(sdp);
-        }
-      };
-    });
-  }
-
   private async _createPeerConnection(peerId: string): Promise<RTCPeerConnection> {
     // Close existing connection if any
     this.peerConnections.get(peerId)?.close();
@@ -240,10 +193,9 @@ export class ScreenShareManager {
     console.log('[ScreenShare] Created peer connection for', peerId);
 
     // Send ICE candidates to the peer via signaling (trickle ICE).
-    // Also used by _waitForCompleteLocalDescription to detect gathering complete.
+    // Each candidate is sent individually as it's gathered.
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('[ScreenShare] Trickle ICE candidate for', peerId, ':', event.candidate.candidate.substring(0, 80));
         this.client.sendRtcIceCandidate(peerId, event.candidate.toJSON());
       }
     };
@@ -265,10 +217,6 @@ export class ScreenShareManager {
 
     pc.oniceconnectionstatechange = () => {
       console.log('[ScreenShare] ICE connection state:', pc.iceConnectionState, 'for peer', peerId);
-    };
-
-    pc.onicegatheringstatechange = () => {
-      console.log('[ScreenShare] ICE gathering state:', pc.iceGatheringState, 'for peer', peerId);
     };
 
     pc.onsignalingstatechange = () => {
