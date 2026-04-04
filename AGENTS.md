@@ -21,6 +21,7 @@ Allow users to publish Excalidraw drawings from Obsidian to a self-hosted server
 - **Browse** all shared drawings (tree view, search, overlay mode)
 - **Live Collaboration** — real-time multi-user editing via WebSocket
 - **Persistent Collaboration** — always-on collab mode per drawing; guests can edit without admin being online, server is source of truth, auto-saves to disk
+- **Screen Sharing** — WebRTC peer-to-peer screen sharing during collab sessions; browser uses `getDisplayMedia`, Obsidian uses Electron `desktopCapturer`; draggable/resizable overlay with PiP + fullscreen; STUN/TURN support via `/api/ice-config` with HMAC time-limited credentials
 - **Password Protection** — optional Argon2id-hashed passwords for drawings and collab sessions
 - **PDF Embedding** — convert PDF pages to PNG for embedding in drawings
 - **Admin Panel** — manage drawings and collab sessions
@@ -146,6 +147,7 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 | POST | `/api/persistent-collab/enable` | Bearer | Enable persistent collab for a drawing (supports `password` field) |
 | POST | `/api/persistent-collab/disable` | Bearer | Disable persistent collab for a drawing |
 | POST | `/api/persistent-collab/activate/{drawing_id}` | Public | Activate (create on demand) persistent collab session for a drawing |
+| GET | `/api/ice-config` | Bearer | Get WebRTC ICE server config (STUN/TURN with HMAC time-limited credentials) |
 | WS | `/ws/collab/{session_id}?name=...&password=...&api_key=...` | Public | WebSocket for real-time collaboration (password verified before upgrade; `api_key` bypasses session password) |
 
 ### Upload Request Format
@@ -167,6 +169,10 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 { type: 'scene_update', elements: ExcalidrawElement[] }
 { type: 'pointer_update', x, y, button, tool?, scrollX?, scrollY?, zoom? }
 { type: 'set_name', name: string }
+{ type: 'screen_share_start' }
+{ type: 'screen_share_stop' }
+{ type: 'rtc_signal', targetUserId: string, signal: { type: 'offer'|'answer', sdp: string } }
+{ type: 'rtc_ice_candidate', targetUserId: string, candidate: RTCIceCandidateInit }
 ```
 
 **Server → Client Messages**
@@ -178,6 +184,10 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 { type: 'user_left', userId, name, collaborators }
 { type: 'session_ended', saved: boolean }
 { type: 'error', message: string }
+{ type: 'screen_share_started', userId: string, name: string }
+{ type: 'screen_share_stopped', userId: string }
+{ type: 'rtc_signal', fromUserId: string, signal: { type: 'offer'|'answer', sdp: string } }
+{ type: 'rtc_ice_candidate', fromUserId: string, candidate: RTCIceCandidateInit }
 ```
 
 ---
@@ -220,7 +230,7 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 
 **Route Organization**
 - **Public routes** (no auth): `/api/health`, `/api/public/drawings`, `/api/view/{id}`, `/api/collab/status/{drawing_id}`, `/api/collab/verify-password`, `/api/persistent-collab/activate/{drawing_id}`
-- **Protected routes** (Bearer token): `/api/upload`, `/api/drawings/{id}` (DELETE), `/api/drawings` (GET), `/api/collab/start`, `/api/collab/stop`, `/api/collab/sessions`, `/api/persistent-collab/enable`, `/api/persistent-collab/disable`
+- **Protected routes** (Bearer token): `/api/upload`, `/api/drawings/{id}` (DELETE), `/api/drawings` (GET), `/api/collab/start`, `/api/collab/stop`, `/api/collab/sessions`, `/api/persistent-collab/enable`, `/api/persistent-collab/disable`, `/api/ice-config`
 - **WebSocket**: `/ws/collab/{session_id}` (no auth, but session must exist — security via unguessable UUID + optional password; `api_key` query param bypasses session password)
 
 **Rate Limiting**
@@ -247,22 +257,25 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 - `DrawingsBrowser.tsx` — Browse/search drawings with tree view, overlay mode
 - `AdminPage.tsx` — Admin panel with drawing management and collab session management
 - `CollabStatus.tsx` — Pre-join banner and session-ended notification overlay
-- `CollabPopover.tsx` — In-session popover showing participants, follow mode controls
+- `CollabPopover.tsx` — In-session popover showing participants, follow mode controls, screen share button
 - `PasswordDialog.tsx` — Reusable password input dialog for protected drawings and collab sessions
 - `AboutModal.tsx` — About dialog
+- `ScreenShareOverlay.tsx` — Draggable/resizable video overlay for incoming screen shares (PiP + fullscreen support)
 
 **Hooks**
 - `useCollab.ts` — Complete collaboration state management (569 lines), handles WebSocket lifecycle, scene merging, pointer updates, follow mode, drawing interruption deferral
+- `useScreenShare.ts` — Screen share state management; wraps `ScreenShareManager`, exposes `isSharing`, `activeSharer`, `remoteStream`, `startSharing`, `stopSharing`, `handleServerMessage`
 
 **Utilities**
 - `cache.ts` — LRU `DrawingCache` class (50 MB limit, singleton `drawingCache`)
 - `collabClient.ts` — `CollabClient` WebSocket wrapper with reconnect, debounce, throttle
+- `screenShareManager.ts` — `ScreenShareManager` class; manages WebRTC `RTCPeerConnection` per viewer, `getDisplayMedia` capture, ICE config fetching from `/api/ice-config` with Google STUN fallback
 
 **Shared Types (`types/index.ts`)**
 - `ExcalidrawData`, `PublicDrawing`
 - `CollaboratorInfo`, `CollabStatusResponse`, `CollabSessionInfo`
-- `ClientMessage` (union: scene_update, pointer_update, set_name)
-- `ServerMessage` (union: snapshot, scene_update, pointer_update, user_joined, user_left, session_ended, error)
+- `ClientMessage` (union: scene_update, pointer_update, set_name, screen_share_start/stop, rtc_signal, rtc_ice_candidate)
+- `ServerMessage` (union: snapshot, scene_update, pointer_update, user_joined, user_left, session_ended, error, screen_share_started/stopped, rtc_signal, rtc_ice_candidate)
 
 **PWA Configuration**
 - Service worker with NetworkFirst caching for public API routes
@@ -281,6 +294,7 @@ API_KEY="secret" BASE_URL="http://localhost:3030" ./start.sh
 - `collabManager.ts` — Session lifecycle, polling-based change detection, deferred updates, cursor display
 - `collabTypes.ts` — Shared types for WebSocket protocol (ClientMessage, ServerMessage, ExcalidrawAPI)
 - `excalidrawScripts.ts` — Embedded Excalidraw scripts (ZoomAdaptiveStroke, RightClickEraser, ExcalidrawScriptManager)
+- `screenShare.ts` — `ScreenShareManager` (Electron `desktopCapturer` + WebRTC), `SourcePickerModal` (thumbnail grid), `ScreenShareViewerModal` (video in Obsidian modal)
 
 **Native Collab Architecture**
 The plugin can participate in collab sessions directly within Obsidian (no browser needed):
@@ -356,6 +370,7 @@ interface ExcaliShareSettings {
 9. **Cached Excalidraw API** — Plugin caches the `getExcalidrawAPI()` reference and validates it cheaply, avoiding expensive `ea.setView('active')` calls on every cycle
 10. **Persistent Collaboration** — Always-on collab mode per drawing. Server is source of truth with debounced auto-save (2s). Sessions are created on demand when visitors arrive and cleaned up after 30 min idle (no participants). Element-level merge with version-based conflict resolution for offline admin sync. Frontmatter tracks `excalishare-persistent-collab` and `excalishare-last-sync-version`.
 11. **Server State Reconciliation** — Plugin reconciles local frontmatter with server state on every file open (with 30s TTL cache). Handles: persistent collab enabled/disabled externally, drawing deleted from server, collab session recovery after Obsidian restart. Background reconciliation every 60s for long-running sessions. Server is always the source of truth.
+12. **Screen Sharing via WebRTC** — P2P video streaming using the existing WebSocket as signaling channel. Backend only relays small SDP/ICE messages; video data flows directly between peers. Sharer creates one `RTCPeerConnection` per viewer. Per-user `mpsc` channels in `CollabSession` enable targeted signaling relay (not broadcast). ICE config served from `/api/ice-config` with HMAC-SHA1 time-limited TURN credentials (coturn compatible, 1-hour TTL). Browser uses `getDisplayMedia`; Obsidian uses Electron `desktopCapturer` with custom `SourcePickerModal`. `screenShareRef` pattern in `Viewer.tsx` prevents object reference churn in `useEffect` dependency arrays.
 
 ---
 
@@ -381,6 +396,9 @@ interface ExcaliShareSettings {
 | `subtle` | 2 | Constant-time comparison for auth |
 | `argon2` | 0.5 | Argon2id password hashing |
 | `rand` | 0.8 | Salt generation for password hashing |
+| `hmac` | 0.12 | HMAC-SHA1 for TURN credential generation |
+| `sha1` | 0.10 | SHA1 digest for HMAC |
+| `base64` | 0.22 | Base64 encoding of HMAC output |
 
 ### Frontend Dependencies (package.json)
 
@@ -417,6 +435,9 @@ Frontend `.npmrc`: `legacy-peer-deps=true` (required for Excalidraw peer depende
 | `--base-url` | `BASE_URL` | `http://localhost:8184` | Public base URL |
 | `--max-upload-mb` | `MAX_UPLOAD_MB` | `50` | Max upload size in MB |
 | `--frontend-dir` | `FRONTEND_DIR` | `./frontend/dist` | Frontend static files |
+| `--stun-url` | `STUN_URL` | (optional) | STUN server URL for WebRTC ICE (e.g. `stun:turn.leyk.me:443`) |
+| `--turn-url` | `TURN_URL` | (optional) | TURN server URL for WebRTC ICE (e.g. `turns:turn.leyk.me:443`) |
+| `--turn-secret` | `TURN_SECRET` | (optional) | TURN HMAC shared secret for time-limited credentials (coturn compatible) |
 
 ---
 
@@ -624,15 +645,18 @@ obsidian-excalidraw-share/
 │   │   ├── AboutModal.tsx       # About dialog (light/dark theme)
 │   │   ├── CollabStatus.tsx     # Live collab session UI (join, status, participants)
 │   │   ├── CollabPopover.tsx    # In-session popover (participants, follow controls)
+│   │   ├── ScreenShareOverlay.tsx # Draggable/resizable video overlay (PiP + fullscreen)
 │   │   ├── main.tsx             # React entry point
 │   │   ├── index.css            # Global styles
 │   │   ├── types/
 │   │   │   └── index.ts         # Shared types (ExcalidrawData, PublicDrawing, Collab types)
 │   │   ├── hooks/
-│   │   │   └── useCollab.ts     # React hook for collaboration state management
+│   │   │   ├── useCollab.ts     # React hook for collaboration state management
+│   │   │   └── useScreenShare.ts # React hook for screen share state management
 │   │   └── utils/
 │   │       ├── cache.ts         # LRU DrawingCache (50 MB limit)
-│   │       └── collabClient.ts  # WebSocket client for real-time collab
+│   │       ├── collabClient.ts  # WebSocket client for real-time collab
+│   │       └── screenShareManager.ts # WebRTC peer connection management for screen sharing
 │   ├── public/                  # PWA icons and favicon
 │   ├── index.html
 │   ├── package.json
@@ -650,6 +674,7 @@ obsidian-excalidraw-share/
 │   ├── collabManager.ts    # Event-driven collab: onChange, pointer tracking, follow mode
 │   ├── collabTypes.ts      # Shared types for WS protocol + ExcalidrawAPI subscriptions
 │   ├── excalidrawScripts.ts # Embedded Excalidraw scripts (ZoomAdaptiveStroke, RightClickEraser)
+│   ├── screenShare.ts      # ScreenShareManager (Electron desktopCapturer + WebRTC), SourcePickerModal, ScreenShareViewerModal
 │   ├── manifest.json       # Plugin manifest (id: excalishare)
 │   ├── package.json
 │   └── tsconfig.json
@@ -813,6 +838,26 @@ The project is feature-complete with the live collaboration system fully impleme
 - [x] Active collab sessions display
 - [x] End collab sessions
 - [x] Auto-refresh (10s interval)
+
+**Screen Sharing**
+- [x] Backend: `screen_sharer` field per `CollabSession`, per-user `mpsc` channels for targeted signaling relay
+- [x] Backend: `start_screen_share()` / `stop_screen_share()` methods, auto-stop on `leave_session`
+- [x] Backend: `register_user_sender()` / `send_to_user()` for targeted WebRTC signaling (not broadcast)
+- [x] Backend: 4 new `ClientMessage` variants: `screen_share_start/stop`, `rtc_signal`, `rtc_ice_candidate`
+- [x] Backend: 4 new `ServerMessage` variants: `screen_share_started/stopped`, `rtc_signal`, `rtc_ice_candidate`
+- [x] Backend: `/api/ice-config` endpoint with HMAC-SHA1 time-limited TURN credentials (coturn compatible, 1-hour TTL)
+- [x] Backend: `--stun-url`, `--turn-url`, `--turn-secret` CLI args
+- [x] Frontend: `ScreenShareManager` class (WebRTC P2P, `getDisplayMedia`, ICE config fetching)
+- [x] Frontend: `useScreenShare` hook (state management, server message dispatch)
+- [x] Frontend: `ScreenShareOverlay` component (draggable, resizable, PiP, fullscreen, sharer color border)
+- [x] Frontend: `CollabPopover` share button (3 states: idle / sharing / someone else sharing)
+- [x] Frontend: `📺` toolbar button in all breakpoints (phone bottom toolbar + desktop/tablet Island)
+- [x] Plugin: `ScreenShareManager` with Electron `desktopCapturer` integration
+- [x] Plugin: `SourcePickerModal` (thumbnail grid of screens/windows)
+- [x] Plugin: `ScreenShareViewerModal` (video element in Obsidian modal)
+- [x] Plugin: `start-screen-share` / `stop-screen-share` commands
+- [x] Plugin: Screen share button in toolbar popover (3 states)
+- [x] NixOS: `stunUrl`, `turnUrl`, `turnSecretFile` options in `module.nix`
 
 **Infrastructure**
 - [x] NixOS module (`nixos/module.nix`)
@@ -1048,6 +1093,27 @@ Fixed a behavioral difference where the Obsidian plugin delayed sending drawn st
 
 Fix applied:
 - [x] Changed `sendSceneUpdate()` in `obsidian-plugin/collabClient.ts` from trailing-edge to leading-edge debounce — `if (!this.sceneUpdateTimer)` instead of `clearTimeout + new setTimeout` on every call. This matches the frontend's behavior exactly: updates are sent every ~80ms during active drawing (or ~16ms when idle), rather than only after the stroke ends.
+
+**Toolbar Buttons Disappearing Bug Fix (April 2026)**
+Fixed a bug where injected toolbar buttons (DrawingsBrowser 📂, Present ▶️, Edit 🔒) disappeared when no collab session was active, and the screen share button (📺) was missing even during active sessions.
+
+Root cause:
+- `collab.screenShare.activeSharer` (an object `{ userId, name } | null`) was in the toolbar injection `useEffect` dependency array. Since `useScreenShare` returns a new object reference on every render even when the value is the same, the `useEffect` re-ran on every render cycle — removing all injected buttons, then re-injecting them after `setTimeout` delays. During those delays, the toolbar had no buttons at all.
+
+Fixes applied:
+- [x] Added `screenShareRef` — a `useRef` updated via direct assignment on every render (`screenShareRef.current = collab.screenShare`) in `Viewer.tsx`
+- [x] Updated both screen share button handlers (phone + desktop/tablet) to use `screenShareRef.current` instead of capturing `collab.screenShare` in the closure
+- [x] Removed `collab.screenShare.activeSharer`, `.startSharing`, `.stopSharing` from the `useEffect` dependency array
+- [x] Kept only `collab.screenShare.isSharing` (primitive boolean) in deps — safe to include as it only changes when sharing state actually changes
+
+**NixOS Frontend Not Updating on Rebuild Bug Fix (April 2026)**
+Fixed a bug where `nixos-rebuild switch` did not update the frontend served by the production server, causing the old JS bundle (without screen sharing) to be served even after deploying new code.
+
+Root cause:
+- `nixos/module.nix` had `RemainAfterExit = true` on `excalishare-setup.service`. This tells systemd to keep the service "active" after the oneshot completes. On subsequent `nixos-rebuild switch` calls, systemd sees the service as already active and **does not re-run it** — so the `cp -r frontendSource /var/lib/excalishare/frontend` script never executed again after the initial deployment.
+
+Fix applied:
+- [x] Removed `RemainAfterExit = true` from `excalishare-setup.service` in `nixos/module.nix` — without it, systemd re-runs the setup service whenever the unit definition changes (which happens every time `frontendSource` points to a new Nix store path after a rebuild)
 
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)
