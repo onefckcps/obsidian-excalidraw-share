@@ -84,6 +84,12 @@ function Viewer() {
   // Collaboration hook
   const collab = useCollab({ drawingId: id, excalidrawAPI })
 
+  // Stable ref to screenShare so toolbar injection useEffect can use it
+  // without adding object references to the dependency array (which would
+  // cause the effect to re-run on every render and break button injection).
+  const screenShareRef = useRef(collab.screenShare)
+  screenShareRef.current = collab.screenShare
+
   // Auto-show screen share overlay when a remote stream arrives
   useEffect(() => {
     if (collab.screenShare.remoteStream) {
@@ -843,8 +849,8 @@ function Viewer() {
 
           // Screen share button — only when joined to a session
           const screenShareBtn = document.createElement('button')
-          const isScreenSharing = collab.screenShare.isSharing
-          const hasActiveSharer = !!collab.screenShare.activeSharer
+          const isScreenSharing = screenShareRef.current.isSharing
+          const hasActiveSharer = !!screenShareRef.current.activeSharer
           screenShareBtn.textContent = '📺'
           screenShareBtn.title = isScreenSharing
             ? 'Stop sharing'
@@ -855,12 +861,12 @@ function Viewer() {
             isScreenSharing ? '#f44336' : '#4CAF50'
           )
           screenShareBtn.onclick = () => {
-            if (isScreenSharing) {
-              collab.screenShare.stopSharing()
-            } else if (hasActiveSharer) {
+            if (screenShareRef.current.isSharing) {
+              screenShareRef.current.stopSharing()
+            } else if (screenShareRef.current.activeSharer) {
               setShowScreenShareOverlay((prev: boolean) => !prev)
             } else {
-              collab.screenShare.startSharing()
+              screenShareRef.current.startSharing()
             }
           }
           container.append(screenShareBtn)
@@ -955,8 +961,8 @@ function Viewer() {
 
         // Screen share button — only when joined to a collab session
         if (collabIsJoined) {
-          const isScreenSharing = collab.screenShare.isSharing
-          const hasActiveSharer = !!collab.screenShare.activeSharer
+          const isScreenSharing = screenShareRef.current.isSharing
+          const hasActiveSharer = !!screenShareRef.current.activeSharer
           const screenShareBtn = document.createElement('button')
           screenShareBtn.textContent = '📺'
           screenShareBtn.title = isScreenSharing
@@ -969,12 +975,12 @@ function Viewer() {
           )
           screenShareBtn.classList.add('excalishare-btn')
           screenShareBtn.onclick = () => {
-            if (isScreenSharing) {
-              collab.screenShare.stopSharing()
-            } else if (hasActiveSharer) {
+            if (screenShareRef.current.isSharing) {
+              screenShareRef.current.stopSharing()
+            } else if (screenShareRef.current.activeSharer) {
               setShowScreenShareOverlay((prev: boolean) => !prev)
             } else {
-              collab.screenShare.startSharing()
+              screenShareRef.current.startSharing()
             }
           }
           island.appendChild(screenShareBtn)
@@ -1197,7 +1203,11 @@ function Viewer() {
       if (observer) observer.disconnect()
       document.querySelectorAll(`.${containerClass}`).forEach(el => el.remove())
     }
-  }, [breakpoint, isPhone, isExcalidrawMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData, collab.isJoined, collab.isPersistentCollab, collab.reconnectState, collab.reconnectAttempt, collab.maxReconnectAttempts, collab.manualReconnect, isCachedView, isOnline, drawingsList, loadingDrawings, navigate, navigateToPrevDrawing, navigateToNextDrawing, collab.screenShare.isSharing, collab.screenShare.activeSharer, collab.screenShare.startSharing, collab.screenShare.stopSharing])
+  // Note: collab.screenShare.activeSharer, .startSharing, .stopSharing are intentionally
+  // excluded from deps — they are accessed via screenShareRef.current inside the effect
+  // to avoid object reference churn causing constant re-runs that break button injection.
+  // collab.screenShare.isSharing is a primitive boolean so it's safe to include.
+  }, [breakpoint, isPhone, isExcalidrawMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData, collab.isJoined, collab.isPersistentCollab, collab.reconnectState, collab.reconnectAttempt, collab.maxReconnectAttempts, collab.manualReconnect, isCachedView, isOnline, drawingsList, loadingDrawings, navigate, navigateToPrevDrawing, navigateToNextDrawing, collab.screenShare.isSharing])
 
   // Inject ExcaliShare links into Excalidraw help dropdown
   useEffect(() => {
