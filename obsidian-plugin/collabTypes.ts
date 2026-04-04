@@ -24,7 +24,11 @@ export type ClientMessage =
   | { type: 'scene_delta'; elements: unknown[]; seq: number }
   | { type: 'pointer_update'; x: number; y: number; button: 'down' | 'up'; tool?: 'pointer' | 'laser'; scrollX?: number; scrollY?: number; zoom?: number }
   | { type: 'set_name'; name: string }
-  | { type: 'files_update'; files: Record<string, unknown> };
+  | { type: 'files_update'; files: Record<string, unknown> }
+  | { type: 'screen_share_start' }
+  | { type: 'screen_share_stop' }
+  | { type: 'rtc_signal'; targetUserId: string; signal: { type: 'offer' | 'answer'; sdp: string } }
+  | { type: 'rtc_ice_candidate'; targetUserId: string; candidate: RTCIceCandidateInit };
 
 // ──────────────────────────────────────────────
 // Server → Client WebSocket messages
@@ -68,7 +72,11 @@ export type ServerMessage =
     }
   | { type: 'files_update'; files: Record<string, unknown>; from: string }
   | { type: 'session_ended'; saved: boolean }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | { type: 'screen_share_started'; userId: string; name: string }
+  | { type: 'screen_share_stopped'; userId: string }
+  | { type: 'rtc_signal'; fromUserId: string; signal: { type: 'offer' | 'answer'; sdp: string } }
+  | { type: 'rtc_ice_candidate'; fromUserId: string; candidate: RTCIceCandidateInit };
 
 // ──────────────────────────────────────────────
 // Excalidraw API types (subset used by collab)

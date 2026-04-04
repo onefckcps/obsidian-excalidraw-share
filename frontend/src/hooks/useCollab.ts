@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type MutableRefObject } from 'react';
 import { CollabClient } from '../utils/collabClient';
+import { useScreenShare } from './useScreenShare';
+import type { UseScreenShareReturn } from './useScreenShare';
 import type {
   CollaboratorInfo,
   CollabStatusResponse,
@@ -104,6 +106,8 @@ interface UseCollabReturn {
   isPersistentCollab: boolean;
   /** Ref that is true while stopFollowing is propagating to Excalidraw (prevents onChange loop) */
   suppressFollowSyncRef: MutableRefObject<boolean>;
+  /** Screen sharing state and controls */
+  screenShare: UseScreenShareReturn;
 }
 
 export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCollabReturn {
@@ -122,8 +126,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const [collabPasswordRequired, setCollabPasswordRequired] = useState(false);
   const [collabPasswordError, setCollabPasswordError] = useState<string | null>(null);
   const [isPersistentCollab, setIsPersistentCollab] = useState(false);
+  /** The current user's server-assigned userId (derived from collaborators list on snapshot) */
+  const [myUserId, setMyUserId] = useState('');
 
   const clientRef = useRef<CollabClient | null>(null);
+  /** State mirror of clientRef.current — used to pass the client to useScreenShare */
+  const [clientState, setClientState] = useState<CollabClient | null>(null);
   const excalidrawAPIRef = useRef(excalidrawAPI);
   /** Tracks which drawing ID the collab session was joined for */
   const collabDrawingIdRef = useRef<string | null>(null);
@@ -157,6 +165,15 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const suppressFollowSyncRef = useRef(false);
   /** Last known cursor position (from onPointerUpdate), reused by viewport broadcast */
   const lastPointerRef = useRef<{ x: number; y: number; button: 'down' | 'up'; tool: 'pointer' | 'laser' }>({ x: 0, y: 0, button: 'up', tool: 'pointer' });
+
+  // Screen share hook — uses clientState (state mirror of clientRef) so it re-renders when client changes
+  const screenShare = useScreenShare(clientState, myUserId, isJoined);
+
+  /** Ref to screenShare.handleServerMessage so joinSession callback doesn't need screenShare in deps */
+  const screenShareHandlerRef = useRef(screenShare.handleServerMessage);
+  useEffect(() => {
+    screenShareHandlerRef.current = screenShare.handleServerMessage;
+  }, [screenShare.handleServerMessage]);
 
   // Keep refs in sync
   useEffect(() => {
@@ -449,6 +466,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         }
 
         setCollaborators(msg.collaborators);
+
+        // Derive our own userId from the collaborators list by matching displayName
+        const selfCollab = msg.collaborators.find(c => c.name === finalName);
+        if (selfCollab) {
+          setMyUserId(selfCollab.id);
+        }
       });
 
       // Handle scene updates from other users
@@ -691,6 +714,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         collaboratorMapRef.current = new Map();
         client.disconnect();
         clientRef.current = null;
+        setClientState(null);
       });
 
       // Handle connection state
@@ -737,6 +761,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         collaboratorMapRef.current = new Map();
         client.disconnect();
         clientRef.current = null;
+        setClientState(null);
 
         // Clear collaborators from Excalidraw
         const api = excalidrawAPIRef.current as {
@@ -762,7 +787,22 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         console.error('ExcaliShare Collab: Server error', msg.message);
       });
 
+      // Handle screen share signaling messages (use ref to avoid stale closure / dep cycle)
+      client.on('screen_share_started', (msg: ServerMessage) => {
+        screenShareHandlerRef.current(msg);
+      });
+      client.on('screen_share_stopped', (msg: ServerMessage) => {
+        screenShareHandlerRef.current(msg);
+      });
+      client.on('rtc_signal', (msg: ServerMessage) => {
+        screenShareHandlerRef.current(msg);
+      });
+      client.on('rtc_ice_candidate', (msg: ServerMessage) => {
+        screenShareHandlerRef.current(msg);
+      });
+
       clientRef.current = client;
+      setClientState(client);
       client.connect();
       setIsJoined(true);
     },
@@ -774,6 +814,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     if (clientRef.current) {
       clientRef.current.disconnect();
       clientRef.current = null;
+      setClientState(null);
     }
     // Cancel any pending rAF updates
     if (pointerRafRef.current !== null) {
@@ -1016,5 +1057,6 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     getCollaboratorIds,
     isPersistentCollab,
     suppressFollowSyncRef,
+    screenShare,
   };
 }

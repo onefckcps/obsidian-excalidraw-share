@@ -43,6 +43,14 @@ interface CollabPopoverProps {
   useBottomSheet?: boolean;
   /** Called when user toggles the bottom-sheet preference on mobile */
   onToggleBottomSheet?: (value: boolean) => void;
+  /** Whether the current user is sharing their screen */
+  isSharing?: boolean;
+  /** The active screen sharer (if any) */
+  activeSharer?: { userId: string; name: string } | null;
+  /** Start sharing screen */
+  onStartSharing?: () => void;
+  /** Stop sharing screen */
+  onStopSharing?: () => void;
 }
 
 function CollabPopover({
@@ -62,6 +70,10 @@ function CollabPopover({
   isPhone = false,
   useBottomSheet = true,
   onToggleBottomSheet,
+  isSharing = false,
+  activeSharer = null,
+  onStartSharing,
+  onStopSharing,
 }: CollabPopoverProps) {
   const isDark = theme === 'dark';
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -293,6 +305,18 @@ function CollabPopover({
                 )}
               </span>
 
+              {/* Screen sharing badge */}
+              {activeSharer?.userId === c.id && (
+                <span style={{
+                  fontSize: '11px',
+                  color: '#2196F3',
+                  flexShrink: 0,
+                  fontWeight: 600,
+                }}>
+                  📺 Sharing
+                </span>
+              )}
+
               {/* Follow indicator */}
               {!isSelf && (
                 <span style={{
@@ -340,6 +364,52 @@ function CollabPopover({
             ✕
           </button>
         </div>
+      )}
+
+      {/* Screen share button */}
+      {(onStartSharing || onStopSharing) && (
+        <button
+          style={{
+            width: '100%',
+            padding: '8px 12px',
+            borderRadius: '8px',
+            border: `1px solid ${isDark ? '#555' : '#ddd'}`,
+            backgroundColor: isSharing
+              ? (isDark ? '#1a2a1a' : '#e8f5e9')
+              : activeSharer && !isSharing
+              ? (isDark ? '#1a1a2a' : '#e3f2fd')
+              : (isDark ? '#333' : '#f5f5f5'),
+            color: isSharing ? '#f44336'
+              : activeSharer && !isSharing ? '#1976d2'
+              : (isDark ? '#e0e0e0' : '#333'),
+            fontSize: '13px',
+            fontWeight: 500,
+            cursor: activeSharer && !isSharing ? 'default' : 'pointer',
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            transition: 'background-color 0.15s',
+            marginBottom: '8px',
+            opacity: activeSharer && !isSharing ? 0.8 : 1,
+          }}
+          onClick={() => {
+            if (isSharing) {
+              onStopSharing?.();
+            } else if (!activeSharer) {
+              onStartSharing?.();
+            }
+          }}
+          disabled={!!(activeSharer && !isSharing)}
+          title={
+            isSharing ? 'Stop sharing your screen'
+              : activeSharer && !isSharing ? `${activeSharer.name} is sharing their screen`
+              : 'Share your screen with collaborators'
+          }
+        >
+          {isSharing
+            ? '🔴 Stop Sharing'
+            : activeSharer && !isSharing
+            ? `📺 ${activeSharer.name} is sharing`
+            : '📺 Share Screen'}
+        </button>
       )}
 
       {/* Leave button */}

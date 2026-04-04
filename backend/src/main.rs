@@ -55,6 +55,19 @@ struct Config {
     /// Path to the frontend build directory (static files)
     #[arg(long, env = "FRONTEND_DIR", default_value = "./frontend/dist")]
     frontend_dir: PathBuf,
+
+    /// STUN server URL for WebRTC ICE (e.g. stun:turn.leyk.me:443)
+    #[arg(long, env = "STUN_URL")]
+    stun_url: Option<String>,
+
+    /// TURN server URL for WebRTC ICE (e.g. turns:turn.leyk.me:443)
+    #[arg(long, env = "TURN_URL")]
+    turn_url: Option<String>,
+
+    /// TURN HMAC secret for generating time-limited credentials.
+    /// If set, the /api/ice-config endpoint generates HMAC credentials valid for 1 hour.
+    #[arg(long, env = "TURN_SECRET")]
+    turn_secret: Option<String>,
 }
 
 #[tokio::main]
@@ -103,6 +116,9 @@ async fn main() -> anyhow::Result<()> {
         base_url: config.base_url.clone(),
         session_manager: session_manager.clone(),
         api_key: config.api_key.clone(),
+        stun_url: config.stun_url.clone(),
+        turn_url: config.turn_url.clone(),
+        turn_secret: config.turn_secret.clone(),
     };
 
     let api_key = ApiKey(config.api_key.clone());
@@ -192,6 +208,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/persistent-collab/disable",
             post(routes::disable_persistent_collab),
         )
+        .route("/api/ice-config", get(routes::ice_config_handler))
         .layer(axum::extract::DefaultBodyLimit::max(body_limit))
         .layer(protected_rate_limit)
         .route_layer(middleware::from_fn_with_state(

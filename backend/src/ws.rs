@@ -158,6 +158,11 @@ async fn handle_ws_connection(
         }
     };
 
+    // Register per-user channel for targeted WebRTC signaling messages
+    let mut user_rx = session_manager
+        .register_user_sender(&session_id, &user_id)
+        .await;
+
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
     // Send the initial snapshot
@@ -207,6 +212,24 @@ async fn handle_ws_connection(
                             }
                         }
                         Err(_) => break, // Channel closed
+                    }
+                }
+                // Targeted message for this specific user (WebRTC signaling)
+                result = async {
+                    match user_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match result {
+                        Some(msg) => {
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        None => break, // Channel closed
                     }
                 }
                 // Periodic ping to keep the connection alive through proxies
@@ -344,6 +367,54 @@ async fn handle_client_message(
                     user_id = %user_id,
                     error = %e,
                     "Failed to update files"
+                );
+            }
+        }
+        ClientMessage::ScreenShareStart => {
+            if let Err(e) = session_manager.start_screen_share(session_id, user_id).await {
+                tracing::warn!(
+                    session_id = %session_id,
+                    user_id = %user_id,
+                    error = %e,
+                    "Failed to start screen share"
+                );
+            }
+        }
+        ClientMessage::ScreenShareStop => {
+            if let Err(e) = session_manager.stop_screen_share(session_id, user_id).await {
+                tracing::warn!(
+                    session_id = %session_id,
+                    user_id = %user_id,
+                    error = %e,
+                    "Failed to stop screen share"
+                );
+            }
+        }
+        ClientMessage::RtcSignal { target_user_id, signal } => {
+            let msg = ServerMessage::RtcSignal {
+                from_user_id: user_id.to_string(),
+                signal,
+            };
+            if let Err(e) = session_manager.send_to_user(session_id, &target_user_id, msg).await {
+                tracing::warn!(
+                    session_id = %session_id,
+                    user_id = %user_id,
+                    error = %e,
+                    "Failed to relay RTC signal"
+                );
+            }
+        }
+        ClientMessage::RtcIceCandidate { target_user_id, candidate } => {
+            let msg = ServerMessage::RtcIceCandidate {
+                from_user_id: user_id.to_string(),
+                candidate,
+            };
+            if let Err(e) = session_manager.send_to_user(session_id, &target_user_id, msg).await {
+                tracing::warn!(
+                    session_id = %session_id,
+                    user_id = %user_id,
+                    error = %e,
+                    "Failed to relay ICE candidate"
                 );
             }
         }

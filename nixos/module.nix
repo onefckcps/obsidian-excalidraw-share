@@ -72,6 +72,27 @@ in
       type = lib.types.path;
       description = "Pfad zum gebauten Frontend (frontend/dist).";
     };
+
+    stunUrl = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "stun:turn.leyk.me:443";
+      description = "STUN server URL for WebRTC ICE. Optional.";
+    };
+
+    turnUrl = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "turns:turn.leyk.me:443";
+      description = "TURN server URL for WebRTC ICE (TURN-over-TLS). Optional.";
+    };
+
+    turnSecretFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      example = "/etc/secrets/coturn-secret";
+      description = "Path to file containing the TURN HMAC shared secret. Must match coturn's static-auth-secret.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -145,6 +166,10 @@ in
           "BASE_URL=https://${cfg.domain}"
           "MAX_UPLOAD_MB=${toString cfg.maxUploadMb}"
           "FRONTEND_DIR=${cfg.dataDir}/frontend"
+        ] ++ lib.optionals (cfg.stunUrl != null) [
+          "STUN_URL=${cfg.stunUrl}"
+        ] ++ lib.optionals (cfg.turnUrl != null) [
+          "TURN_URL=${cfg.turnUrl}"
         ];
 
         NoNewPrivileges = true;
@@ -156,6 +181,9 @@ in
         # Always load API key from file to avoid leaking it in systemd environment
         ExecStart = "${pkgs.writeShellScript "start-excalishare" ''
           export API_KEY="$(cat ${cfg.apiKeyFile})"
+          ${lib.optionalString (cfg.turnSecretFile != null) ''
+            export TURN_SECRET="$(cat ${cfg.turnSecretFile})"
+          ''}
           exec ${cfg.package}/bin/excalishare
         ''}";
 

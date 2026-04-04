@@ -1,9 +1,14 @@
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
+    response::IntoResponse,
     Json,
 };
+use base64::{engine::general_purpose, Engine as _};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha1::Sha1;
+use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
@@ -18,6 +23,9 @@ pub struct AppState {
     pub base_url: String,
     pub session_manager: SessionManager,
     pub api_key: String,
+    pub stun_url: Option<String>,
+    pub turn_url: Option<String>,
+    pub turn_secret: Option<String>,
 }
 
 
@@ -769,4 +777,49 @@ pub async fn activate_persistent_collab(
         session_id,
         password_required: password_hash.is_some(),
     }))
+}
+
+// ──────────────────────────────────────────────
+// ICE Config — returns STUN/TURN server configuration for WebRTC
+// ──────────────────────────────────────────────
+
+/// Returns WebRTC ICE server configuration.
+/// If STUN_URL is configured, includes a STUN server entry.
+/// If TURN_URL and TURN_SECRET are configured, generates HMAC-SHA1 time-limited
+/// credentials (RFC 5766 / coturn compatible) valid for 1 hour.
+pub async fn ice_config_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, AppError> {
+    let mut ice_servers: Vec<serde_json::Value> = Vec::new();
+
+    if let Some(stun_url) = &state.stun_url {
+        ice_servers.push(serde_json::json!({ "urls": stun_url }));
+    }
+
+    if let (Some(turn_url), Some(turn_secret)) = (&state.turn_url, &state.turn_secret) {
+        // Generate HMAC time-limited credentials (coturn compatible)
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600; // Valid for 1 hour
+
+        let username = format!("{}:excalishare", timestamp);
+
+        // HMAC-SHA1 of username with the shared secret
+        type HmacSha1 = Hmac<Sha1>;
+        let mut mac = HmacSha1::new_from_slice(turn_secret.as_bytes())
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        mac.update(username.as_bytes());
+        let credential = general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+
+        ice_servers.push(serde_json::json!({
+            "urls": turn_url,
+            "username": username,
+            "credential": credential,
+            "credentialType": "password"
+        }));
+    }
+
+    Ok(axum::Json(serde_json::json!({ "iceServers": ice_servers })))
 }

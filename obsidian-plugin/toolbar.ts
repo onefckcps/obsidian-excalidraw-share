@@ -65,6 +65,14 @@ export interface ToolbarCallbacks {
   onManualReconnect?: () => void;
   /** Manually trigger a server health check / reconnect */
   onRetryServer?: () => void;
+  /** Start screen sharing (Electron only) */
+  onStartScreenShare?: () => Promise<void>;
+  /** Stop screen sharing */
+  onStopScreenShare?: () => void;
+  /** Returns whether the local user is currently sharing their screen */
+  isScreenSharing?: () => boolean;
+  /** Returns the active remote sharer info (null if no one is sharing) */
+  activeScreenSharer?: () => { userId: string; name: string } | null;
 }
 
 // ── Selectors for finding Excalidraw's native toolbar ──
@@ -753,6 +761,50 @@ export class ExcaliShareToolbar {
           () => this.wrapAsync(this.callbacks.onStopCollab),
           true, // danger style for the icon
         ));
+
+        // ── Screen Share button ──
+        if (this.callbacks.onStartScreenShare || this.callbacks.onStopScreenShare) {
+          const isSharing = this.callbacks.isScreenSharing?.() ?? false;
+          const activeSharer = this.callbacks.activeScreenSharer?.();
+
+          const screenShareBtn = document.createElement('button');
+          applyStyles(screenShareBtn, styles.actionButton);
+
+          if (isSharing) {
+            // Currently sharing — show stop button
+            applyStyles(screenShareBtn, styles.dangerButton);
+            const iconSpan = document.createElement('span');
+            iconSpan.textContent = '🔴';
+            iconSpan.style.marginRight = '6px';
+            screenShareBtn.appendChild(iconSpan);
+            screenShareBtn.appendChild(document.createTextNode('Stop Sharing'));
+            screenShareBtn.onclick = () => {
+              this.callbacks.onStopScreenShare?.();
+            };
+          } else if (activeSharer) {
+            // Someone else is sharing — show informational button (disabled)
+            const iconSpan = document.createElement('span');
+            iconSpan.textContent = '📺';
+            iconSpan.style.marginRight = '6px';
+            screenShareBtn.appendChild(iconSpan);
+            screenShareBtn.appendChild(document.createTextNode(`${activeSharer.name} is sharing`));
+            screenShareBtn.disabled = true;
+            screenShareBtn.style.opacity = '0.6';
+            screenShareBtn.style.cursor = 'default';
+          } else {
+            // No one sharing — show start button
+            const iconSpan = document.createElement('span');
+            iconSpan.textContent = '📺';
+            iconSpan.style.marginRight = '6px';
+            screenShareBtn.appendChild(iconSpan);
+            screenShareBtn.appendChild(document.createTextNode('Share Screen'));
+            screenShareBtn.onclick = () => {
+              this.wrapAsync(this.callbacks.onStartScreenShare!);
+            };
+          }
+
+          panel.appendChild(screenShareBtn);
+        }
 
         panel.appendChild(this.createActionButton(
           ICONS.externalLink,

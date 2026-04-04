@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -38,6 +38,18 @@ pub enum ClientMessage {
     },
     FilesUpdate {
         files: serde_json::Value,
+    },
+    ScreenShareStart,
+    ScreenShareStop,
+    RtcSignal {
+        target_user_id: String,
+        /// { type: "offer"|"answer", sdp: String }
+        signal: serde_json::Value,
+    },
+    RtcIceCandidate {
+        target_user_id: String,
+        /// RTCIceCandidateInit
+        candidate: serde_json::Value,
     },
 }
 
@@ -107,6 +119,25 @@ pub enum ServerMessage {
     Error {
         message: String,
     },
+    ScreenShareStarted {
+        #[serde(rename = "userId")]
+        user_id: String,
+        name: String,
+    },
+    ScreenShareStopped {
+        #[serde(rename = "userId")]
+        user_id: String,
+    },
+    RtcSignal {
+        #[serde(rename = "fromUserId")]
+        from_user_id: String,
+        signal: serde_json::Value,
+    },
+    RtcIceCandidate {
+        #[serde(rename = "fromUserId")]
+        from_user_id: String,
+        candidate: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +191,10 @@ pub struct CollabSession {
     pub persistent_version: u64,
     /// Whether the session has unsaved changes since last disk flush
     pub persistent_dirty: bool,
+    /// User ID of the participant currently sharing their screen (None if nobody is sharing)
+    pub screen_sharer: Option<String>,
+    /// Per-user sender channels for targeted WebRTC signaling messages
+    pub user_senders: HashMap<String, mpsc::UnboundedSender<ServerMessage>>,
 }
 
 impl CollabSession {
@@ -296,6 +331,8 @@ impl SessionManager {
             last_activity: Utc::now(),
             persistent_version: 0,
             persistent_dirty: false,
+            screen_sharer: None,
+            user_senders: HashMap::new(),
         };
 
         drawing_sessions.insert(drawing_id.to_string(), session_id.clone());
@@ -390,6 +427,8 @@ impl SessionManager {
             last_activity: Utc::now(),
             persistent_version,
             persistent_dirty: false,
+            screen_sharer: None,
+            user_senders: HashMap::new(),
         };
 
         drawing_sessions.insert(drawing_id.to_string(), session_id.clone());
@@ -602,6 +641,17 @@ impl SessionManager {
                 .unwrap_or_default();
 
             session.participants.remove(user_id);
+
+            // Auto-stop screen share if the leaving user was the sharer
+            if session.screen_sharer.as_deref() == Some(user_id) {
+                session.screen_sharer = None;
+                let _ = session.broadcast_tx.send(ServerMessage::ScreenShareStopped {
+                    user_id: user_id.to_string(),
+                });
+            }
+
+            // Clean up the user's per-user sender channel to prevent memory leaks
+            session.user_senders.remove(user_id);
 
             let leave_msg = ServerMessage::UserLeft {
                 user_id: user_id.to_string(),
@@ -943,6 +993,99 @@ impl SessionManager {
     ) -> Option<broadcast::Sender<ServerMessage>> {
         let sessions = self.sessions.read().await;
         sessions.get(session_id).map(|s| s.broadcast_tx.clone())
+    }
+
+    /// Register a per-user sender channel for targeted signaling messages.
+    /// Returns the receiver end that the WS handler should listen on.
+    /// Returns None if the session doesn't exist (graceful degradation).
+    pub async fn register_user_sender(
+        &self,
+        session_id: &str,
+        user_id: &str,
+    ) -> Option<mpsc::UnboundedReceiver<ServerMessage>> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions.get_mut(session_id)?;
+        let (tx, rx) = mpsc::unbounded_channel();
+        session.user_senders.insert(user_id.to_string(), tx);
+        Some(rx)
+    }
+
+    /// Send a targeted message to a specific user in a session.
+    pub async fn send_to_user(
+        &self,
+        session_id: &str,
+        target_user_id: &str,
+        message: ServerMessage,
+    ) -> Result<(), AppError> {
+        let sessions = self.sessions.read().await;
+        let session = sessions.get(session_id).ok_or(AppError::SessionNotFound)?;
+        let sender = session
+            .user_senders
+            .get(target_user_id)
+            .ok_or(AppError::SessionNotFound)?;
+        sender.send(message).map_err(|_| AppError::SessionNotFound)
+    }
+
+    /// Start screen sharing for a user. Broadcasts ScreenShareStarted to all.
+    pub async fn start_screen_share(
+        &self,
+        session_id: &str,
+        user_id: &str,
+    ) -> Result<(), AppError> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or(AppError::SessionNotFound)?;
+
+        let name = session
+            .participants
+            .get(user_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        session.screen_sharer = Some(user_id.to_string());
+
+        let _ = session.broadcast_tx.send(ServerMessage::ScreenShareStarted {
+            user_id: user_id.to_string(),
+            name,
+        });
+
+        tracing::info!(
+            session_id = %session_id,
+            user_id = %user_id,
+            "Screen share started"
+        );
+
+        Ok(())
+    }
+
+    /// Stop screen sharing for a user. Broadcasts ScreenShareStopped to all.
+    pub async fn stop_screen_share(
+        &self,
+        session_id: &str,
+        user_id: &str,
+    ) -> Result<(), AppError> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or(AppError::SessionNotFound)?;
+
+        // Only clear if this user is actually the current sharer
+        if session.screen_sharer.as_deref() == Some(user_id) {
+            session.screen_sharer = None;
+        }
+
+        let _ = session.broadcast_tx.send(ServerMessage::ScreenShareStopped {
+            user_id: user_id.to_string(),
+        });
+
+        tracing::info!(
+            session_id = %session_id,
+            user_id = %user_id,
+            "Screen share stopped"
+        );
+
+        Ok(())
     }
 
     /// List all active sessions (for admin).

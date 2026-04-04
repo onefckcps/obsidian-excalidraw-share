@@ -459,6 +459,22 @@ export class CollabClient {
     this._send({ type: 'set_name', name });
   }
 
+  sendScreenShareStart(): void {
+    this._send({ type: 'screen_share_start' });
+  }
+
+  sendScreenShareStop(): void {
+    this._send({ type: 'screen_share_stop' });
+  }
+
+  sendRtcSignal(targetUserId: string, signal: { type: 'offer' | 'answer'; sdp: string }): void {
+    this._send({ type: 'rtc_signal', targetUserId, signal });
+  }
+
+  sendRtcIceCandidate(targetUserId: string, candidate: RTCIceCandidateInit): void {
+    this._send({ type: 'rtc_ice_candidate', targetUserId, candidate });
+  }
+
   private _send(msg: ClientMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));

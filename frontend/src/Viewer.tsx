@@ -11,6 +11,7 @@ import { useMediaQuery } from './hooks/useMediaQuery'
 import { useOnlineStatus } from './hooks/useOnlineStatus'
 import CollabStatus from './CollabStatus'
 import CollabPopover from './CollabPopover'
+import ScreenShareOverlay from './ScreenShareOverlay'
 import AboutModal from './AboutModal'
 import PasswordDialog from './PasswordDialog'
 import DrawingsBrowser from './DrawingsBrowser'
@@ -58,6 +59,7 @@ function Viewer() {
    * in-progress freedraw strokes from being broadcast during two-finger pan/pinch. */
   const activeTouchCountRef = useRef(0)
   const [showCollabPopover, setShowCollabPopover] = useState(false)
+  const [showScreenShareOverlay, setShowScreenShareOverlay] = useState(false)
   const [passwordRequired, setPasswordRequired] = useState(false)
   const [passwordError, setPasswordError] = useState<string | null>(null)
   // Store the password used to successfully load a password-protected drawing,
@@ -81,6 +83,20 @@ function Viewer() {
 
   // Collaboration hook
   const collab = useCollab({ drawingId: id, excalidrawAPI })
+
+  // Auto-show screen share overlay when a remote stream arrives
+  useEffect(() => {
+    if (collab.screenShare.remoteStream) {
+      setShowScreenShareOverlay(true)
+    }
+  }, [collab.screenShare.remoteStream])
+
+  // Auto-hide screen share overlay when the active sharer leaves
+  useEffect(() => {
+    if (!collab.screenShare.activeSharer) {
+      setShowScreenShareOverlay(false)
+    }
+  }, [collab.screenShare.activeSharer])
 
   // Preload drawings list on mount
   useEffect(() => {
@@ -824,6 +840,30 @@ function Viewer() {
           collabBtn.appendChild(dot)
           collabBtn.onclick = () => setShowCollabPopover((prev: boolean) => !prev)
           container.append(collabBtn)
+
+          // Screen share button — only when joined to a session
+          const screenShareBtn = document.createElement('button')
+          const isScreenSharing = collab.screenShare.isSharing
+          const hasActiveSharer = !!collab.screenShare.activeSharer
+          screenShareBtn.textContent = '📺'
+          screenShareBtn.title = isScreenSharing
+            ? 'Stop sharing'
+            : hasActiveSharer ? 'View screen share'
+            : 'Share screen'
+          screenShareBtn.style.cssText = getPhoneButtonStyle(
+            isScreenSharing || hasActiveSharer,
+            isScreenSharing ? '#f44336' : '#4CAF50'
+          )
+          screenShareBtn.onclick = () => {
+            if (isScreenSharing) {
+              collab.screenShare.stopSharing()
+            } else if (hasActiveSharer) {
+              setShowScreenShareOverlay((prev: boolean) => !prev)
+            } else {
+              collab.screenShare.startSharing()
+            }
+          }
+          container.append(screenShareBtn)
         }
 
         toolbar.appendChild(container)
@@ -912,6 +952,33 @@ function Viewer() {
         browseBtn.onclick = () => setShowOverlay(true)
 
         island.append(presentBtn, editBtn, browseBtn)
+
+        // Screen share button — only when joined to a collab session
+        if (collabIsJoined) {
+          const isScreenSharing = collab.screenShare.isSharing
+          const hasActiveSharer = !!collab.screenShare.activeSharer
+          const screenShareBtn = document.createElement('button')
+          screenShareBtn.textContent = '📺'
+          screenShareBtn.title = isScreenSharing
+            ? 'Stop sharing'
+            : hasActiveSharer ? 'View screen share'
+            : 'Share screen'
+          screenShareBtn.style.cssText = getDesktopButtonStyle(
+            isScreenSharing || hasActiveSharer,
+            isScreenSharing ? '#f44336' : '#4CAF50'
+          )
+          screenShareBtn.classList.add('excalishare-btn')
+          screenShareBtn.onclick = () => {
+            if (isScreenSharing) {
+              collab.screenShare.stopSharing()
+            } else if (hasActiveSharer) {
+              setShowScreenShareOverlay((prev: boolean) => !prev)
+            } else {
+              collab.screenShare.startSharing()
+            }
+          }
+          island.appendChild(screenShareBtn)
+        }
 
         // Offline / cached view badge — shown when server is unreachable
         if (currentIsCachedView || !currentIsOnline) {
@@ -1130,7 +1197,7 @@ function Viewer() {
       if (observer) observer.disconnect()
       document.querySelectorAll(`.${containerClass}`).forEach(el => el.remove())
     }
-  }, [breakpoint, isPhone, isExcalidrawMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData, collab.isJoined, collab.isPersistentCollab, collab.reconnectState, collab.reconnectAttempt, collab.maxReconnectAttempts, collab.manualReconnect, isCachedView, isOnline, drawingsList, loadingDrawings, navigate, navigateToPrevDrawing, navigateToNextDrawing])
+  }, [breakpoint, isPhone, isExcalidrawMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData, collab.isJoined, collab.isPersistentCollab, collab.reconnectState, collab.reconnectAttempt, collab.maxReconnectAttempts, collab.manualReconnect, isCachedView, isOnline, drawingsList, loadingDrawings, navigate, navigateToPrevDrawing, navigateToNextDrawing, collab.screenShare.isSharing, collab.screenShare.activeSharer, collab.screenShare.startSharing, collab.screenShare.stopSharing])
 
   // Inject ExcaliShare links into Excalidraw help dropdown
   useEffect(() => {
@@ -1486,6 +1553,21 @@ function Viewer() {
             setMobileCollabBottomSheet(value)
             localStorage.setItem('mobileCollabBottomSheet', String(value))
           }}
+          isSharing={collab.screenShare.isSharing}
+          activeSharer={collab.screenShare.activeSharer}
+          onStartSharing={collab.screenShare.startSharing}
+          onStopSharing={collab.screenShare.stopSharing}
+        />
+      )}
+
+      {/* Screen Share Overlay — shown when viewing a remote screen share */}
+      {collab.screenShare.remoteStream && showScreenShareOverlay && (
+        <ScreenShareOverlay
+          theme={theme}
+          stream={collab.screenShare.remoteStream}
+          sharerName={collab.screenShare.activeSharer?.name || 'Unknown'}
+          sharerUserId={collab.screenShare.activeSharer?.userId || ''}
+          onClose={() => setShowScreenShareOverlay(false)}
         />
       )}
 

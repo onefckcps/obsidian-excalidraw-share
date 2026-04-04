@@ -467,6 +467,32 @@ export default class ExcaliSharePlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: 'start-screen-share',
+      name: 'Start Screen Share',
+      callback: async () => {
+        if (!this.collabManager?.isJoined) {
+          new Notice('Not in a collab session.');
+          return;
+        }
+        await this.collabManager.startScreenShare();
+        this.refreshActiveToolbar();
+      },
+    });
+
+    this.addCommand({
+      id: 'stop-screen-share',
+      name: 'Stop Screen Share',
+      callback: () => {
+        if (!this.collabManager?.isJoined) {
+          new Notice('Not in a collab session.');
+          return;
+        }
+        this.collabManager.stopScreenShare();
+        this.refreshActiveToolbar();
+      },
+    });
+
     // ── File Context Menu ──
     this.registerEvent(
       // @ts-ignore
@@ -1324,6 +1350,20 @@ export default class ExcaliSharePlugin extends Plugin {
       onRetryServer: () => {
         this.checkServerHealth();
       },
+      onStartScreenShare: async () => {
+        if (!this.collabManager?.isJoined) {
+          new Notice('Not in a collab session.');
+          return;
+        }
+        await this.collabManager.startScreenShare();
+        this.refreshActiveToolbar();
+      },
+      onStopScreenShare: () => {
+        this.collabManager?.stopScreenShare();
+        this.refreshActiveToolbar();
+      },
+      isScreenSharing: () => this.collabManager?.isScreenSharing ?? false,
+      activeScreenSharer: () => this.collabManager?.screenShareActiveSharer ?? null,
     };
 
     return new ExcaliShareToolbar(
@@ -2217,6 +2257,7 @@ export default class ExcaliSharePlugin extends Plugin {
       this.collabManager = new CollabManager({
         baseUrl: this.settings.baseUrl,
         displayName: this.settings.collabDisplayName || 'Host',
+        app: this.app,
         getExcalidrawAPI: () => {
           try {
             const plugin = this.getExcalidrawPlugin();

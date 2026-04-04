@@ -14,7 +14,7 @@
 // - Status notifications
 // ──────────────────────────────────────────────
 
-import { Notice } from 'obsidian';
+import { App, Notice } from 'obsidian';
 import { CollabClient } from './collabClient';
 import type {
   CollaboratorInfo,
@@ -24,6 +24,7 @@ import type {
   ServerMessage,
 } from './collabTypes';
 import { getCollaboratorColor } from './collabTypes';
+import { ScreenShareManager, ScreenShareViewerModal } from './screenShare';
 
 export interface CollabManagerCallbacks {
   /** Called when the participant list changes */
@@ -52,6 +53,17 @@ export class CollabManager {
   private baseUrl: string;
   private displayName: string;
   private callbacks: CollabManagerCallbacks;
+  /** Obsidian App instance (needed for screen share modals) */
+  private app: App | null = null;
+  /** The current user's server-assigned userId (derived from snapshot by matching displayName) */
+  private ownUserId: string | null = null;
+  /** API key stored for use by ScreenShareManager ICE config fetching */
+  private apiKey: string | null = null;
+
+  // ── Screen Share ──
+  private screenShareManager: ScreenShareManager | null = null;
+  private screenShareViewerModal: ScreenShareViewerModal | null = null;
+  private activeSharer: { userId: string; name: string } | null = null;
 
   // ── Excalidraw API ──
   private getExcalidrawAPIFn: () => ExcalidrawAPI | null;
@@ -135,12 +147,15 @@ export class CollabManager {
     callbacks?: CollabManagerCallbacks;
     /** Optional: function to find the Excalidraw canvas container element for pointer tracking */
     getCanvasContainer?: () => HTMLElement | null;
+    /** Optional: Obsidian App instance (required for screen share modals) */
+    app?: App;
   }) {
     this.baseUrl = options.baseUrl;
     this.displayName = options.displayName;
     this.getExcalidrawAPIFn = options.getExcalidrawAPI;
     this.callbacks = options.callbacks || {};
     this.getCanvasContainerFn = options.getCanvasContainer || null;
+    this.app = options.app || null;
   }
 
   // ──────────────────────────────────────────────
@@ -210,11 +225,37 @@ export class CollabManager {
 
     this.drawingId = drawingId;
     this.sessionId = sessionId;
+    this.apiKey = apiKey ?? null;
 
     // Cache the API reference once at join time
     this.cachedAPI = this.getExcalidrawAPIFn();
 
     const client = new CollabClient(this.baseUrl, sessionId, this.displayName, password, apiKey, persistentMode ?? false);
+
+    // ── Create ScreenShareManager ──
+    if (this.app) {
+      this.screenShareManager = new ScreenShareManager(this.app, client, this.baseUrl, this.apiKey ?? '', {
+        onRemoteStream: (stream: MediaStream, sharerUserId: string, sharerName: string) => {
+          // Show or update the viewer modal
+          if (this.screenShareViewerModal) {
+            this.screenShareViewerModal.updateStream(stream);
+          } else {
+            this.screenShareViewerModal = new ScreenShareViewerModal(this.app!, stream, sharerName);
+            this.screenShareViewerModal.open();
+          }
+        },
+        onRemoteStreamEnded: () => {
+          this.screenShareViewerModal?.close();
+          this.screenShareViewerModal = null;
+        },
+        onSharingStarted: () => {
+          // Toolbar will be updated via onConnectionChanged callback
+        },
+        onSharingStopped: () => {
+          // Toolbar will be updated via onConnectionChanged callback
+        },
+      });
+    }
 
     // ── Register message handlers ──
 
@@ -326,6 +367,39 @@ export class CollabManager {
       new Notice(`ExcaliShare Collab error: ${msg.message}`);
     });
 
+    client.on('screen_share_started', (msg: ServerMessage) => {
+      if (msg.type !== 'screen_share_started') return;
+      this.activeSharer = { userId: msg.userId, name: msg.name };
+
+      // If we're not the sharer, initiate WebRTC as viewer
+      if (msg.userId !== this.ownUserId) {
+        this.screenShareManager?.onRemoteShareStarted(msg.userId, msg.name);
+        new Notice(`${msg.name} started sharing their screen.`);
+      }
+    });
+
+    client.on('screen_share_stopped', (msg: ServerMessage) => {
+      if (msg.type !== 'screen_share_stopped') return;
+      this.activeSharer = null;
+
+      if (msg.userId !== this.ownUserId) {
+        this.screenShareManager?.onRemoteShareStopped();
+        this.screenShareViewerModal?.close();
+        this.screenShareViewerModal = null;
+        new Notice('Screen sharing ended.');
+      }
+    });
+
+    client.on('rtc_signal', (msg: ServerMessage) => {
+      if (msg.type !== 'rtc_signal') return;
+      this.screenShareManager?.onRtcSignal(msg.fromUserId, msg.signal);
+    });
+
+    client.on('rtc_ice_candidate', (msg: ServerMessage) => {
+      if (msg.type !== 'rtc_ice_candidate') return;
+      this.screenShareManager?.onRtcIceCandidate(msg.fromUserId, msg.candidate);
+    });
+
     this.client = client;
     client.connect();
   }
@@ -340,12 +414,55 @@ export class CollabManager {
     }
   }
 
+  // ──────────────────────────────────────────────
+  // Screen Share Public API
+  // ──────────────────────────────────────────────
+
+  /**
+   * Start sharing the screen (shows Electron source picker).
+   */
+  async startScreenShare(): Promise<void> {
+    if (!this.screenShareManager) {
+      new Notice('Screen sharing is not available. Make sure you are in a collab session.');
+      return;
+    }
+    await this.screenShareManager.startSharing();
+  }
+
+  /**
+   * Stop sharing the screen.
+   */
+  stopScreenShare(): void {
+    this.screenShareManager?.stopSharing();
+  }
+
+  /**
+   * Whether the local user is currently sharing their screen.
+   */
+  get isScreenSharing(): boolean {
+    return this.screenShareManager?.sharing ?? false;
+  }
+
+  /**
+   * The active remote sharer (null if no one is sharing).
+   */
+  get screenShareActiveSharer(): { userId: string; name: string } | null {
+    return this.activeSharer;
+  }
+
   /**
    * Disconnect from the collab session and clean up.
    */
   leave(): void {
     this.stopChangeDetection();
     this.stopFlushTimer();
+
+    // Clean up screen share
+    this.screenShareManager?.destroy();
+    this.screenShareManager = null;
+    this.screenShareViewerModal?.close();
+    this.screenShareViewerModal = null;
+    this.activeSharer = null;
 
     if (this.client) {
       this.client.disconnect();
@@ -367,6 +484,7 @@ export class CollabManager {
     this._hasJoinedOnce = false;
     this.sessionId = null;
     this.drawingId = null;
+    this.ownUserId = null;
     this.collaborators = [];
     this.collaboratorMap.clear();
     this.lastKnownVersions.clear();
@@ -467,6 +585,14 @@ export class CollabManager {
     // Update collaborator list
     this.collaborators = msg.collaborators;
     this.buildCollaboratorMap(msg.collaborators);
+
+    // Derive our own userId by matching displayName in the collaborators list
+    if (!this.ownUserId) {
+      const selfCollab = msg.collaborators.find(c => c.name === this.displayName);
+      if (selfCollab) {
+        this.ownUserId = selfCollab.id;
+      }
+    }
 
     // Apply snapshot to Excalidraw (always apply snapshots immediately, even during drawing)
     this.isApplyingRemoteUpdate = true;
