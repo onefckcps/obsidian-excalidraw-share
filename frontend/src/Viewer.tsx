@@ -89,6 +89,9 @@ function Viewer() {
   // cause the effect to re-run on every render and break button injection).
   const screenShareRef = useRef(collab.screenShare)
   screenShareRef.current = collab.screenShare
+  // Derived primitive boolean for dependency array — triggers toolbar re-injection
+  // when someone starts/stops sharing, without object reference churn.
+  const hasActiveScreenSharer = !!collab.screenShare.activeSharer
 
   // Auto-show screen share overlay when a remote stream arrives
   useEffect(() => {
@@ -1203,11 +1206,12 @@ function Viewer() {
       if (observer) observer.disconnect()
       document.querySelectorAll(`.${containerClass}`).forEach(el => el.remove())
     }
-  // Note: collab.screenShare.activeSharer, .startSharing, .stopSharing are intentionally
+  // Note: collab.screenShare.startSharing, .stopSharing are intentionally
   // excluded from deps — they are accessed via screenShareRef.current inside the effect
   // to avoid object reference churn causing constant re-runs that break button injection.
-  // collab.screenShare.isSharing is a primitive boolean so it's safe to include.
-  }, [breakpoint, isPhone, isExcalidrawMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData, collab.isJoined, collab.isPersistentCollab, collab.reconnectState, collab.reconnectAttempt, collab.maxReconnectAttempts, collab.manualReconnect, isCachedView, isOnline, drawingsList, loadingDrawings, navigate, navigateToPrevDrawing, navigateToNextDrawing, collab.screenShare.isSharing])
+  // collab.screenShare.isSharing and hasActiveScreenSharer are primitive booleans
+  // so they're safe to include and ensure the button updates when sharing state changes.
+  }, [breakpoint, isPhone, isExcalidrawMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData, collab.isJoined, collab.isPersistentCollab, collab.reconnectState, collab.reconnectAttempt, collab.maxReconnectAttempts, collab.manualReconnect, isCachedView, isOnline, drawingsList, loadingDrawings, navigate, navigateToPrevDrawing, navigateToNextDrawing, collab.screenShare.isSharing, hasActiveScreenSharer])
 
   // Inject ExcaliShare links into Excalidraw help dropdown
   useEffect(() => {

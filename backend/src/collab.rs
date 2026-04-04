@@ -42,11 +42,13 @@ pub enum ClientMessage {
     ScreenShareStart,
     ScreenShareStop,
     RtcSignal {
+        #[serde(rename = "targetUserId")]
         target_user_id: String,
         /// { type: "offer"|"answer", sdp: String }
         signal: serde_json::Value,
     },
     RtcIceCandidate {
+        #[serde(rename = "targetUserId")]
         target_user_id: String,
         /// RTCIceCandidateInit
         candidate: serde_json::Value,

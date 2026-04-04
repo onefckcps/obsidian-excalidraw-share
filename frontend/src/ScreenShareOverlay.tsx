@@ -61,7 +61,19 @@ function ScreenShareOverlay({
   useEffect(() => {
     const video = videoRef.current;
     if (video) {
+      const tracks = stream.getVideoTracks();
+      console.log('[ScreenShareOverlay] Attaching stream with', tracks.length, 'video tracks');
+      tracks.forEach((t, i) => {
+        console.log(`[ScreenShareOverlay] Track ${i}: enabled=${t.enabled}, muted=${t.muted}, readyState=${t.readyState}, settings=`, t.getSettings());
+      });
       video.srcObject = stream;
+      // Ensure playback starts — some browsers ignore autoPlay for WebRTC streams
+      video.play().catch((err) => {
+        console.warn('[ScreenShareOverlay] play() failed:', err);
+      });
+      video.onloadedmetadata = () => {
+        console.log('[ScreenShareOverlay] Video metadata loaded:', video.videoWidth, 'x', video.videoHeight);
+      };
     }
     return () => {
       if (video) {

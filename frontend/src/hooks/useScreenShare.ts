@@ -80,10 +80,14 @@ export function useScreenShare(
 
   // Handle incoming server messages related to screen sharing
   const handleServerMessage = useCallback((msg: ServerMessage) => {
-    if (!managerRef.current) return;
+    if (!managerRef.current) {
+      console.warn('[ScreenShare] handleServerMessage called but managerRef is null, msg type:', msg.type);
+      return;
+    }
 
     switch (msg.type) {
       case 'screen_share_started':
+        console.log('[ScreenShare] screen_share_started from', msg.userId, '(me:', myUserIdRef.current, ')');
         setActiveSharer({ userId: msg.userId, name: msg.name });
         // If we're not the sharer, initiate WebRTC connection as viewer
         if (msg.userId !== myUserIdRef.current) {
@@ -92,6 +96,7 @@ export function useScreenShare(
         break;
 
       case 'screen_share_stopped':
+        console.log('[ScreenShare] screen_share_stopped from', msg.userId);
         setActiveSharer(null);
         if (msg.userId !== myUserIdRef.current) {
           managerRef.current.onRemoteShareStopped();
@@ -99,11 +104,17 @@ export function useScreenShare(
         break;
 
       case 'rtc_signal':
+        console.log('[ScreenShare] rtc_signal from', msg.fromUserId, 'signal type:', msg.signal?.type);
         managerRef.current.onRtcSignal(msg.fromUserId, msg.signal);
         break;
 
       case 'rtc_ice_candidate':
+        console.log('[ScreenShare] rtc_ice_candidate from', msg.fromUserId);
         managerRef.current.onRtcIceCandidate(msg.fromUserId, msg.candidate);
+        break;
+
+      default:
+        // Not a screen share message — ignore
         break;
     }
   }, []);

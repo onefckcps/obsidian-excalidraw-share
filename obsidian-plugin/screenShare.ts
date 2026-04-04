@@ -150,9 +150,16 @@ export class ScreenShareManager {
     this.sharerName = sharerName;
     const pc = await this._createPeerConnection(sharerUserId);
 
-    const offer = await pc.createOffer();
+    // Use offerToReceiveVideo to include a video media line in the offer.
+    const offer = await pc.createOffer({ offerToReceiveVideo: true });
     await pc.setLocalDescription(offer);
-    this.client.sendRtcSignal(sharerUserId, { type: 'offer', sdp: offer.sdp! });
+
+    // Wait for ICE gathering to complete so the SDP contains all ICE candidates.
+    // Without this, the offer SDP has 0 candidates and the peer can't establish connectivity.
+    await this._waitForIceGathering(pc);
+
+    const sdp = pc.localDescription!.sdp;
+    this.client.sendRtcSignal(sharerUserId, { type: 'offer', sdp });
   }
 
   /**
@@ -173,15 +180,24 @@ export class ScreenShareManager {
       // We are the sharer — a viewer sent us an offer
       const pc = await this._createPeerConnection(fromUserId);
 
+      // Set remote description FIRST so the browser knows about the offer's media lines,
+      // then add our local tracks so they're properly associated with the transceivers.
+      await pc.setRemoteDescription(new RTCSessionDescription(signal));
+
       // Add our local tracks to the connection
       this.localStream?.getTracks().forEach(track => {
         pc.addTrack(track, this.localStream!);
       });
 
-      await pc.setRemoteDescription(new RTCSessionDescription(signal));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      this.client.sendRtcSignal(fromUserId, { type: 'answer', sdp: answer.sdp! });
+
+      // Wait for ICE gathering to complete so the SDP contains all ICE candidates.
+      // Without this, the answer SDP has 0 candidates and the peer can't establish connectivity.
+      await this._waitForIceGathering(pc);
+
+      const sdp = pc.localDescription!.sdp;
+      this.client.sendRtcSignal(fromUserId, { type: 'answer', sdp });
     } else if (signal.type === 'answer') {
       // We are the viewer — the sharer sent us an answer
       const pc = this.peerConnections.get(fromUserId);
@@ -203,6 +219,33 @@ export class ScreenShareManager {
         // Ignore ICE errors during renegotiation
       }
     }
+  }
+
+  /**
+   * Wait for ICE gathering to complete on a peer connection.
+   * After setLocalDescription, the browser starts gathering ICE candidates.
+   * We need to wait until gathering is complete so that pc.localDescription.sdp
+   * contains all candidates (vanilla ICE). Without this, the SDP is sent with
+   * 0 candidates and the remote peer can't establish connectivity.
+   */
+  private _waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
+    if (pc.iceGatheringState === 'complete') {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        console.warn('[ExcaliShare ScreenShare] ICE gathering timed out after 5s, sending SDP anyway');
+        resolve();
+      }, 5000);
+
+      pc.addEventListener('icegatheringstatechange', function onGatheringChange() {
+        if (pc.iceGatheringState === 'complete') {
+          pc.removeEventListener('icegatheringstatechange', onGatheringChange);
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
   }
 
   private async _createPeerConnection(peerId: string): Promise<RTCPeerConnection> {
