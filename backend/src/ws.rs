@@ -135,7 +135,7 @@ async fn handle_ws_connection(
     );
 
     // Join the session
-    let (mut broadcast_rx, snapshot) = match session_manager
+    let (mut broadcast_rx, snapshot, screen_share_msg) = match session_manager
         .join_session(&session_id, &user_id, &name)
         .await
     {
@@ -170,6 +170,17 @@ async fn handle_ws_connection(
         if ws_sender.send(Message::Text(json.into())).await.is_err() {
             session_manager.leave_session(&session_id, &user_id).await;
             return;
+        }
+    }
+
+    // If someone is currently sharing their screen, notify the new user
+    // so they can initiate a WebRTC connection to receive the stream.
+    if let Some(ss_msg) = screen_share_msg {
+        if let Ok(json) = serde_json::to_string(&ss_msg) {
+            if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                session_manager.leave_session(&session_id, &user_id).await;
+                return;
+            }
         }
     }
 

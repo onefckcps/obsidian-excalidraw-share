@@ -570,7 +570,8 @@ impl SessionManager {
         }
     }
 
-    /// Add a participant to a session. Returns the broadcast receiver and snapshot data.
+    /// Add a participant to a session. Returns the broadcast receiver, snapshot data,
+    /// and optionally a ScreenShareStarted message if someone is currently sharing.
     pub async fn join_session(
         &self,
         session_id: &str,
@@ -580,6 +581,7 @@ impl SessionManager {
         (
             broadcast::Receiver<ServerMessage>,
             ServerMessage,
+            Option<ServerMessage>,
         ),
         AppError,
     > {
@@ -612,6 +614,17 @@ impl SessionManager {
             collaborators: session.collaborator_list(),
         };
 
+        // If someone is currently sharing their screen, prepare a ScreenShareStarted
+        // message for the new user so they can initiate a WebRTC connection.
+        let screen_share_msg = session.screen_sharer.as_ref().and_then(|sharer_id| {
+            session.participants.get(sharer_id).map(|p| {
+                ServerMessage::ScreenShareStarted {
+                    user_id: sharer_id.clone(),
+                    name: p.name.clone(),
+                }
+            })
+        });
+
         let rx = session.broadcast_tx.subscribe();
 
         // Notify others about the new participant
@@ -629,7 +642,7 @@ impl SessionManager {
             "Participant joined collab session"
         );
 
-        Ok((rx, snapshot))
+        Ok((rx, snapshot, screen_share_msg))
     }
 
     /// Remove a participant from a session.

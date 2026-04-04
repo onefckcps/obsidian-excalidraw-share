@@ -215,13 +215,6 @@ export class ScreenShareManager {
       }
     };
 
-    pc.oniceconnectionstatechange = () => {
-      console.log('[ScreenShare] ICE connection state:', pc.iceConnectionState, 'for peer', peerId);
-    };
-
-    pc.onsignalingstatechange = () => {
-      console.log('[ScreenShare] Signaling state:', pc.signalingState, 'for peer', peerId);
-    };
 
     return pc;
   }
