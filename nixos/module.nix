@@ -116,7 +116,7 @@ in
     ];
 
     # -------------------------------------------------------------------------
-    # 3. Frontend kopieren (einmalig bei Aktivierung)
+    # 3. Frontend kopieren (bei jeder Aktivierung)
     # -------------------------------------------------------------------------
     systemd.services.excalishare-setup = {
       description = "ExcaliShare - Setup (copy frontend)";
@@ -124,14 +124,18 @@ in
       after = [ "network.target" ];
       serviceConfig = {
         Type = "oneshot";
-        RemainAfterExit = true;
+        # NOTE: RemainAfterExit is intentionally NOT set here.
+        # With RemainAfterExit = true, systemd considers the service "active" after
+        # the first run and will NOT re-run it on subsequent nixos-rebuild switch,
+        # meaning frontend updates are never deployed. Without it, the service
+        # re-runs on every activation, which is correct since the script is idempotent.
         User = "root";
       };
       script = ''
         ${lib.optionalString (cfg.frontendSource != null) ''
           if [ -d "${cfg.frontendSource}" ]; then
             rm -rf ${cfg.dataDir}/frontend
-            cp -r ${cfg.frontendSource} ${cfg.dataDir}/frontend
+            cp -r "${cfg.frontendSource}" ${cfg.dataDir}/frontend
             chown -R excalishare:excalishare ${cfg.dataDir}/frontend
           fi
         ''}

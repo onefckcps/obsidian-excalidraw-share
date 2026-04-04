@@ -670,15 +670,6 @@ function Viewer() {
     const containerClass = 'excalishare-toolbar'
     let observer: MutationObserver | null = null
     const collabIsJoined = collab.isJoined
-    // DIAGNOSTIC: log every time the toolbar injection effect runs and what collab state it sees
-    console.log('[ExcaliShare] toolbar injection effect fired', {
-      collabIsJoined,
-      'collab.screenShare.isSharing': collab.screenShare.isSharing,
-      mode: currentMode,
-      breakpoint,
-      isPhone,
-      isExcalidrawMobile,
-    })
     const collabIsPersistent = collab.isPersistentCollab
     const collabReconnectState = collab.reconnectState
     const collabReconnectAttempt = collab.reconnectAttempt
