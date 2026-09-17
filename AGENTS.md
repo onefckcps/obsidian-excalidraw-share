@@ -30,13 +30,13 @@ Allow users to publish Excalidraw drawings from Obsidian to a self-hosted server
 
 ### Technical Stack
 - **Backend**: Rust, Axum 0.8, Tokio, Serde, tower-http, tower_governor (rate limiting)
-- **Frontend**: React 18, TypeScript, Vite 8, Excalidraw 0.17.6, react-router-dom 6, vite-plugin-pwa
+- **Frontend**: React 18, TypeScript, Vite 8, Excalidraw 0.18.1 (`@next 0.18.0-c0ad61c`), react-router-dom 6, vite-plugin-pwa
 - **Plugin**: TypeScript, Obsidian API, esbuild
 - **Infrastructure**: NixOS module, systemd service, Nix flake dev shell
 
 ### Version
 - Backend: 1.0.1
-- Frontend: 1.0.1
+- Frontend: 1.1.0
 - Plugin manifest ID: `excalishare`
 
 ---
@@ -404,7 +404,7 @@ interface ExcaliShareSettings {
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `@excalidraw/excalidraw` | ^0.17.6 | Drawing canvas component |
+| `@excalidraw/excalidraw` | `@next 0.18.0-c0ad61c` (pinned) | Drawing canvas component |
 | `react` | ^18.3.1 | UI framework |
 | `react-dom` | ^18.3.1 | React DOM renderer |
 | `react-router-dom` | ^6.26.0 | Client-side routing |
@@ -495,8 +495,10 @@ export default Component
   - `phone` ≤ 1140px — toolbar injection mode; `renderTopRightUI` returns null; collab button in toolbar
   - `tablet` 1141–1400px — compact toolbar Island; green dot for "Collaborative"
   - `desktop` > 1400px — full toolbar Island; "Collaborative" text badge
-- **Excalidraw's mobile breakpoint** is patched to 987px (was 730px hardcoded in library) via `frontend/patch-excalidraw.sh` — at ≤987px Excalidraw shows the bottom toolbar (`.App-toolbar-content`); at >987px it shows the top toolbar (`.App-toolbar-container`)
+- **Excalidraw's mobile breakpoint** is patched to 987px via `frontend/patch-excalidraw.sh` — in `@next` the phone cutoff lives in `@excalidraw/common` (`MQ_MAX_MOBILE`, default 599), patched there too — at ≤987px Excalidraw shows the mobile bottom toolbar (`.mobile-toolbar`); at >987px it shows the top toolbar (`.App-toolbar-container`)
 - `isExcalidrawMobile` (987px check) determines which DOM element to inject buttons into
+- **Toolbar injection anchors (@next)**: In view mode (`viewModeEnabled=true`) Excalidraw unmounts both `.App-toolbar-container` (desktop) and `.mobile-toolbar` (phone bottom bar). Desktop falls back to `.layer-ui__wrapper__top-right` (always rendered, children get `pointer-events:auto`); mobile falls back to `.App-toolbar-content` (top bar). Present mode (zen) hides all toolbar containers via CSS transform, so present controls are rendered as a fixed-position overlay on `document.body`.
+- **Do NOT use the `@next` `interaction` prop for view mode** — internally it forces `viewModeEnabled=true`, which unmounts the desktop toolbar container and breaks injection anchors.
 - `isPhone` (1140px check) determines UI behavior (collab button placement, renderTopRightUI)
 
 **Caching**
@@ -1139,7 +1141,7 @@ Fixes applied:
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)
 - Persistent collab sessions are **auto-recreated from disk** on first visitor after server restart
-- Frontend uses **Excalidraw 0.17.6** — specific version pinned for API compatibility
+- Frontend uses **Excalidraw @next `0.18.0-c0ad61c`** (pinned, pre-release of the next stable) — brings the major render-performance rework (`UIAppState` no longer re-renders on zoom/pointer-frame; `interaction`/`ui` props, `onExcalidrawAPI` rename) and matches the scene schema of obsidian-excalidraw-plugin 2.27.0 (sticky notes, new arrowheads)
 - Plugin uses `requestUrl` from Obsidian API (not `fetch`) for cross-platform compatibility
 - Drawing IDs stored in Obsidian frontmatter (`excalishare-id`)
 

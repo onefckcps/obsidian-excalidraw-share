@@ -67,5 +67,18 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    proxy: {
+      // Proxy API + WebSocket to the Rust backend during development.
+      // Without this, /api/* hits the SPA fallback (index.html) and breaks
+      // res.json() with "JSON.parse: unexpected character" (parses HTML).
+      '/api': {
+        target: 'http://localhost:8184',
+        changeOrigin: true,
+      },
+      '/ws': {
+        target: 'ws://localhost:8184',
+        ws: true,
+      },
+    },
   },
 })

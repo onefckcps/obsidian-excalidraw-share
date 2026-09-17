@@ -76,8 +76,8 @@ function Viewer() {
 
   const breakpoint = useBreakpoint()
   const isPhone = breakpoint === 'phone'
-  // Excalidraw's mobile breakpoint — patched to 987px (was 730px).
-  // At ≤987px Excalidraw renders MobileMenu with the bottom toolbar (.App-toolbar-content).
+  // Excalidraw's mobile breakpoint — patched to 987px (was 599px in @excalidraw/common).
+  // At ≤987px Excalidraw renders MobileMenu with the bottom toolbar (.mobile-toolbar).
   // At >987px it renders the desktop toolbar (.App-toolbar-container).
   const isExcalidrawMobile = useMediaQuery('(max-width: 987px)')
 
@@ -148,6 +148,8 @@ function Viewer() {
   useEffect(() => {
     if (!id) return
 
+    console.log('[ExcaliShare DEBUG] Main fetch useEffect fired. id=', id, 'fetchDrawing stable=', typeof fetchDrawing)
+
     // Reset password state on ID change
     setPasswordRequired(false)
     setPasswordError(null)
@@ -160,6 +162,7 @@ function Viewer() {
     // Versuche zuerst, das Drawing aus dem Cache zu laden
     const cachedData = drawingCache.get(id)
     if (cachedData) {
+      console.log('[ExcaliShare DEBUG] Drawing found in cache, skipping fetch')
       setSceneData(cachedData)
       setCurrentDataId(id)
       setTheme(cachedData.appState?.theme || 'light')
@@ -168,6 +171,7 @@ function Viewer() {
       return
     }
 
+    console.log('[ExcaliShare DEBUG] Drawing NOT in cache, setting loading=true')
     setLoading(true)
     setIsCachedView(false)
 
@@ -666,7 +670,7 @@ function Viewer() {
   }, [showEditWarning])
 
   // Inject ExcaliShare buttons into Excalidraw's native toolbar (all screen sizes)
-  // ≤987px (isExcalidrawMobile): inject into bottom toolbar (.App-toolbar-content)
+  // ≤987px (isExcalidrawMobile): inject into bottom toolbar (.mobile-toolbar)
   // >987px (tablet/desktop): inject a new Island into the upper toolbar (.App-toolbar-container)
   useEffect(() => {
     const currentMode = mode as string
@@ -731,9 +735,14 @@ function Viewer() {
 
       if (isExcalidrawMobile) {
         // ═══════════════════════════════════════════
-        // EXCALIDRAW MOBILE (≤987px): inject into bottom toolbar
+        // EXCALIDRAW MOBILE (≤987px): inject into toolbar
+        // @next: tool buttons live in `.mobile-toolbar` (bottom bar), but that
+        // bar is unmounted in view mode (guarded by !viewModeEnabled). Fall
+        // back to `.App-toolbar-content` (top bar) which renders in every mode.
         // ═══════════════════════════════════════════
-        const toolbar = document.querySelector('.App-toolbar-content')
+        const toolbar =
+          document.querySelector('.mobile-toolbar') ??
+          document.querySelector('.App-toolbar-content')
         if (!toolbar) return
         if (toolbar.querySelector(`.${containerClass}`)) return
 
@@ -797,7 +806,8 @@ function Viewer() {
         container.style.cssText = `
           display: flex;
           gap: 8px;
-          margin-left: 12px;
+          margin-left: auto;
+          margin-right: 4px;
           padding: 4px 0;
           align-items: center;
         `
@@ -884,27 +894,30 @@ function Viewer() {
         toolbar.appendChild(container)
       } else {
         // ═══════════════════════════════════════════
-        // UPPER TOOLBAR (>987px): inject new Island
+        // DESKTOP/TABLET (>987px)
         // Covers: tablet (988–1400px), desktop (>1400px)
         // ═══════════════════════════════════════════
-        const toolbarContainer = document.querySelector('.App-toolbar-container')
-        if (!toolbarContainer) return
-        if (toolbarContainer.querySelector(`.${containerClass}`)) return
 
-        const island = document.createElement('div')
-        island.className = `Island ${containerClass}`
-        island.style.cssText = `
-          margin-left: 8px;
-          align-self: center;
-          height: fit-content;
-          padding: 4px;
-          display: flex;
-          gap: 4px;
-          align-items: center;
-        `
-
-        // PRESENT MODE on desktop/tablet
+        // PRESENT MODE: fixed overlay on document.body (zen mode hides the
+        // toolbar containers, so we can't inject into them).
         if (currentMode === 'present') {
+          if (document.querySelector(`.${containerClass}`)) return
+          const bar = document.createElement('div')
+          bar.className = `Island ${containerClass}`
+          bar.style.cssText = `
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            z-index: 1000;
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            padding: 6px 10px;
+            background: ${theme === 'dark' ? '#2a2a2a' : '#fff'};
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+          `
+
           const prevBtn = document.createElement('button')
           prevBtn.textContent = '◀'
           prevBtn.title = 'Previous (←)'
@@ -926,19 +939,42 @@ function Viewer() {
           nextBtn.style.cssText = getDesktopButtonStyle(false, '')
           nextBtn.onclick = () => navigateToNextDrawing()
 
-          const divider = document.createElement('div')
-          divider.className = 'App-toolbar__divider'
-
           const exitBtn = document.createElement('button')
           exitBtn.textContent = '✕'
           exitBtn.title = 'Exit present mode'
           exitBtn.style.cssText = getDesktopButtonStyle(false, '')
           exitBtn.onclick = () => setMode('view')
 
-          island.append(prevBtn, counter, nextBtn, divider, exitBtn)
-          toolbarContainer.appendChild(island)
+          bar.append(prevBtn, counter, nextBtn, exitBtn)
+          document.body.appendChild(bar)
           return
         }
+
+        // NON-PRESENT: inject Island into the toolbar container.
+        // @next: in view mode (.App-toolbar-container guarded by
+        // !viewModeEnabled) the toolbar container is unmounted. Fall back to
+        // .layer-ui__wrapper__top-right, which renders in every mode and whose
+        // direct children get pointer-events:auto (so our buttons stay
+        // clickable). .App-menu_top__left is NOT suitable (pointer-events:none).
+        const toolbarContainer =
+          document.querySelector('.App-toolbar-container') ??
+          document.querySelector('.layer-ui__wrapper__top-right')
+        if (!toolbarContainer) return
+        if (toolbarContainer.querySelector(`.${containerClass}`)) return
+
+        const isTopRightFallback = toolbarContainer.classList.contains('layer-ui__wrapper__top-right')
+
+        const island = document.createElement('div')
+        island.className = `Island ${containerClass}`
+        island.style.cssText = `
+          ${isTopRightFallback ? '' : 'margin-left: 8px;'}
+          align-self: center;
+          height: fit-content;
+          padding: 4px;
+          display: flex;
+          gap: 4px;
+          align-items: center;
+        `
 
         // NON-PRESENT MODE
         const presentBtn = document.createElement('button')
@@ -1180,9 +1216,13 @@ function Viewer() {
 
     // Try immediate injection - use rAF for faster execution after paint
     const tryInject = () => {
-      const target = isExcalidrawMobile
-        ? document.querySelector('.App-toolbar-content')
-        : document.querySelector('.App-toolbar-container')
+      const mobileTarget =
+        document.querySelector('.mobile-toolbar') ??
+        document.querySelector('.App-toolbar-content')
+      const desktopTarget =
+        document.querySelector('.App-toolbar-container') ??
+        document.querySelector('.layer-ui__wrapper__top-right')
+      const target = isExcalidrawMobile ? mobileTarget : desktopTarget
       if (target) injectButtons()
     }
 
@@ -1195,28 +1235,70 @@ function Viewer() {
       setTimeout(injectButtons, 300)
     ]
 
-    // MutationObserver to detect when toolbar is added
+    // MutationObserver to detect when toolbar is added/replaced
     observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (node instanceof HTMLElement) {
-            if (node.classList.contains('App-toolbar-content') ||
+            if (node.classList.contains('mobile-toolbar') ||
+                node.classList.contains('App-toolbar-content') ||
                 node.classList.contains('App-toolbar-container') ||
+                node.classList.contains('layer-ui__wrapper__top-right') ||
+                node.querySelector?.('.mobile-toolbar') ||
                 node.querySelector?.('.App-toolbar-content') ||
-                node.querySelector?.('.App-toolbar-container')) {
+                node.querySelector?.('.App-toolbar-container') ||
+                node.querySelector?.('.layer-ui__wrapper__top-right')) {
               injectButtons()
             }
+          }
+        }
+        // Toolbar node itself was removed/replaced (view/zen mode re-render)
+        for (const node of mutation.removedNodes) {
+          if (node instanceof HTMLElement &&
+              (node.classList.contains('mobile-toolbar') ||
+               node.classList.contains('App-toolbar-content') ||
+               node.classList.contains('App-toolbar-container') ||
+               node.classList.contains('layer-ui__wrapper__top-right') ||
+               node.querySelector?.('.mobile-toolbar') ||
+               node.querySelector?.('.App-toolbar-content') ||
+               node.querySelector?.('.App-toolbar-container') ||
+               node.querySelector?.('.layer-ui__wrapper__top-right'))) {
+            injectButtons()
           }
         }
       }
     })
     observer.observe(document.body, { childList: true, subtree: true })
 
+    // Polling fallback: re-inject if our container vanished while the toolbar exists.
+    // Covers cases where @next re-renders the toolbar subtree without childList
+    // mutations we can attribute (e.g. internal re-parenting after the UIAppState
+    // render-perf rework).
+    const pollInterval = setInterval(() => {
+      const toolbar = isExcalidrawMobile
+        ? (document.querySelector('.mobile-toolbar') ??
+           document.querySelector('.App-toolbar-content'))
+        : (document.querySelector('.App-toolbar-container') ??
+           document.querySelector('.layer-ui__wrapper__top-right'))
+      // Re-inject if our container is missing from the LIVE document (an old
+      // reference may still exist but be detached after a mode-switch remount).
+      const ourContainer = document.querySelector(`.${containerClass}`)
+      const containerDetached = ourContainer && !document.contains(ourContainer)
+      if (toolbar && (!ourContainer || containerDetached)) {
+        injectButtons()
+      }
+    }, 200)
+
     return () => {
       cancelAnimationFrame(rAfId)
       timers.forEach(clearTimeout)
+      clearInterval(pollInterval)
       if (observer) observer.disconnect()
-      document.querySelectorAll(`.${containerClass}`).forEach(el => el.remove())
+      // NOTE: intentionally NOT removing .excalishare-toolbar containers here.
+      // On effect re-run (mode/theme change) injectButtons() already removes
+      // stale containers first. Removing them in cleanup would leave a visible
+      // gap between cleanup and re-injection — the buttons would vanish until
+      // the poll interval or observer fires again.
     }
   // Note: collab.screenShare.startSharing, .stopSharing are intentionally
   // excluded from deps — they are accessed via screenShareRef.current inside the effect
@@ -1224,6 +1306,15 @@ function Viewer() {
   // collab.screenShare.isSharing and hasActiveScreenSharer are primitive booleans
   // so they're safe to include and ensure the button updates when sharing state changes.
   }, [breakpoint, isPhone, isExcalidrawMobile, mode, theme, showOverlay, id, loadDrawingsList, loading, sceneData, collab.isJoined, collab.isPersistentCollab, collab.reconnectState, collab.reconnectAttempt, collab.maxReconnectAttempts, collab.manualReconnect, isCachedView, isOnline, drawingsList, loadingDrawings, navigate, navigateToPrevDrawing, navigateToNextDrawing, collab.screenShare.isSharing, hasActiveScreenSharer])
+
+  // Remove our injected containers only on real unmount (e.g. drawing navigation).
+  // Kept separate from the injection effect above so dependency re-runs don't
+  // leave a visible gap.
+  useEffect(() => {
+    return () => {
+      document.querySelectorAll('.excalishare-toolbar').forEach(el => el.remove())
+    }
+  }, [])
 
   // Inject ExcaliShare links into Excalidraw help dropdown
   useEffect(() => {
@@ -1481,7 +1572,7 @@ function Viewer() {
       <style>{spinKeyframes}</style>
       <Excalidraw
         key={id}
-        excalidrawAPI={(api: unknown) => setExcalidrawAPI(api)}
+        onExcalidrawAPI={(api: unknown) => setExcalidrawAPI(api)}
         initialData={{
           elements: sceneData.elements || [],
           appState: {
@@ -1493,8 +1584,16 @@ function Viewer() {
         }}
         onChange={handleExcalidrawChange}
         onPointerUpdate={collab.isJoined ? handlePointerUpdate : undefined}
+        // View/present mode via the classic viewModeEnabled prop.
+        // NOTE: @next's `interaction` prop is NOT usable for our view mode —
+        // internally it forces viewModeEnabled=true, which unmounts the
+        // desktop toolbar (.App-toolbar-container) and leaves our injected
+        // buttons without an anchor.
         viewModeEnabled={collab.isJoined ? false : (mode === 'view' || mode === 'present')}
-        zenModeEnabled={collab.isJoined ? false : mode !== 'edit'}
+        // Zen mode only in present mode. In plain view mode it would translate
+        // the top-right UI wrapper (our injection anchor) 999px off-screen
+        // (.zen-mode-transition.transition-right), hiding our injected buttons.
+        zenModeEnabled={collab.isJoined ? false : mode === 'present'}
         isCollaborating={collab.isJoined}
         theme={theme}
         UIOptions={{

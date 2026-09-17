@@ -9,9 +9,10 @@ export type Breakpoint = 'phone' | 'tablet' | 'desktop';
  * - tablet:  1141–1400px
  * - desktop: > 1400px
  *
- * Note: Excalidraw's mobile breakpoint has been patched to 987px (was 730px).
- * At ≤987px, Excalidraw shows the bottom toolbar (.App-toolbar-content).
- * At >987px, Excalidraw shows the top toolbar (.App-toolbar-container).
+ * Note: Excalidraw's mobile breakpoint has been patched to 987px (was 599px in
+ * @excalidraw/common's getFormFactor; the old 730px MQ_MAX_WIDTH_PORTRAIT is gone).
+ * At ≤987px, Excalidraw shows the mobile bottom toolbar (`.mobile-toolbar`).
+ * At >987px, Excalidraw shows the top toolbar (`.App-toolbar-container`).
  * Our "phone" tier covers both ranges — the injection target is chosen dynamically
  * via `isExcalidrawMobile` (max-width: 987px) in Viewer.tsx.
  */
