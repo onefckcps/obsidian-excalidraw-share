@@ -73,6 +73,8 @@ export interface ToolbarCallbacks {
   onStartScreenShare?: () => Promise<void>;
   /** Stop screen sharing */
   onStopScreenShare?: () => void;
+  /** Reopen the viewer for an active remote screen share */
+  onViewScreenShare?: () => void;
   /** Returns whether the local user is currently sharing their screen */
   isScreenSharing?: () => boolean;
   /** Returns the active remote sharer info (null if no one is sharing) */
@@ -786,15 +788,22 @@ export class ExcaliShareToolbar {
               this.callbacks.onStopScreenShare?.();
             };
           } else if (activeSharer) {
-            // Someone else is sharing — show informational button (disabled)
+            // Someone else is sharing — click to (re)open the viewer
             const iconSpan = document.createElement('span');
             iconSpan.textContent = '📺';
             iconSpan.style.marginRight = '6px';
             screenShareBtn.appendChild(iconSpan);
-            screenShareBtn.appendChild(document.createTextNode(`${activeSharer.name} is sharing`));
-            screenShareBtn.disabled = true;
-            screenShareBtn.style.opacity = '0.6';
-            screenShareBtn.style.cursor = 'default';
+            screenShareBtn.appendChild(document.createTextNode(`▶ Watch: ${activeSharer.name}`));
+            screenShareBtn.title = 'Click to (re)open the screen share viewer';
+            if (this.callbacks.onViewScreenShare) {
+              screenShareBtn.onclick = () => {
+                this.callbacks.onViewScreenShare?.();
+              };
+            } else {
+              screenShareBtn.disabled = true;
+              screenShareBtn.style.opacity = '0.6';
+              screenShareBtn.style.cursor = 'default';
+            }
           } else {
             // No one sharing — show start button
             const iconSpan = document.createElement('span');

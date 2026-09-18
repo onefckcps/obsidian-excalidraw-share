@@ -510,6 +510,29 @@ export class CollabManager {
   }
 
   /**
+   * Reopen the screen share viewer modal after it was closed.
+   * Reuses the stored remote stream — no new WebRTC negotiation needed.
+   * Returns false if there is no active share to show.
+   */
+  openScreenShareViewer(): boolean {
+    const stream = this.screenShareManager?.remoteStream;
+    const sharer = this.activeSharer;
+    if (!stream || !sharer) return false;
+    if (this.screenShareViewerModal) {
+      // Already open — just bring focus (Obsidian doesn't stack modals, so close+reopen)
+      this.screenShareViewerModal.close();
+    }
+    this.screenShareViewerModal = new ScreenShareViewerModal(this.app!, stream, sharer.name);
+    this.screenShareViewerModal.open();
+    return true;
+  }
+
+  /** Whether the viewer modal is currently open */
+  get isScreenShareViewerOpen(): boolean {
+    return this.screenShareViewerModal !== null;
+  }
+
+  /**
    * Disconnect from the collab session and clean up.
    */
   leave(): void {

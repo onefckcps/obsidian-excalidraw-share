@@ -31,6 +31,10 @@ export class ScreenShareManager {
   private isSharing = false;
   /** Name of the remote sharer (for viewer modal title) */
   private sharerName = '';
+  /** Last received remote stream — kept so a closed viewer modal can be reopened */
+  private lastRemoteStream: MediaStream | null = null;
+  /** userId of the remote sharer */
+  private activeSharerId: string | null = null;
   private iceConfig: RTCConfiguration | null = null;
 
   constructor(app: App, client: CollabClient, baseUrl: string, apiKey: string, callbacks: ScreenShareCallbacks) {
@@ -148,6 +152,7 @@ export class ScreenShareManager {
    */
   async onRemoteShareStarted(sharerUserId: string, sharerName: string): Promise<void> {
     this.sharerName = sharerName;
+    this.activeSharerId = sharerUserId;
     const pc = await this._createPeerConnection(sharerUserId);
 
     // Use offerToReceiveVideo to include a video media line in the offer.
@@ -164,6 +169,8 @@ export class ScreenShareManager {
    */
   onRemoteShareStopped(): void {
     this.sharerName = '';
+    this.activeSharerId = null;
+    this.lastRemoteStream = null;
     this.peerConnections.forEach(pc => pc.close());
     this.peerConnections.clear();
     this.callbacks.onRemoteStreamEnded();
@@ -231,6 +238,7 @@ export class ScreenShareManager {
 
     pc.ontrack = (event) => {
       if (event.streams[0]) {
+        this.lastRemoteStream = event.streams[0];
         this.callbacks.onRemoteStream(event.streams[0], peerId, this.sharerName);
       }
     };
@@ -255,6 +263,22 @@ export class ScreenShareManager {
 
   get sharing(): boolean {
     return this.isSharing;
+  }
+
+  /** The currently active remote sharer (null if nobody is sharing) */
+  get activeSharer(): { userId: string; name: string } | null {
+    if (!this.activeSharerId) return null;
+    return { userId: this.activeSharerId, name: this.sharerName || 'Unknown' };
+  }
+
+  /** Last received remote stream (kept so a closed viewer can be reopened) */
+  get remoteStream(): MediaStream | null {
+    return this.lastRemoteStream;
+  }
+
+  /** Name of the remote sharer */
+  get remoteSharerName(): string {
+    return this.sharerName;
   }
 }
 

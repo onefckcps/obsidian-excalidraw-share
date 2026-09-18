@@ -1537,6 +1537,11 @@ export default class ExcaliSharePlugin extends Plugin {
         this.collabManager?.stopScreenShare();
         this.refreshActiveToolbar();
       },
+      onViewScreenShare: () => {
+        if (!this.collabManager?.openScreenShareViewer()) {
+          new Notice('No active screen share to watch.');
+        }
+      },
       isScreenSharing: () => this.collabManager?.isScreenSharing ?? false,
       activeScreenSharer: () => this.collabManager?.screenShareActiveSharer ?? null,
     };
