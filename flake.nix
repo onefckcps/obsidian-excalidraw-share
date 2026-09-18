@@ -26,7 +26,7 @@
             pname = "excalishare-frontend";
             version = "1.0.1";
             src = ./frontend;
-            npmDepsHash = "sha256-Qr9bF3EfoMXaAn55KI0hpIwhq4rVlzeoykVtTobCo6U=";
+            npmDepsHash = "sha256-4H5SWotRTFPB5x1ubG18KXO7e3VkJov7J9CqWj5xgeU=";
             # The Excalidraw package needs legacy-peer-deps
             npmFlags = [ "--legacy-peer-deps" ];
             installPhase = ''
