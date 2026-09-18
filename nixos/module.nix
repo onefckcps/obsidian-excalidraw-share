@@ -103,6 +103,10 @@ in
       isSystemUser = true;
       group = "excalishare";
       description = "ExcaliShare Service User";
+      # Needed to read the TURN HMAC shared secret when it is owned by the
+      # 'turnserver' group (coturn). Without group membership, the start script
+      # fails with "cat: /run/secrets/vps_coturn_secret: Permission denied".
+      extraGroups = lib.optional (cfg.turnSecretFile != null) "turnserver";
     };
 
     users.groups.excalishare = { };
