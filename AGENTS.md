@@ -1138,6 +1138,36 @@ Fixes applied:
 - [x] `CollabPopover.tsx` screen share button now only renders if `!!navigator.mediaDevices?.getDisplayMedia || !!activeSharer`
 - [x] Added `console.log` breadcrumbs in toolbar `onclick` handlers and `useScreenShare.startSharing()` for future debugging
 
+**Collab Snapshot Echo Infinite Join/Leave Loop Bug Fix (September 2026)**
+Fixed a critical bug where a browser joining a live collab session on a large drawing (tens of MB with embedded PDF-PNGs) entered an infinite join/leave loop: connect → instant `1006` close → reconnect → repeat. Other clients (e.g. Obsidian plugin) saw "X joined / X left" spam.
+
+Root cause chain:
+1. Browser joins → receives huge snapshot (e.g. 28MB) → `api.updateScene()` + `api.addFiles()` fire Excalidraw `onChange`
+2. `handleExcalidrawChange` sent the **entire files map (~20MB) as a single `files_update` WS frame** straight back to the server (echo), because `markFilesAsKnown` ran AFTER `addFiles` instead of before
+3. tungstenite's default `max_frame_size` is **16MB** — the oversized frame is a protocol-level error, so the server killed the connection instantly (client sees bare `1006`)
+4. Reconnect → snapshot → echo → killed → infinite loop
+
+The Obsidian plugin never had this bug: it uses `isApplyingRemoteUpdate` guard + double-rAF cooldown (`scheduleRemoteUpdateCooldown`) + `markFilesAsKnown` before `applyRemoteFiles`. The frontend was missing all of these.
+
+Fixes applied:
+- [x] Frontend `useCollab.ts`: added `isApplyingRemoteRef` + `withRemoteGuard()` helper (double-`requestAnimationFrame` cooldown, same pattern as plugin's `scheduleRemoteUpdateCooldown`)
+- [x] Guard wraps `updateScene`/`addFiles` in: `snapshot` handler, `full_sync` handler, `files_update` handler, `applyRemoteSceneUpdate` (scene merges)
+- [x] `sendSceneUpdate` and `sendFilesUpdate` return early while `isApplyingRemoteRef.current` is true
+- [x] `markFilesAsKnown` now runs **before** `addFiles`/`updateScene` in all handlers (prevents echo even outside guard window)
+- [x] Backend `ws.rs`: raised `max_frame_size`/`max_message_size` to 64MB so oversized messages reach the existing app-level 5MB ignore-check (logged + skipped, connection stays alive) instead of being killed at protocol level — safety net for old clients/plugins
+
+**Debugging techniques worth reusing:**
+- 1006 close with empty reason = server dropped TCP without close frame (protocol error, not app logic)
+- Reproduce protocol-level kills with a Node `ws` mimic script (send the exact payload the real client sends) — much faster than browser automation
+- Headless Chromium via CDP (`--remote-debugging-port`) + `Page.addScriptToEvaluateOnNewDocument` to instrument `WebSocket.prototype.send` and log outgoing message sizes
+- Note: headless browser on localhost joins collab BEFORE Excalidraw API is ready → snapshot handler early-returns (`if (api)`) → echo never happens → false "stable" result. Real users on slow connections have the API ready when the snapshot arrives. Verify fixes with mimic scripts, not just headless browsers.
+
+**Deployment learnings:**
+- Prod deploys via **deploy-rs** from `~/nixos-config` flake (`nix run github:serokell/deploy-rs -- .#nixosimon-vps`), remote build on server, `excalishare` input points to `github:onefckcps/obsidian-excalidraw-share` — run `nix flake lock --update-input excalishare` after pushing
+- SSH: `ssh root@nix` (alias in `~/.ssh/config` → 158.220.109.61, key at `~/.config/sops-nix/secrets/ssh_key_framework`)
+- If deploy-rs fails with "Unable to list users with logind" → `systemd-logind` on server is hung (happens after ~200 days uptime, dbus-broker connection rots) → `ssh root@nix "systemctl restart systemd-logind"` fixes it without killing SSH
+- deploy-rs has magic-rollback: failed activations auto-revert to previous generation, service keeps running old code
+
 ### Active Decisions
 - Ephemeral collab sessions are **in-memory only** — no persistence across server restarts (by design)
 - Persistent collab sessions are **auto-recreated from disk** on first visitor after server restart
