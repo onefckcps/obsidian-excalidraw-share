@@ -661,9 +661,22 @@ export class CollabManager {
   // ──────────────────────────────────────────────
 
   private async handleSnapshot(msg: Extract<ServerMessage, { type: 'snapshot' }>): Promise<void> {
+    // A conflict dialog is already resolving against an older snapshot — do NOT
+    // start a second divergence check (would open a second modal; last-writer-wins
+    // chaos on the server). The pending dialog's resolution uploads/merges against
+    // the first snapshot; subsequent scene_updates keep us converged afterwards.
+    if (this.conflictPending) {
+      console.warn('ExcaliShare Collab: Snapshot received while conflict dialog pending — ignoring (dialog resolution owns convergence)');
+      return;
+    }
+
     const api = this.getAPI();
     if (!api) {
+      // API unavailable (e.g. user switched to another drawing mid-join): the
+      // snapshot content is dropped, so mark missed updates — the caller resyncs
+      // (manualReconnect → fresh snapshot) when the drawing becomes visible again.
       console.error('ExcaliShare Collab: No Excalidraw API available for snapshot');
+      this.missedRemoteUpdates = true;
       return;
     }
 
@@ -682,10 +695,51 @@ export class CollabManager {
     const snapshotElements = msg.elements as ExcalidrawElement[];
 
     if (!this._hasJoinedOnce) {
-      // ── Initial join: replace local scene with the server snapshot ──
-      this.applySnapshotElements(api, msg);
+      // ── Initial join: normally replace the local scene with the snapshot.
+      // Exception: the user may have drawn while waiting for the join (e.g. server
+      // was down → waiting_server → retry succeeded minutes later). Replacing
+      // would silently discard those pre-join edits. If the local scene has
+      // content the snapshot doesn't know about (or newer versions of shared
+      // elements), merge by version and upload the result instead.
+      const localNewer = this.countServerChangesLocalView(api, snapshotElements);
+      if (localNewer > 0 && snapshotElements.length >= 0) {
+        let localElements: ExcalidrawElement[] = [];
+        try {
+          const getElements = api.getSceneElementsIncludingDeleted || api.getSceneElements;
+          localElements = getElements.call(api);
+        } catch { /* ignore */ }
+        const merged = this.mergeElementsByVersion(localElements, snapshotElements);
+        this.isApplyingRemoteUpdate = true;
+        try {
+          api.updateScene({
+            elements: merged,
+            appState: msg.appState,
+            collaborators: new Map(this.collaboratorMap),
+          });
+          this.applyRemoteFiles(api, msg.files);
+        } catch (e) {
+          console.error('ExcaliShare Collab: Failed to apply merged initial snapshot', e);
+        }
+        this.scheduleRemoteUpdateCooldown();
+        // Upload merged result (elements + local-only files) so the server converges
+        if (this.client) {
+          this.client.sendSceneUpdate(merged, false);
+          try {
+            const files = api.getFiles?.();
+            if (files && Object.keys(files).length > 0) {
+              this.client.sendFilesUpdate(files);
+            }
+          } catch { /* getFiles unavailable */ }
+        }
+        new Notice(`ExcaliShare: Merged ${localNewer} pre-join local change(s) into the session`);
+        console.log(`ExcaliShare Collab: Initial join merged ${localNewer} pre-join local change(s)`);
+      } else {
+        this.applySnapshotElements(api, msg);
+      }
       this._hasJoinedOnce = true;
-      new Notice(`ExcaliShare: Joined collab session with ${this.collaborators.length} participant(s)`);
+      if (localNewer === 0) {
+        new Notice(`ExcaliShare: Joined collab session with ${this.collaborators.length} participant(s)`);
+      }
     } else {
       // ── Reconnect: divergence check BEFORE applying anything ──
       const serverChangedCount = this.countServerChanges(snapshotElements);
@@ -764,6 +818,35 @@ export class CollabManager {
       console.error('ExcaliShare Collab: Failed to apply snapshot metadata', e);
     }
     this.scheduleRemoteUpdateCooldown();
+  }
+
+  /**
+   * Count local elements the server snapshot doesn't know about or has older
+   * versions of — i.e. edits made before/during the join (e.g. while the server
+   * was unreachable). Version tracking is empty pre-join, so we diff against the
+   * snapshot itself.
+   */
+  private countServerChangesLocalView(api: ExcalidrawAPI, snapshotElements: ExcalidrawElement[]): number {
+    let localElements: ExcalidrawElement[];
+    try {
+      const getElements = api.getSceneElementsIncludingDeleted || api.getSceneElements;
+      localElements = getElements.call(api);
+    } catch {
+      return 0;
+    }
+    const snapshotVersions = new Map<string, number>();
+    for (const el of snapshotElements) {
+      if (el.id) snapshotVersions.set(el.id, el.version);
+    }
+    let count = 0;
+    for (const el of localElements) {
+      if (!el.id) continue;
+      const serverVersion = snapshotVersions.get(el.id);
+      if (serverVersion === undefined || el.version > serverVersion) {
+        count++;
+      }
+    }
+    return count;
   }
 
   /**
@@ -1240,8 +1323,12 @@ export class CollabManager {
       ? 'ExcaliShare: Collab session ended and saved.'
       : 'ExcaliShare: Collab session ended. Changes discarded.');
 
-    this.callbacks.onSessionEnded?.(msg.saved);
+    // Leave BEFORE firing the callback — the callback runs cleanupCollabState()
+    // which sets the join state machine to 'idle'. If leave() ran afterwards, its
+    // _disconnected → onConnectionChanged(false) chain would flip the state back
+    // to 'reconnecting', leaving the state machine stuck.
     this.leave();
+    this.callbacks.onSessionEnded?.(msg.saved);
   }
 
   // ──────────────────────────────────────────────

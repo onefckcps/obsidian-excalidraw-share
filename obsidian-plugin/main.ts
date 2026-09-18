@@ -254,6 +254,8 @@ export default class ExcaliSharePlugin extends Plugin {
   private _serverReachable: boolean = true;
   /** Timeout handle for the scheduled (backoff-aware) server health check */
   private _healthCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True once onunload ran — blocks all timer chains from re-arming */
+  private _unloaded = false;
   /** Current health check interval (60s when up, 2min→5min backoff when down) */
   private _healthCheckDelayMs = 60_000;
   /** True when the OS reports the network as offline (online/offline events) */
@@ -677,6 +679,9 @@ export default class ExcaliSharePlugin extends Plugin {
   }
 
   onunload() {
+    // Block all self-rescheduling timer chains (health check, join retry)
+    this._unloaded = true;
+
     // Disconnect native collab if active
     if (this.collabManager) {
       this.collabManager.destroy();
@@ -873,7 +878,10 @@ export default class ExcaliSharePlugin extends Plugin {
    */
   private startHealthCheck(): void {
     // Initial check after 2 seconds (give plugin time to fully load)
-    setTimeout(() => this.checkServerHealth(), 2000);
+    const initialTimer = setTimeout(() => {
+      if (!this._unloaded) this.checkServerHealth();
+      clearTimeout(initialTimer);
+    }, 2000);
 
     // Periodic check (re-scheduled with backoff after each run)
     this.scheduleHealthCheck(this._healthCheckDelayMs);
@@ -885,10 +893,14 @@ export default class ExcaliSharePlugin extends Plugin {
 
   /** Schedule the next health check after `delay` ms (self-perpetuating chain) */
   private scheduleHealthCheck(delay: number): void {
+    if (this._unloaded) return;
     if (this._healthCheckTimer) {
       clearTimeout(this._healthCheckTimer);
     }
     this._healthCheckTimer = setTimeout(async () => {
+      // Null the handle FIRST — onunload may have fired while we awaited
+      this._healthCheckTimer = null;
+      if (this._unloaded) return;
       await this.checkServerHealth();
       this.scheduleHealthCheck(this._healthCheckDelayMs);
     }, delay);
@@ -1147,14 +1159,14 @@ export default class ExcaliSharePlugin extends Plugin {
   }
 
   private handleLeafChange(leaf: WorkspaceLeaf | null): void {
-    if (!this.settings.showFloatingToolbar) return;
-
     // ── Collab drawing closed in ALL leaves → leave the WS session cleanly ──
     // The Excalidraw view gets destroyed on close; the CollabManager's onChange
     // subscription, pointer tracking and cached API die with it. Without leaving
     // here, a reopen finds a "joined" manager running on dead references — broken
     // state that required a full collab stop/start. The server-side session (live
     // or persistent) survives; we rejoin on reopen.
+    // NOTE: must run even when the floating toolbar is disabled — this is session
+    // lifecycle management, not UI.
     if (this.collabManager?.isJoined && this.activeCollabDrawingId
       && !this.isDrawingOpenInAnyLeaf(this.activeCollabDrawingId)) {
       console.log(`ExcaliShare: Collab drawing ${this.activeCollabDrawingId} closed — leaving session`);
@@ -1163,6 +1175,7 @@ export default class ExcaliSharePlugin extends Plugin {
       this.cleanupCollabState();
     }
 
+    if (!this.settings.showFloatingToolbar) return;
     if (!leaf) return;
 
     const view = leaf.view;
@@ -1666,6 +1679,20 @@ export default class ExcaliSharePlugin extends Plugin {
         return;
       }
 
+      // Frontmatter write from enablePersistentCollab just became visible to the
+      // metadata cache — if this drawing is the pending join target (join was
+      // skipped earlier because the cache still showed stale frontmatter), fire
+      // the join now.
+      if (this._joinTargetDrawingId
+        && currentId === this._joinTargetDrawingId
+        && this.isPersistentCollabEnabled(file)
+        && !this.collabManager?.isJoined
+        && this._collabJoinState !== 'joining') {
+        this.ensureCollabJoined(file, currentId).catch((e) => {
+          console.error('ExcaliShare: Deferred join after metadata change failed', e);
+        });
+      }
+
       this.refreshActiveToolbar();
     }
   }
@@ -2159,15 +2186,22 @@ export default class ExcaliSharePlugin extends Plugin {
       this._persistentSyncedFiles.delete(file.path);
       this._reconcileCache.delete(idToDelete);
 
+      // Cancel any pending join retry for this drawing (also when only in
+      // waiting_server/joining — not yet joined — so the status bar doesn't
+      // stay stuck on "Server unreachable — retrying…")
+      if (this._joinTargetDrawingId === idToDelete) {
+        this._joinTargetDrawingId = null;
+        this.clearJoinRetry();
+        if (!this.collabManager?.isJoined) {
+          this.setCollabJoinState('idle');
+        }
+      }
+
       // Disconnect native collab WebSocket if currently joined to this drawing's session.
       // Without this, collabManager.isJoined stays true and the join coordinator
       // would be skipped if the user re-publishes and re-enables
       // persistent collab on the same drawing (or a new drawing after unpublishing).
       if (this.collabManager?.isJoined && this.activeCollabDrawingId === idToDelete) {
-        if (this._joinTargetDrawingId === idToDelete) {
-          this._joinTargetDrawingId = null;
-          this.clearJoinRetry();
-        }
         this.cleanupCollabState();
       }
 
@@ -2747,12 +2781,17 @@ export default class ExcaliSharePlugin extends Plugin {
       // Remove from synced files tracking
       this._persistentSyncedFiles.delete(file.path);
 
+      // Cancel any pending join retry for this drawing (also when only in
+      // waiting_server/joining — not yet joined)
+      if (this._joinTargetDrawingId === drawingId) {
+        this._joinTargetDrawingId = null;
+        this.clearJoinRetry();
+      }
+
       // Disconnect native collab WebSocket if currently joined to this drawing's session.
       // Without this, collabManager.isJoined stays true and the join coordinator would
       // skip re-joining if the user re-enables persistent collab.
       if (this.collabManager?.isJoined && this.activeCollabDrawingId === drawingId) {
-        this._joinTargetDrawingId = null;
-        this.clearJoinRetry();
         this.collabManager.destroy();
         this.collabManager = null;
         this.activeCollabSessionId = null;
@@ -2762,6 +2801,9 @@ export default class ExcaliSharePlugin extends Plugin {
           this.collabStatusBarItem.setText('');
           this.collabStatusBarItem.hide();
         }
+      } else if (this._collabJoinState === 'waiting_server' || this._collabJoinState === 'joining' || this._collabJoinState === 'failed') {
+        // Not joined but join state belongs to this drawing → reset UI
+        this.setCollabJoinState('idle');
       }
 
       // Pull final state from server
@@ -2975,8 +3017,13 @@ export default class ExcaliSharePlugin extends Plugin {
           }
 
           if (status.active && status.session_id && !status.persistent) {
-            // Server has an active NON-persistent session — restore tracking if we lost it
-            if (!this.activeCollabSessionId || this.activeCollabDrawingId !== drawingId) {
+            // Server has an active NON-persistent session — restore tracking if we lost it.
+            // GUARD: never touch tracking while natively joined to ANY session —
+            // overwriting activeCollabDrawingId here while joined to drawing A would
+            // misattribute A's live WS connection to B (toolbar shows B as active,
+            // closing B would kill A's connection).
+            if (!this.collabManager?.isJoined
+              && (!this.activeCollabSessionId || this.activeCollabDrawingId !== drawingId)) {
               this.activeCollabSessionId = status.session_id;
               this.activeCollabDrawingId = drawingId;
               this.refreshActiveToolbar();
@@ -3414,6 +3461,7 @@ export default class ExcaliSharePlugin extends Plugin {
     }
     this._joinRetryTimer = setTimeout(() => {
       this._joinRetryTimer = null;
+      if (this._unloaded) return;
       const drawingId = this._joinTargetDrawingId;
       if (!drawingId) return;
       const file = this.resolveFileForDrawingId(drawingId);
