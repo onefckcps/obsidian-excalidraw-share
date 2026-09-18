@@ -111,7 +111,15 @@ pub async fn ws_collab_handler(
     };
 
     let session_manager = ws_state.session_manager.clone();
-    Ok(ws.on_upgrade(move |socket| handle_ws_connection(socket, session_id, name, session_manager)))
+    // Raise protocol-level frame/message limits above the app-level 5 MB guard below.
+    // tungstenite's defaults (16 MB frame / 64 MB message) kill the connection outright
+    // when a client sends a large message — e.g. a client echoing a big snapshot's files
+    // back. With higher protocol limits, oversized messages reach handle_client_message's
+    // 5 MB check, which logs and ignores them, keeping the connection alive.
+    Ok(ws
+        .max_frame_size(64 * 1024 * 1024)
+        .max_message_size(64 * 1024 * 1024)
+        .on_upgrade(move |socket| handle_ws_connection(socket, session_id, name, session_manager)))
 }
 
 async fn handle_ws_connection(

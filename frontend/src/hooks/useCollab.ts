@@ -165,6 +165,27 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const suppressFollowSyncRef = useRef(false);
   /** Last known cursor position (from onPointerUpdate), reused by viewport broadcast */
   const lastPointerRef = useRef<{ x: number; y: number; button: 'down' | 'up'; tool: 'pointer' | 'laser' }>({ x: 0, y: 0, button: 'up', tool: 'pointer' });
+  /** Guard: true while applying a remote update to Excalidraw (snapshot/scene/files).
+   *  Prevents echoing the received content straight back to the server via onChange —
+   *  without this, applying a large snapshot makes the client re-upload the entire scene
+   *  and all files (tens of MB), which exceeds the server's WebSocket frame limit and
+   *  gets the connection killed (infinite join/leave loop). */
+  const isApplyingRemoteRef = useRef(false);
+
+  /** Run `fn` with the remote-apply guard set. The guard is cleared via double-rAF,
+   *  after React/Excalidraw have processed the update and fired onChange. */
+  const withRemoteGuard = useCallback((fn: () => void) => {
+    isApplyingRemoteRef.current = true;
+    try {
+      fn();
+    } finally {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          isApplyingRemoteRef.current = false;
+        });
+      });
+    }
+  }, []);
 
   // Screen share hook — uses clientState (state mirror of clientRef) so it re-renders when client changes
   const screenShare = useScreenShare(clientState, myUserId, isJoined);
@@ -354,8 +375,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     }
 
     const merged = Array.from(allElements.values());
-    api.updateScene({ elements: merged });
-  }, []);
+    withRemoteGuard(() => {
+      api.updateScene({ elements: merged });
+    });
+  }, [withRemoteGuard]);
 
   // Flush all pending scene updates (called when user finishes drawing)
   const flushPendingSceneUpdates = useCallback(() => {
@@ -448,21 +471,28 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         } | null;
 
         if (api) {
-          // Build the collaborator map with full Collaborator objects
-          const collabMap = buildCollaboratorMap(msg.collaborators);
-
-          api.updateScene({
-            elements: msg.elements,
-            appState: msg.appState,
-            collaborators: new Map(collabMap),
-          });
-
-          // Apply binary files (images) from the snapshot
+          // Mark snapshot files as known BEFORE applying anything to Excalidraw, so the
+          // onChange triggered by updateScene/addFiles cannot re-upload them (20MB+ echo
+          // that exceeds the server's WS frame limit and kills the connection).
           if (msg.files && Object.keys(msg.files).length > 0) {
-            api.addFiles(Object.values(msg.files));
-            // Mark these files as known so we don't re-send them
             client.markFilesAsKnown(Object.keys(msg.files));
           }
+
+          withRemoteGuard(() => {
+            // Build the collaborator map with full Collaborator objects
+            const collabMap = buildCollaboratorMap(msg.collaborators);
+
+            api.updateScene({
+              elements: msg.elements,
+              appState: msg.appState,
+              collaborators: new Map(collabMap),
+            });
+
+            // Apply binary files (images) from the snapshot
+            if (msg.files && Object.keys(msg.files).length > 0) {
+              api.addFiles(Object.values(msg.files));
+            }
+          });
         }
 
         setCollaborators(msg.collaborators);
@@ -527,16 +557,18 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         } | null;
 
         if (api) {
-          api.updateScene({
-            elements: msg.elements,
-            appState: msg.appState,
-          });
+          withRemoteGuard(() => {
+            api.updateScene({
+              elements: msg.elements,
+              appState: msg.appState,
+            });
 
-          // Apply binary files (images) from the full sync
-          if (msg.files && Object.keys(msg.files).length > 0) {
-            api.addFiles(Object.values(msg.files));
-            client.markFilesAsKnown(Object.keys(msg.files));
-          }
+            // Apply binary files (images) from the full sync
+            if (msg.files && Object.keys(msg.files).length > 0) {
+              client.markFilesAsKnown(Object.keys(msg.files));
+              api.addFiles(Object.values(msg.files));
+            }
+          });
         }
       });
 
@@ -549,9 +581,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         } | null;
 
         if (api && msg.files && Object.keys(msg.files).length > 0) {
-          api.addFiles(Object.values(msg.files));
-          // Mark these files as known so we don't re-send them back
-          client.markFilesAsKnown(Object.keys(msg.files));
+          withRemoteGuard(() => {
+            // Mark these files as known BEFORE adding so the onChange triggered
+            // by addFiles cannot re-send them back
+            client.markFilesAsKnown(Object.keys(msg.files));
+            api.addFiles(Object.values(msg.files));
+          });
         }
       });
 
@@ -806,7 +841,7 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       client.connect();
       setIsJoined(true);
     },
-    [sessionId, drawingId, buildCollaboratorMap, syncCollaboratorsToExcalidraw]
+    [sessionId, drawingId, buildCollaboratorMap, syncCollaboratorsToExcalidraw, withRemoteGuard]
   );
 
   // Leave session
@@ -844,8 +879,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     }
   }, []);
 
-  // Send scene update — only if we're on the drawing the collab session was started for
+  // Send scene update — only if we're on the drawing the collab session was started for.
+  // Suppressed while applying remote updates (prevents echoing received content back).
   const sendSceneUpdate = useCallback((elements: ExcalidrawElement[]) => {
+    if (isApplyingRemoteRef.current) return;
     if (collabDrawingIdRef.current && collabDrawingIdRef.current === drawingId) {
       clientRef.current?.sendSceneUpdate(elements);
     }
@@ -857,8 +894,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     clientRef.current?.cancelPendingSceneUpdate();
   }, []);
 
-  // Send files update — only new files that haven't been sent yet (delta tracked by CollabClient)
+  // Send files update — only new files that haven't been sent yet (delta tracked by CollabClient).
+  // Suppressed while applying remote updates (prevents echoing received files back).
   const sendFilesUpdate = useCallback((files: BinaryFiles) => {
+    if (isApplyingRemoteRef.current) return;
     if (collabDrawingIdRef.current && collabDrawingIdRef.current === drawingId) {
       clientRef.current?.sendFilesUpdate(files);
     }
