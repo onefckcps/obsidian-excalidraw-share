@@ -276,6 +276,10 @@ export default class ExcaliSharePlugin extends Plugin {
   private static JOIN_RETRY_DELAYS = [5_000, 15_000, 60_000, 300_000];
   /** Backoff delays for Excalidraw API readiness retries (max ~10 attempts) */
   private static API_READY_DELAYS = [500, 1000, 2000, 4000];
+  /** Timestamp when the current join attempt started (for stale 'joining' detection) */
+  private _joinStartedAt = 0;
+  /** After this time, a 'joining' state is considered stale (hung request) and reset */
+  private static JOIN_STALE_MS = 45_000;
   /** Unique per-device suffix for the collab display name (distinguishes two Obsidian instances) */
   private _deviceId = '';
 
@@ -1016,10 +1020,16 @@ export default class ExcaliSharePlugin extends Plugin {
         const file = this.app.workspace.getActiveFile();
         if (file && this.isExcalidrawFile(file)) {
           const drawingId = this.getPublishedId(file);
-          if (drawingId && this.isPersistentCollabEnabled(file)) {
-            this.ensureCollabJoined(file, drawingId).catch((e) => {
-              console.error('ExcaliShare: Failed to auto-join persistent collab after reconnect', e);
-            });
+          if (drawingId) {
+            if (this.isPersistentCollabEnabled(file)) {
+              this.ensureCollabJoined(file, drawingId).catch((e) => {
+                console.error('ExcaliShare: Failed to auto-join persistent collab after reconnect', e);
+              });
+            } else {
+              // Live collab: force reconcile → auto-rejoin if a session is active
+              this._reconcileCache.delete(drawingId);
+              this.reconcileServerState(file, drawingId);
+            }
           }
         }
       }
@@ -1138,6 +1148,21 @@ export default class ExcaliSharePlugin extends Plugin {
 
   private handleLeafChange(leaf: WorkspaceLeaf | null): void {
     if (!this.settings.showFloatingToolbar) return;
+
+    // ── Collab drawing closed in ALL leaves → leave the WS session cleanly ──
+    // The Excalidraw view gets destroyed on close; the CollabManager's onChange
+    // subscription, pointer tracking and cached API die with it. Without leaving
+    // here, a reopen finds a "joined" manager running on dead references — broken
+    // state that required a full collab stop/start. The server-side session (live
+    // or persistent) survives; we rejoin on reopen.
+    if (this.collabManager?.isJoined && this.activeCollabDrawingId
+      && !this.isDrawingOpenInAnyLeaf(this.activeCollabDrawingId)) {
+      console.log(`ExcaliShare: Collab drawing ${this.activeCollabDrawingId} closed — leaving session`);
+      this._joinTargetDrawingId = null;
+      this.clearJoinRetry();
+      this.cleanupCollabState();
+    }
+
     if (!leaf) return;
 
     const view = leaf.view;
@@ -1157,14 +1182,6 @@ export default class ExcaliSharePlugin extends Plugin {
     if (viewType === 'excalidraw') {
       const file = this.app.workspace.getActiveFile();
       if (!file) {
-        // No active file (e.g., all tabs closed) — leave the collab session cleanly
-        // so the manager doesn't hold a stale Excalidraw API reference.
-        if (this.collabManager?.isJoined) {
-          console.log('ExcaliShare: Collab file closed — leaving session');
-          this._joinTargetDrawingId = null;
-          this.clearJoinRetry();
-          this.cleanupCollabState();
-        }
         return;
       }
 
@@ -1236,31 +1253,47 @@ export default class ExcaliSharePlugin extends Plugin {
       }
       this._leafFilePaths.delete(leafId);
 
-      // If we had an active persistent collab session, disconnect gracefully
-      // so it can auto-rejoin when the drawing is reopened.
-      // For persistent collab, the session stays alive on the server — we just leave the WS.
+      // ── Tab switch to a non-persistent drawing ──
+      // The collab session stays connected in the background (server stays in
+      // sync, participants list remains accurate). Remote updates are dropped by
+      // the API guard while another drawing is viewed; returning to the collab
+      // drawing triggers a resync via missedRemoteUpdates. A full CLOSE of the
+      // collab drawing is handled centrally at the top of this function.
       if (this.collabManager?.isJoined && this.activeCollabDrawingId) {
-        // Check if this is a persistent session (don't auto-disconnect regular live collab)
-        const drawingFile = this.activeCollabDrawingId
-          ? this.app.vault.getFiles().find(f => {
-              const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
-              return fm?.['excalishare-id'] === this.activeCollabDrawingId;
-            })
-          : null;
-        if (drawingFile && this.isPersistentCollabEnabled(drawingFile)) {
-          // Disconnect from persistent collab — will auto-rejoin on next open
-          this.collabManager.destroy();
-          this.collabManager = null;
-          this.setCollabJoinState('idle');
-          // Keep activeCollabSessionId/activeCollabDrawingId so toolbar shows session exists
-          // but clear the status bar since we're not actively connected
-          if (this.collabStatusBarItem) {
-            this.collabStatusBarItem.setText('');
-            this.collabStatusBarItem.hide();
-          }
+        // Still open in some leaf (inactive tab / split) → keep session alive
+        if (this.isDrawingOpenInAnyLeaf(this.activeCollabDrawingId)) return;
+
+        // No leaf has it open anymore → the top-of-function check will have
+        // cleaned up already; this is a belt-and-suspenders fallback.
+        this.collabManager.destroy();
+        this.collabManager = null;
+        this.setCollabJoinState('idle');
+        if (this.collabStatusBarItem) {
+          this.collabStatusBarItem.setText('');
+          this.collabStatusBarItem.hide();
         }
       }
     }
+  }
+
+  /**
+   * Check whether the given drawing (by published ID) is currently open in ANY
+   * workspace leaf (active or background tab, any split). Uses the view's file
+   * reference — works for both active and inactive leaves.
+   */
+  private isDrawingOpenInAnyLeaf(drawingId: string): boolean {
+    let found = false;
+    this.app.workspace.iterateAllLeaves((l: WorkspaceLeaf) => {
+      if (found) return;
+      const leafFile = (l.view as { file?: TFile }).file;
+      if (leafFile instanceof TFile) {
+        const fm = this.app.metadataCache.getFileCache(leafFile)?.frontmatter;
+        if (fm?.['excalishare-id'] === drawingId || this._publishedIdCache.get(leafFile.path) === drawingId) {
+          found = true;
+        }
+      }
+    });
+    return found;
   }
 
   /**
@@ -2943,6 +2976,19 @@ export default class ExcaliSharePlugin extends Plugin {
               this.activeCollabDrawingId = drawingId;
               this.refreshActiveToolbar();
             }
+
+            // Auto-rejoin native collab after close+reopen (or Obsidian restart).
+            // Without this, a previously-joined live collab drawing that was closed
+            // (view destroyed → CollabManager dead) would stay in a broken half-state.
+            // Skip when password-protected and no API key — the WS would be rejected
+            // silently; guests should join via browser instead.
+            if (this.settings.collabJoinFromObsidian
+              && !this.collabManager?.isJoined
+              && !(status.password_required && !this.settings.apiKey)) {
+              this.ensureLiveCollabJoined(file, drawingId, status.session_id).catch((e) => {
+                console.error('ExcaliShare: Failed to auto-rejoin live collab', e);
+              });
+            }
           } else if (this.activeCollabSessionId && this.activeCollabDrawingId === drawingId) {
             // We think a non-persistent session is active, but server says it's not — clean up
             // (Don't clean up if we're natively joined to a persistent session)
@@ -3114,10 +3160,16 @@ export default class ExcaliSharePlugin extends Plugin {
       this.cleanupCollabState();
     }
 
-    // A join for this drawing is already in progress
-    if (this._collabJoinState === 'joining' && this._joinTargetDrawingId === drawingId) return;
+    // A join for this drawing is already in progress — but don't get stuck:
+    // a hung network request can leave the state at 'joining' forever, blocking
+    // all future join attempts. After 45s the state is considered stale.
+    if (this._collabJoinState === 'joining' && this._joinTargetDrawingId === drawingId) {
+      if (Date.now() - this._joinStartedAt < ExcaliSharePlugin.JOIN_STALE_MS) return;
+      console.warn('ExcaliShare: Join attempt stale (>45s) — restarting');
+    }
 
     this._joinTargetDrawingId = drawingId;
+    this._joinStartedAt = Date.now();
     this.setCollabJoinState('joining');
 
     try {
@@ -3272,6 +3324,47 @@ export default class ExcaliSharePlugin extends Plugin {
   }
 
   /**
+   * Auto-rejoin an active NON-persistent (live) collab session after the drawing
+   * was closed and reopened (or after an Obsidian restart while the session was
+   * still alive server-side). The session ID comes fresh from the server's
+   * /api/collab/status endpoint — never from stale local tracking.
+   */
+  private async ensureLiveCollabJoined(file: TFile, drawingId: string, sessionId: string): Promise<void> {
+    if (this.collabManager?.isJoined) return;
+    if (!this.settings.collabJoinFromObsidian) return;
+
+    // Stale-aware in-flight guard (same pattern as ensureCollabJoined)
+    if (this._collabJoinState === 'joining') {
+      if (Date.now() - this._joinStartedAt < ExcaliSharePlugin.JOIN_STALE_MS) return;
+      console.warn('ExcaliShare: Join attempt stale (>45s) — restarting');
+    }
+
+    this._joinTargetDrawingId = drawingId;
+    this._joinStartedAt = Date.now();
+    this.setCollabJoinState('joining');
+
+    // Wait for the Excalidraw view to be ready (reopen races initialization)
+    const apiReady = await this.waitForExcalidrawAPI();
+    if (!apiReady || this._joinTargetDrawingId !== drawingId) {
+      if (this._joinTargetDrawingId === drawingId) this.setCollabJoinState('idle');
+      return;
+    }
+
+    this.activeCollabSessionId = sessionId;
+    this.activeCollabDrawingId = drawingId;
+
+    if (this.collabStatusBarItem) {
+      this.collabStatusBarItem.setText('🔴 Live Collab');
+      this.collabStatusBarItem.show();
+    }
+
+    // persistentMode=false: bounded WS retries; onReconnectFailed → 'failed' state
+    await this.joinCollabFromObsidian(drawingId, sessionId, null, false);
+    this.clearJoinRetry();
+    this.refreshActiveToolbar();
+  }
+
+  /**
    * Wait for the Excalidraw API to become available with exponential backoff
    * (500ms → 1s → 2s → 4s repeating, ~10 attempts max ≈ 26s total).
    */
@@ -3356,14 +3449,22 @@ export default class ExcaliSharePlugin extends Plugin {
         return;
       }
     }
-    // Fallback: active file
+    // Fallback: active file — persistent join via coordinator, otherwise force a
+    // fresh reconcile (which auto-rejoins an active live collab session)
     const file = this.app.workspace.getActiveFile();
     if (file && this.isExcalidrawFile(file)) {
       const publishedId = this.getPublishedId(file);
-      if (publishedId && this.isPersistentCollabEnabled(file)) {
-        this.ensureCollabJoined(file, publishedId).catch((e) => {
-          console.error('ExcaliShare: Manual join retry failed', e);
-        });
+      if (publishedId) {
+        if (this.isPersistentCollabEnabled(file)) {
+          this.ensureCollabJoined(file, publishedId).catch((e) => {
+            console.error('ExcaliShare: Manual join retry failed', e);
+          });
+        } else {
+          // Live collab: bypass the reconcile TTL cache so the rejoin check
+          // (status endpoint → ensureLiveCollabJoined) runs immediately
+          this._reconcileCache.delete(publishedId);
+          this.reconcileServerState(file, publishedId);
+        }
         return;
       }
     }
