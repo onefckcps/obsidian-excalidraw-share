@@ -171,6 +171,12 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
    *  and all files (tens of MB), which exceeds the server's WebSocket frame limit and
    *  gets the connection killed (infinite join/leave loop). */
   const isApplyingRemoteRef = useRef(false);
+  /** True after the first snapshot of this session was received. On reconnect the
+   *  server sends a fresh snapshot — initial join replaces the scene, reconnect merges. */
+  const hasJoinedOnceRef = useRef(false);
+  /** True when local scene/files changes were made while the WS was disconnected.
+   *  Evaluated on the reconnect snapshot: merged state is uploaded once. */
+  const localDirtyRef = useRef(false);
 
   /** Run `fn` with the remote-apply guard set. The guard is cleared via double-rAF,
    *  after React/Excalidraw have processed the update and fired onChange. */
@@ -227,6 +233,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
       setCollaborators([]);
       setFollowingUserId(null);
       collaboratorMapRef.current = new Map();
+      hasJoinedOnceRef.current = false;
+      localDirtyRef.current = false;
 
       // Clear collaborators from Excalidraw
       const api = excalidrawAPIRef.current as {
@@ -468,7 +476,13 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         const api = excalidrawAPIRef.current as {
           updateScene: (data: unknown) => void;
           addFiles: (data: BinaryFileData[]) => void;
+          getSceneElements: () => ExcalidrawElement[];
+          getSceneElementsIncludingDeleted?: () => ExcalidrawElement[];
+          getFiles?: () => BinaryFiles;
         } | null;
+
+        const isReconnect = hasJoinedOnceRef.current;
+        hasJoinedOnceRef.current = true;
 
         if (api) {
           // Mark snapshot files as known BEFORE applying anything to Excalidraw, so the
@@ -482,17 +496,68 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
             // Build the collaborator map with full Collaborator objects
             const collabMap = buildCollaboratorMap(msg.collaborators);
 
-            api.updateScene({
-              elements: msg.elements,
-              appState: msg.appState,
-              collaborators: new Map(collabMap),
-            });
+            if (!isReconnect) {
+              // ── Initial join: replace local scene with the server snapshot ──
+              api.updateScene({
+                elements: msg.elements,
+                appState: msg.appState,
+                collaborators: new Map(collabMap),
+              });
+            } else {
+              // ── Reconnect: MERGE instead of replace (guests get no dialog —
+              // highest version per element wins, incl. isDeleted). Local offline
+              // edits survive; nothing is silently discarded.
+              const localElements = api.getSceneElementsIncludingDeleted
+                ? api.getSceneElementsIncludingDeleted()
+                : api.getSceneElements();
+              const mergedMap = new Map<string, ExcalidrawElement>();
+              const order: string[] = [];
+              for (const el of localElements) {
+                if (!el.id) continue;
+                mergedMap.set(el.id, el);
+                order.push(el.id);
+              }
+              for (const el of msg.elements as ExcalidrawElement[]) {
+                if (!el.id) continue;
+                const existing = mergedMap.get(el.id);
+                if (!existing) {
+                  mergedMap.set(el.id, el);
+                  order.push(el.id);
+                } else if ((el.version ?? 0) > (existing.version ?? 0)) {
+                  mergedMap.set(el.id, el);
+                }
+              }
+              const merged = order.map(id => mergedMap.get(id)!).filter(Boolean);
+
+              api.updateScene({
+                elements: merged,
+                appState: msg.appState,
+                collaborators: new Map(collabMap),
+              });
+
+              // If we made local changes while offline, upload the merged result.
+              // Delta tracking was reset on reconnect → this sends a full scene_update.
+              if (localDirtyRef.current) {
+                client.sendSceneUpdate(merged);
+                // Re-send files added while offline: sentFileIds was reset on
+                // reconnect and snapshot files were just marked as known, so only
+                // truly new local files are sent.
+                try {
+                  const files = api.getFiles?.();
+                  if (files && Object.keys(files).length > 0) {
+                    client.sendFilesUpdate(files);
+                  }
+                } catch { /* getFiles unavailable */ }
+              }
+            }
 
             // Apply binary files (images) from the snapshot
             if (msg.files && Object.keys(msg.files).length > 0) {
               api.addFiles(Object.values(msg.files));
             }
           });
+
+          localDirtyRef.current = false;
         }
 
         setCollaborators(msg.collaborators);
@@ -747,6 +812,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         setFollowingUserId(null);
         collabDrawingIdRef.current = null;
         collaboratorMapRef.current = new Map();
+        hasJoinedOnceRef.current = false;
+        localDirtyRef.current = false;
         client.disconnect();
         clientRef.current = null;
         setClientState(null);
@@ -794,6 +861,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
         setReconnectState('idle');
         collabDrawingIdRef.current = null;
         collaboratorMapRef.current = new Map();
+        hasJoinedOnceRef.current = false;
+        localDirtyRef.current = false;
         client.disconnect();
         clientRef.current = null;
         setClientState(null);
@@ -864,6 +933,8 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
     followTargetRef.current = null;
     followCurrentRef.current = null;
     collabDrawingIdRef.current = null;
+    hasJoinedOnceRef.current = false;
+    localDirtyRef.current = false;
     setIsJoined(false);
     setIsConnected(false);
     setCollaborators([]);
@@ -884,6 +955,10 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const sendSceneUpdate = useCallback((elements: ExcalidrawElement[]) => {
     if (isApplyingRemoteRef.current) return;
     if (collabDrawingIdRef.current && collabDrawingIdRef.current === drawingId) {
+      // Track offline edits — evaluated on the reconnect snapshot (merge + upload)
+      if (!clientRef.current?.isConnected) {
+        localDirtyRef.current = true;
+      }
       clientRef.current?.sendSceneUpdate(elements);
     }
   }, [drawingId]);
@@ -899,6 +974,11 @@ export function useCollab({ drawingId, excalidrawAPI }: UseCollabOptions): UseCo
   const sendFilesUpdate = useCallback((files: BinaryFiles) => {
     if (isApplyingRemoteRef.current) return;
     if (collabDrawingIdRef.current && collabDrawingIdRef.current === drawingId) {
+      // Track offline edits — files added while disconnected must be re-evaluated
+      // after reconnect (delta tracking of sent files is reset on reconnect)
+      if (!clientRef.current?.isConnected) {
+        localDirtyRef.current = true;
+      }
       clientRef.current?.sendFilesUpdate(files);
     }
   }, [drawingId]);

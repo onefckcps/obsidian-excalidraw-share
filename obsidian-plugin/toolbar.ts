@@ -41,6 +41,8 @@ export interface ToolbarState {
   collabMaxReconnectAttempts?: number;
   /** Whether the server is reachable (for disabling buttons when offline) */
   serverReachable?: boolean;
+  /** Join coordinator state (persistent collab auto-join state machine) */
+  collabJoinState?: 'idle' | 'waiting_server' | 'joining' | 'connected' | 'reconnecting' | 'conflict_pending' | 'failed';
 }
 
 export interface ToolbarCallbacks {
@@ -65,6 +67,8 @@ export interface ToolbarCallbacks {
   onManualReconnect?: () => void;
   /** Manually trigger a server health check / reconnect */
   onRetryServer?: () => void;
+  /** Manually trigger the collab join coordinator (resets backoff, retries now) */
+  onEnsureJoin?: () => void;
   /** Start screen sharing (Electron only) */
   onStartScreenShare?: () => Promise<void>;
   /** Stop screen sharing */
@@ -821,6 +825,9 @@ export class ExcaliShareToolbar {
         ));
       }
 
+      // ── Join coordinator state row (persistent collab auto-join) ──
+      this.buildJoinStateRow(panel);
+
       // ── Persistent Collab section ──
       if (this.state.persistentCollabEnabled) {
         // Show "Persistent Collab Active" indicator + Disable button
@@ -905,6 +912,82 @@ export class ExcaliShareToolbar {
     // Loading overlay
     if (this.loading) {
       this.showLoadingOverlay(panel);
+    }
+  }
+
+  /**
+   * Render the join coordinator state row (waiting/connecting/failed/conflict).
+   * Only shown for persistent collab drawings when the state is noteworthy.
+   */
+  private buildJoinStateRow(panel: HTMLElement): void {
+    const joinState = this.state.collabJoinState;
+    if (!joinState || joinState === 'idle' || joinState === 'connected') return;
+    // 'reconnecting' is already covered by the reconnect state row above
+    if (joinState === 'reconnecting') return;
+    // Only relevant for persistent collab drawings
+    if (!this.state.persistentCollabEnabled) return;
+
+    const row = document.createElement('div');
+    row.style.padding = '4px 8px';
+    row.style.fontSize = '11px';
+    row.style.color = 'var(--text-muted)';
+    row.style.textAlign = 'center';
+    row.style.display = 'flex';
+    row.style.alignItems = 'center';
+    row.style.justifyContent = 'center';
+    row.style.gap = '4px';
+
+    const dotSpan = document.createElement('span');
+    dotSpan.style.display = 'inline-block';
+    dotSpan.style.width = '6px';
+    dotSpan.style.height = '6px';
+    dotSpan.style.borderRadius = '50%';
+
+    let text = '';
+    let showRetry = false;
+    switch (joinState) {
+      case 'joining':
+        dotSpan.style.backgroundColor = '#f59e0b';
+        dotSpan.style.animation = 'excalishare-pulse 1s ease-in-out infinite';
+        text = 'Connecting…';
+        break;
+      case 'waiting_server':
+        dotSpan.style.backgroundColor = '#ef4444';
+        text = 'Waiting for server — retrying…';
+        showRetry = true;
+        break;
+      case 'conflict_pending':
+        dotSpan.style.backgroundColor = '#f59e0b';
+        text = 'Sync conflict — action needed';
+        break;
+      case 'failed':
+        dotSpan.style.backgroundColor = '#ef4444';
+        text = 'Connection failed';
+        showRetry = true;
+        break;
+    }
+
+    row.appendChild(dotSpan);
+    row.appendChild(document.createTextNode(text));
+    panel.appendChild(row);
+
+    if (showRetry) {
+      const retryBtn = document.createElement('button');
+      retryBtn.textContent = '↻ Connect now';
+      retryBtn.title = 'Reset backoff and retry the collab join immediately';
+      retryBtn.style.cssText = `
+        display: block; width: calc(100% - 16px); margin: 4px 8px;
+        padding: 4px 8px; border-radius: 4px; cursor: pointer;
+        font-size: 11px; background: none;
+        border: 1px solid var(--interactive-accent);
+        color: var(--interactive-accent);
+        font-family: inherit;
+      `;
+      retryBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.callbacks.onEnsureJoin?.();
+      };
+      panel.appendChild(retryBtn);
     }
   }
 

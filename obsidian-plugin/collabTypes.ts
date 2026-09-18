@@ -13,6 +13,10 @@ export interface CollabStatusResponse {
   active: boolean;
   session_id?: string;
   participant_count?: number;
+  /** Whether the collab session requires a password to join */
+  password_required?: boolean;
+  /** Whether the drawing has persistent collab enabled */
+  persistent?: boolean;
 }
 
 // ──────────────────────────────────────────────

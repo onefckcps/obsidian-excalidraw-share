@@ -85,6 +85,19 @@ export class CollabClient {
     this._connect();
   }
 
+  /**
+   * Pause any scheduled reconnect attempt without changing state.
+   * Used when the OS reports the network is offline — avoids hammering
+   * the server with reconnect attempts that cannot succeed.
+   * Call manualReconnect() (or wait for the next disconnect) to resume.
+   */
+  pauseReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
   get reconnectState(): 'connected' | 'reconnecting' | 'disconnected' {
     if (this.ws?.readyState === WebSocket.OPEN) return 'connected';
     if (this.reconnectTimer !== null || this.reconnectAttempt > 0) return 'reconnecting';
@@ -134,19 +147,15 @@ export class CollabClient {
     }
 
     this.ws.onopen = () => {
-      const wasReconnecting = this.reconnectAttempt > 0;
       this.reconnectAttempt = 0;
       this.resetDeltaTracking();
+      // Discard buffered updates accumulated while disconnected — they are NOT
+      // flushed automatically. The buffered scene state would race against the
+      // incoming server snapshot (snapshot applied after the flush would wipe
+      // the flushed changes). Instead, the CollabManager performs a divergence
+      // check on the reconnect snapshot and uploads the local state if needed.
+      this.bufferedUpdates = [];
       this._emit('_connected', {} as ServerMessage);
-      // Flush buffered updates on reconnect
-      if (wasReconnecting && this.bufferedUpdates.length > 0) {
-        for (const msg of this.bufferedUpdates) {
-          if (this.ws?.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(msg));
-          }
-        }
-        this.bufferedUpdates = [];
-      }
     };
 
     this.ws.onmessage = (event) => {
@@ -373,6 +382,11 @@ export class CollabClient {
       if (this.pendingFilesUpdate) {
         const filesToSend = this.pendingFilesUpdate;
         this.pendingFilesUpdate = null;
+
+        // If disconnected, drop WITHOUT marking as sent — the reconnect snapshot
+        // path re-sends offline-added files (only snapshot files are marked as
+        // known; truly new local files are still unknown and get re-sent).
+        if (this.ws?.readyState !== WebSocket.OPEN) return;
 
         // Mark as sent before sending
         for (const fileId of Object.keys(filesToSend)) {

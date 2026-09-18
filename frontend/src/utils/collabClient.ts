@@ -153,20 +153,15 @@ export class CollabClient {
 
     this.ws.onopen = () => {
       console.log('ExcaliShare Collab: WebSocket connected');
-      const wasReconnecting = this.reconnectAttempt > 0;
       this.reconnectAttempt = 0;
       this.resetDeltaTracking();
+      // Discard buffered updates accumulated while disconnected — they are NOT
+      // flushed automatically. The buffered scene state would race against the
+      // incoming server snapshot (snapshot applied after the flush would wipe
+      // the flushed changes). Instead, useCollab performs a merge on the
+      // reconnect snapshot and uploads the merged state if needed.
+      this.bufferedUpdates = [];
       this._emit('_connected', {} as ServerMessage);
-      // Flush buffered updates on reconnect
-      if (wasReconnecting && this.bufferedUpdates.length > 0) {
-        console.log(`ExcaliShare Collab: Flushing ${this.bufferedUpdates.length} buffered updates`);
-        for (const msg of this.bufferedUpdates) {
-          if (this.ws?.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(msg));
-          }
-        }
-        this.bufferedUpdates = [];
-      }
     };
 
     this.ws.onmessage = (event) => {
@@ -410,6 +405,11 @@ export class CollabClient {
       if (this.pendingFilesUpdate) {
         const filesToSend = this.pendingFilesUpdate;
         this.pendingFilesUpdate = null;
+
+        // If disconnected, drop WITHOUT marking as sent — the reconnect snapshot
+        // path re-sends offline-added files (sentFileIds is reset on reconnect
+        // and only snapshot files are marked as known).
+        if (this.ws?.readyState !== WebSocket.OPEN) return;
 
         // Mark as sent before sending
         for (const fileId of Object.keys(filesToSend)) {

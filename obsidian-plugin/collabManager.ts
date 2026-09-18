@@ -40,7 +40,25 @@ export interface CollabManagerCallbacks {
   onReconnectFailed?: () => void;
   /** Called on each reconnect attempt with attempt number and max attempts */
   onReconnecting?: (attempt: number, maxAttempts: number) => void;
+  /** Called when a reconnect snapshot shows changes on BOTH sides (local offline
+   *  edits + server changes). Must return the user's conflict resolution choice.
+   *  The CollabManager waits for any active drawing stroke to end before invoking
+   *  this, so the callback can show a modal immediately. */
+  onReconnectConflict?: (info: ReconnectConflictInfo) => Promise<ReconnectConflictChoice>;
+  /** Called when entering/leaving the conflict_pending state (for UI indicators) */
+  onConflictStateChanged?: (pending: boolean) => void;
 }
+
+/** Info about a reconnect conflict (both sides changed while disconnected) */
+export interface ReconnectConflictInfo {
+  /** Number of locally changed/new elements since disconnect */
+  localChangedCount: number;
+  /** Number of changed/new elements in the server snapshot */
+  serverChangedCount: number;
+}
+
+/** How to resolve a reconnect conflict */
+export type ReconnectConflictChoice = 'merge' | 'server' | 'local';
 
 /** Detection strategy currently in use */
 type DetectionStrategy = 'event-driven' | 'polling' | 'none';
@@ -122,6 +140,16 @@ export class CollabManager {
   /** True after the first snapshot has been received (i.e. initial join completed).
    *  Used to suppress duplicate "Joined collab session" notices on WS reconnect. */
   private _hasJoinedOnce = false;
+  /** True when local scene changes were made while disconnected from the WS.
+   *  Evaluated on the reconnect snapshot for the divergence check. */
+  private localDirtySinceDisconnect = false;
+  /** True while a reconnect conflict is waiting for user resolution.
+   *  Incoming remote updates are queued, outgoing scene updates are suppressed. */
+  private conflictPending = false;
+  /** True when remote updates were dropped because the Excalidraw API was
+   *  unavailable (e.g., user is viewing a different drawing). The caller should
+   *  trigger a reconnect (fresh snapshot) when the drawing becomes visible again. */
+  private missedRemoteUpdates = false;
 
   // ── Follow mode (lerp-based viewport interpolation) ──
   private followingUserId: string | null = null;
@@ -186,6 +214,35 @@ export class CollabManager {
   /** The user ID we are currently following (null if not following anyone) */
   get currentFollowingUserId(): string | null {
     return this.followingUserId;
+  }
+
+  /** Whether the user is currently drawing/resizing/editing (mid-stroke) */
+  get isDrawing(): boolean {
+    return this.isUserDrawing();
+  }
+
+  /** Whether a reconnect conflict is currently waiting for user resolution */
+  get isConflictPending(): boolean {
+    return this.conflictPending;
+  }
+
+  /**
+   * Whether remote updates were dropped because the Excalidraw API was unavailable
+   * (user viewing a different drawing). Caller should trigger a manualReconnect()
+   * (fresh snapshot) when the collab drawing becomes visible again.
+   */
+  get hasMissedRemoteUpdates(): boolean {
+    return this.missedRemoteUpdates;
+  }
+
+  /** Clear the missed-updates flag (after a resync was triggered) */
+  clearMissedRemoteUpdates(): void {
+    this.missedRemoteUpdates = false;
+  }
+
+  /** Pause any scheduled WS reconnect timer (e.g., when OS reports offline) */
+  pauseReconnect(): void {
+    this.client?.pauseReconnect();
   }
 
   /**
@@ -298,7 +355,9 @@ export class CollabManager {
 
     client.on('snapshot', (msg: ServerMessage) => {
       if (msg.type !== 'snapshot') return;
-      this.handleSnapshot(msg);
+      this.handleSnapshot(msg).catch((e) => {
+        console.error('ExcaliShare Collab: Snapshot handling failed', e);
+      });
     });
 
     client.on('scene_update', (msg: ServerMessage) => {
@@ -482,6 +541,9 @@ export class CollabManager {
     this._isConnected = false;
     this._isJoined = false;
     this._hasJoinedOnce = false;
+    this.localDirtySinceDisconnect = false;
+    this.conflictPending = false;
+    this.missedRemoteUpdates = false;
     this.sessionId = null;
     this.drawingId = null;
     this.ownUserId = null;
@@ -575,7 +637,7 @@ export class CollabManager {
   // Message Handlers
   // ──────────────────────────────────────────────
 
-  private handleSnapshot(msg: Extract<ServerMessage, { type: 'snapshot' }>): void {
+  private async handleSnapshot(msg: Extract<ServerMessage, { type: 'snapshot' }>): Promise<void> {
     const api = this.getAPI();
     if (!api) {
       console.error('ExcaliShare Collab: No Excalidraw API available for snapshot');
@@ -594,7 +656,57 @@ export class CollabManager {
       }
     }
 
-    // Apply snapshot to Excalidraw (always apply snapshots immediately, even during drawing)
+    const snapshotElements = msg.elements as ExcalidrawElement[];
+
+    if (!this._hasJoinedOnce) {
+      // ── Initial join: replace local scene with the server snapshot ──
+      this.applySnapshotElements(api, msg);
+      this._hasJoinedOnce = true;
+      new Notice(`ExcaliShare: Joined collab session with ${this.collaborators.length} participant(s)`);
+    } else {
+      // ── Reconnect: divergence check BEFORE applying anything ──
+      const serverChangedCount = this.countServerChanges(snapshotElements);
+      const localChanged = this.localDirtySinceDisconnect;
+
+      if (serverChangedCount > 0 && localChanged) {
+        // Both sides changed → conflict resolution dialog (queued until stroke ends)
+        await this.resolveReconnectConflict(api, msg, serverChangedCount);
+      } else if (serverChangedCount > 0) {
+        // Only server changed → apply snapshot (replace)
+        this.applySnapshotElements(api, msg);
+        new Notice('ExcaliShare: Applied changes from server');
+      } else if (localChanged) {
+        // Only local changed → upload local state (server snapshot is stale).
+        // Apply only appState/collaborators/files from the snapshot, keep local elements.
+        this.applySnapshotMeta(api, msg);
+        this.uploadLocalScene(api);
+        new Notice('ExcaliShare: Uploaded local offline changes');
+      } else {
+        // No divergence → apply only metadata (appState/collaborators/files), stay silent
+        this.applySnapshotMeta(api, msg);
+      }
+
+      this.localDirtySinceDisconnect = false;
+      console.log('ExcaliShare Collab: Reconnect snapshot processed (divergence check done)');
+    }
+
+    // Initialize version tracking from the scene state that is now authoritative
+    this.reinitVersionTrackingFromScene();
+
+    // Start change detection (event-driven or polling fallback)
+    this.startChangeDetection();
+
+    // Start the flush timer for deferred updates
+    this.startFlushTimer();
+
+    this.callbacks.onCollaboratorsChanged?.(this.collaborators);
+  }
+
+  /**
+   * Apply the snapshot's elements + appState + collaborators + files (full replace).
+   * Used for the initial join and when the server state wins.
+   */
+  private applySnapshotElements(api: ExcalidrawAPI, msg: Extract<ServerMessage, { type: 'snapshot' }>): void {
     this.isApplyingRemoteUpdate = true;
     try {
       api.updateScene({
@@ -609,39 +721,260 @@ export class CollabManager {
       console.error('ExcaliShare Collab: Failed to apply snapshot', e);
     }
     this.scheduleRemoteUpdateCooldown();
+  }
 
-    // Initialize version tracking from the snapshot
-    this.initializeVersionTracking(msg.elements as ExcalidrawElement[]);
+  /**
+   * Apply only snapshot metadata (appState + collaborators + files) — NOT elements.
+   * Used on reconnect when there is no divergence or when local elements win.
+   */
+  private applySnapshotMeta(api: ExcalidrawAPI, msg: Extract<ServerMessage, { type: 'snapshot' }>): void {
+    this.isApplyingRemoteUpdate = true;
+    try {
+      api.updateScene({
+        appState: msg.appState,
+        collaborators: new Map(this.collaboratorMap),
+      });
 
-    // Start change detection (event-driven or polling fallback)
-    this.startChangeDetection();
+      // Apply binary files (images) — idempotent, new files may be referenced later
+      this.applyRemoteFiles(api, msg.files);
+    } catch (e) {
+      console.error('ExcaliShare Collab: Failed to apply snapshot metadata', e);
+    }
+    this.scheduleRemoteUpdateCooldown();
+  }
 
-    // Start the flush timer for deferred updates
-    this.startFlushTimer();
+  /**
+   * Count how many snapshot elements are newer than (or unknown to) our version
+   * tracking — i.e., changed on the server while we were disconnected.
+   */
+  private countServerChanges(snapshotElements: ExcalidrawElement[]): number {
+    let count = 0;
+    for (const el of snapshotElements) {
+      if (!el.id) continue;
+      const known = this.lastKnownVersions.get(el.id);
+      if (known === undefined || el.version > known) {
+        count++;
+      }
+    }
+    return count;
+  }
 
-    this.callbacks.onCollaboratorsChanged?.(this.collaborators);
-    // Only show the "joined" notice on the initial connection, not on every WS reconnect.
-    // On reconnect the server sends a fresh snapshot, but the user is already in the session.
-    if (!this._hasJoinedOnce) {
-      this._hasJoinedOnce = true;
-      new Notice(`ExcaliShare: Joined collab session with ${this.collaborators.length} participant(s)`);
-    } else {
-      console.log('ExcaliShare Collab: Reconnected to session (snapshot received, suppressing duplicate notice)');
+  /**
+   * Count how many local elements changed since the disconnect
+   * (version ahead of the frozen tracking map).
+   */
+  private countLocalChanges(api: ExcalidrawAPI): number {
+    let localElements: ExcalidrawElement[];
+    try {
+      const getElements = api.getSceneElementsIncludingDeleted || api.getSceneElements;
+      localElements = getElements.call(api);
+    } catch {
+      return 0;
+    }
+    let count = 0;
+    for (const el of localElements) {
+      if (!el.id) continue;
+      const known = this.lastKnownVersions.get(el.id);
+      if (known === undefined || el.version > known) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Upload the full local scene to the server (local wins).
+   * MUST use getSceneElementsIncludingDeleted() — deletions are soft
+   * (isDeleted:true + version bump) and the backend merges by id+version.
+   * Without IncludingDeleted, offline deletions would be lost.
+   */
+  private uploadLocalScene(api: ExcalidrawAPI): void {
+    if (!this.client) return;
+    try {
+      const getElements = api.getSceneElementsIncludingDeleted || api.getSceneElements;
+      const localElements = getElements.call(api);
+      // Delta tracking was reset on reconnect → this sends a full scene_update
+      this.client.sendSceneUpdate(localElements, false);
+
+      // Re-send files added while offline: snapshot files were already marked as
+      // known, so only truly new local files are sent.
+      const files = api.getFiles?.();
+      if (files && Object.keys(files).length > 0) {
+        this.client.sendFilesUpdate(files);
+      }
+    } catch (e) {
+      console.error('ExcaliShare Collab: Failed to upload local scene', e);
+    }
+  }
+
+  /**
+   * Handle a reconnect conflict (both sides changed while disconnected).
+   * Waits for any active drawing stroke to end, then asks the user via callback.
+   * While pending, incoming remote updates are queued and outgoing updates suppressed.
+   */
+  private async resolveReconnectConflict(
+    api: ExcalidrawAPI,
+    msg: Extract<ServerMessage, { type: 'snapshot' }>,
+    serverChangedCount: number,
+  ): Promise<void> {
+    this.conflictPending = true;
+    this.callbacks.onConflictStateChanged?.(true);
+
+    try {
+      // Wait until the user finishes the current stroke before showing the dialog
+      await this.waitForDrawingEnd();
+
+      const localChangedCount = this.countLocalChanges(api);
+      const choice = (await this.callbacks.onReconnectConflict?.({
+        localChangedCount,
+        serverChangedCount,
+      })) ?? 'merge';
+
+      switch (choice) {
+        case 'server': {
+          // Server wins: replace local scene with the snapshot
+          this.applySnapshotElements(api, msg);
+          new Notice('ExcaliShare: Server version applied. Local offline changes discarded.');
+          break;
+        }
+        case 'local': {
+          // Local wins: upload full local scene (incl. deletions)
+          this.applySnapshotMeta(api, msg);
+          this.uploadLocalScene(api);
+          new Notice('ExcaliShare: Local version uploaded. Server changes discarded.');
+          break;
+        }
+        case 'merge':
+        default: {
+          // Merge: highest version per element wins (incl. isDeleted), then upload result
+          let localElements: ExcalidrawElement[] = [];
+          try {
+            const getElements = api.getSceneElementsIncludingDeleted || api.getSceneElements;
+            localElements = getElements.call(api);
+          } catch { /* ignore */ }
+
+          const merged = this.mergeElementsByVersion(localElements, msg.elements as ExcalidrawElement[]);
+
+          this.isApplyingRemoteUpdate = true;
+          try {
+            api.updateScene({
+              elements: merged,
+              appState: msg.appState,
+              collaborators: new Map(this.collaboratorMap),
+            });
+            this.applyRemoteFiles(api, msg.files);
+          } catch (e) {
+            console.error('ExcaliShare Collab: Failed to apply merged scene', e);
+          }
+          this.scheduleRemoteUpdateCooldown();
+
+          // Upload merged result so the server converges to the merged state
+          if (this.client) {
+            this.client.sendSceneUpdate(merged, false);
+            // Re-send files added while offline (snapshot files are already known)
+            try {
+              const files = api.getFiles?.();
+              if (files && Object.keys(files).length > 0) {
+                this.client.sendFilesUpdate(files);
+              }
+            } catch { /* getFiles unavailable */ }
+          }
+          new Notice('ExcaliShare: Changes merged (highest version per element kept).');
+          break;
+        }
+      }
+    } finally {
+      this.conflictPending = false;
+      this.callbacks.onConflictStateChanged?.(false);
+      // Flush any remote updates that were queued while the dialog was open
+      if (this.pendingRemoteUpdates.length > 0 && !this.isUserDrawing()) {
+        this.flushPendingRemoteUpdates();
+      }
+    }
+  }
+
+  /**
+   * Merge two element lists by id — highest version wins per element.
+   * isDeleted elements are included (soft deletes participate in the merge).
+   * Order: server elements first (stable), then local-only elements appended.
+   */
+  private mergeElementsByVersion(local: ExcalidrawElement[], server: ExcalidrawElement[]): ExcalidrawElement[] {
+    const merged = new Map<string, ExcalidrawElement>();
+    const order: string[] = [];
+
+    for (const el of server) {
+      if (!el.id) continue;
+      merged.set(el.id, el);
+      order.push(el.id);
+    }
+    for (const el of local) {
+      if (!el.id) continue;
+      const existing = merged.get(el.id);
+      if (!existing) {
+        merged.set(el.id, el);
+        order.push(el.id);
+      } else if ((el.version ?? 0) > (existing.version ?? 0)) {
+        merged.set(el.id, el);
+      }
+    }
+    return order.map(id => merged.get(id)!).filter(Boolean);
+  }
+
+  /** Wait until the user is no longer actively drawing (poll every 250ms). */
+  private async waitForDrawingEnd(): Promise<void> {
+    while (this.isUserDrawing()) {
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  }
+
+  /**
+   * Re-initialize version tracking from the current authoritative scene.
+   * After conflict resolution / snapshot application, the local scene equals
+   * the state we want to track going forward.
+   */
+  private reinitVersionTrackingFromScene(): void {
+    const api = this.getAPI();
+    if (!api) return;
+    try {
+      const getElements = api.getSceneElementsIncludingDeleted || api.getSceneElements;
+      const elements = getElements.call(api);
+      this.initializeVersionTracking(elements);
+    } catch {
+      // API stale — keep old tracking
     }
   }
 
   /**
    * Handle incoming remote scene updates.
-   * If the user is actively drawing, queue the update to avoid interrupting the stroke.
+   * If the user is actively drawing (or a conflict dialog is open), queue the
+   * update to avoid interrupting the stroke / diverging from the held-back snapshot.
    * Otherwise, apply immediately.
    */
   private handleRemoteSceneUpdate(remoteElements: ExcalidrawElement[]): void {
+    // If the Excalidraw API is unavailable (user is viewing a different drawing),
+    // drop the update and track that we missed it — the caller triggers a resync
+    // (fresh snapshot) when the collab drawing becomes visible again.
+    // IMPORTANT: do this BEFORE version tracking, otherwise the dropped update
+    // would bump lastKnownVersions and the reconnect divergence check would
+    // consider the server state "already known" (stale canvas bug).
+    if (!this.getAPI()) {
+      this.missedRemoteUpdates = true;
+      return;
+    }
+
     // Update version tracking for remote elements to avoid echoing them back
     for (const el of remoteElements) {
       if (el.id) {
         this.lastKnownVersions.set(el.id, el.version);
         this.remoteAppliedVersions.set(el.id, el.version);
       }
+    }
+
+    // If a conflict dialog is pending, queue the update — it will be flushed
+    // after the user resolves the conflict (applied on top of the resolved state)
+    if (this.conflictPending) {
+      this.pendingRemoteUpdates.push(remoteElements);
+      return;
     }
 
     // If user is actively drawing, defer the update
@@ -1037,8 +1370,27 @@ export class CollabManager {
     // Skip if we're in the middle of applying a remote update
     if (this.isApplyingRemoteUpdate) return;
 
-    // Skip if not connected
-    if (!this.client?.isConnected) return;
+    // Track offline edits: if not connected, mark the scene as dirty so the
+    // reconnect snapshot handler can run its divergence check. Version tracking
+    // is intentionally NOT updated here — the frozen pre-disconnect tracking is
+    // the baseline for the divergence check.
+    if (!this.client?.isConnected) {
+      // Only set the flag for real changes (version-diff against frozen tracking)
+      for (const el of elements) {
+        if (!el.id) continue;
+        const lastVersion = this.lastKnownVersions.get(el.id) ?? -1;
+        if (el.version > lastVersion) {
+          this.localDirtySinceDisconnect = true;
+          break;
+        }
+      }
+      return;
+    }
+
+    // While a conflict dialog is open, suppress outgoing updates entirely.
+    // Local changes stay in the scene; depending on the user's choice they are
+    // either merged+uploaded, uploaded wholesale, or discarded (server wins).
+    if (this.conflictPending) return;
 
     // Suppress scene updates during multi-touch gestures (two-finger pan/pinch-zoom).
     // When the first finger touches down, Excalidraw starts a freedraw stroke and fires
@@ -1132,8 +1484,26 @@ export class CollabManager {
     // Skip if we just applied a remote update (avoid echo)
     if (this.isApplyingRemoteUpdate) return;
 
-    // Skip if not connected
-    if (!this.client?.isConnected) return;
+    // Track offline edits when disconnected (see handleLocalSceneChange)
+    if (!this.client?.isConnected) {
+      const api = this.getAPI();
+      if (api) {
+        try {
+          for (const el of api.getSceneElements()) {
+            if (!el.id) continue;
+            const lastVersion = this.lastKnownVersions.get(el.id) ?? -1;
+            if (el.version > lastVersion) {
+              this.localDirtySinceDisconnect = true;
+              break;
+            }
+          }
+        } catch { /* view may be closed */ }
+      }
+      return;
+    }
+
+    // Suppress outgoing updates while a conflict dialog is open
+    if (this.conflictPending) return;
 
     const api = this.getAPI();
     if (!api) return;

@@ -875,7 +875,7 @@ Comprehensive improvements to disconnect/offline handling across all three compo
 **Frontend (`CollabClient`, `useCollab`, `Viewer`, `CollabPopover`, `DrawingsBrowser`):**
 - `CollabClient` now emits `_reconnecting` event with `{ attempt, maxAttempts }` on each reconnect attempt
 - `CollabClient` supports `persistentMode` flag for infinite reconnect (used by persistent collab sessions)
-- `CollabClient` buffers outgoing `scene_update`/`scene_delta` messages while disconnected and flushes on reconnect
+- `CollabClient` buffers outgoing `scene_update`/`scene_delta` messages while disconnected; the buffer is **discarded** on reconnect (no auto-flush) — the reconnect snapshot path handles convergence (see "Collab Join & Offline Redesign" below)
 - `CollabClient` exposes `manualReconnect()` to reset attempt counter and retry immediately
 - `useCollab` hook exposes `reconnectState` (`'idle' | 'reconnecting' | 'failed'`), `reconnectAttempt`, `maxReconnectAttempts`, and `manualReconnect`
 - Toolbar Island in `Viewer.tsx` shows connection-state-aware badge: `🟢 Collaborative` → `🟡 Reconnecting 2/5` → `🔴 Disconnected [↻]`
@@ -899,6 +899,39 @@ Comprehensive improvements to disconnect/offline handling across all three compo
 - `main.ts` queues failed publish/sync operations in `_pendingOperations` and retries when server comes back
 - Status bar shows `ExcaliShare: ❌ Server unreachable` when server is down
 - `onConnectionChanged` callback now updates toolbar reconnect state when connection is restored
+
+### Collab Join & Offline Redesign (September 2026)
+
+Reworked auto-join and offline behavior for live collab (plugin + frontend). No silent failures, no offline data loss, predictable behavior. Backend unchanged.
+
+**Plugin: Central join coordinator (state machine in `main.ts`)**
+- All auto-join triggers (file open/tab switch, `onServerReachabilityChanged`, `enablePersistentCollab`, `onReconnectFailed`, background reconcile) route through one method: `ensureCollabJoined(file, drawingId)`. Replaces `autoJoinPersistentCollab` + `_joiningCollabInProgress`.
+- States: `idle` / `waiting_server` / `joining` / `connected` / `reconnecting` / `conflict_pending` / `failed` — surfaced in status bar (`⏳ Connecting…`, `📴 Server unreachable — retrying…`, `⚠️ Sync conflict`, `🔴 … click to retry`) and toolbar popover (`collabJoinState`, "↻ Connect now" button via `onEnsureJoin` → `retryCollabJoinNow()`).
+- `waiting_server` retries with backoff 5s → 15s → 60s → 5min cap; manual retry resets backoff.
+- Excalidraw API readiness retry before join (500ms→4s backoff, ~10 attempts) — fixes silent fail at Obsidian startup.
+- Password-protected persistent session + no API key → password prompt + pre-verify via `/api/collab/verify-password` (avoids silent WS upgrade reject loop).
+- Auto-switch: switching from persistent drawing A to persistent drawing B leaves A and joins B. Switching to a non-persistent drawing keeps A alive in the background; an API guard in `getExcalidrawAPI` returns null while another drawing is viewed (remote updates are dropped + `missedRemoteUpdates` flag set; returning to the drawing triggers `manualReconnect()` → fresh snapshot). File close (no active file) leaves the session cleanly.
+- LiveSync suspend/resume no longer flaps on auto-switch: resume is deferred 5s (`scheduleLiveSyncResume`), cancelled by a new `suspendLiveSync`.
+- `syncPersistentCollabOnOpen` HTTP element sync only runs when `collabJoinFromObsidian=false` (fallback); with auto-join, the WS snapshot + divergence check is the single sync path.
+- Device ID: 4-char suffix generated once, stored in `data.json` (`_deviceId`), display name = `Host · ab12` — distinguishes two Obsidian instances in the same vault.
+
+**Plugin: Offline drawing + reconnect conflict resolution (`collabManager.ts`)**
+- Local edits while disconnected set `localDirtySinceDisconnect` (version tracking stays frozen as the divergence baseline).
+- Reconnect snapshot runs a divergence check (`countServerChanges` vs frozen `lastKnownVersions`, `localDirtySinceDisconnect`):
+  - neither changed → apply only appState/collaborators/files (silent)
+  - only server changed → snapshot replaces scene + Notice
+  - only local changed → full local scene uploaded via `getSceneElementsIncludingDeleted()` (offline deletions survive) + Notice
+  - both changed → `conflict_pending`, `ReconnectConflictModal` with 3 options: **Merge** (highest version per element incl. `isDeleted`, result uploaded), **Use Server Version**, **Upload Local Version**. Dialog waits for the current stroke to end; incoming remote updates queue while open; outgoing updates suppressed. Escape = merge.
+- `CollabClient` no longer auto-flushes buffered updates on reconnect (race with snapshot); buffer is discarded. Files dropped while disconnected are NOT marked as sent — re-sent after reconnect (snapshot files are marked known first).
+
+**Frontend: Auto-merge on reconnect (no dialog for guests)**
+- `useCollab` tracks `hasJoinedOnceRef` + `localDirtyRef` (set when `sendSceneUpdate`/`sendFilesUpdate` is called while disconnected).
+- Reconnect snapshot merges instead of replaces (highest version per element, `isDeleted` respected, base = `getSceneElementsIncludingDeleted()`), then uploads the merged scene once if dirty (delta tracking was reset → full `scene_update`) and re-sends offline-added files.
+- Frontend `CollabClient` drops the auto-flush like the plugin client.
+
+**Plugin: Health check + network detection**
+- `online`/`offline` window events: `offline` → pause health checks + WS reconnect (`pauseReconnect()`), status `📴 Offline`; `online` → immediate health check + WS `manualReconnect()` + join retry.
+- Health check uses a self-rescheduling timeout with backoff (60s up; 2min → 5min when down) and classifies failures: thrown error = network, HTTP ≥500 = server down (status bar text differs).
 
 ### Recent Bug Fixes
 
